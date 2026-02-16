@@ -51,3 +51,10 @@ minikube-linux-amd64
 
 # Streamlit
 .streamlit/secrets.toml
+
+# AI tooling and workflow files
+.taskmaster/
+CLAUDE.md
+.claude/
+opencode.json
+.mcp.json
