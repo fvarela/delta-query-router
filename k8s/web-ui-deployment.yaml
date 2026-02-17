@@ -17,6 +17,7 @@ spec:
       containers:
       - name: web-ui
         image: web-ui:latest
+        imagePullPolicy: Never
         ports:
         - containerPort: 8501
           name: http

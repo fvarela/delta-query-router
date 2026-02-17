@@ -17,6 +17,7 @@ spec:
       containers:
       - name: routing-service
         image: routing-service:latest
+        imagePullPolicy: Never
         ports:
         - containerPort: 8000
           name: http
