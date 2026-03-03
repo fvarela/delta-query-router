@@ -1,0 +1,41 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: postgresql-schema-init
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: schema-init
+        image: postgres:16
+        imagePullPolicy: IfNotPresent
+        command:
+        - psql
+        - -h
+        - postgresql
+        - -U
+        - $(POSTGRES_USER)
+        - -d
+        - $(POSTGRES_DB)
+        - -f
+        - /schema/schema.sql
+        envFrom:
+        - secretRef:
+            name: postgresql-secret
+        env:
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-secret
+              key: POSTGRES_PASSWORD
+        volumeMounts:
+        - name: schema
+          mountPath: /schema
+      volumes:
+      - name: schema
+        configMap:
+          name: postgresql-schema
+#kubectl apply -f k8s/postgresql-schema-configmap.yaml
+#kubectl apply -f k8s/postgresql-schema-job.yaml
