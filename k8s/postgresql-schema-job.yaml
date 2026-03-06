@@ -31,11 +31,11 @@ spec:
               name: postgresql-secret
               key: POSTGRES_PASSWORD
         volumeMounts:
-        - name: schema
-          mountPath: /schema
+        - name: schema # Refers to the volume defined below
+          mountPath: /schema # This is where it will be available inside the container
       volumes:
-      - name: schema
+      - name: schema # Define a volume that will hold the schema.sql file
         configMap:
-          name: postgresql-schema
-#kubectl apply -f k8s/postgresql-schema-configmap.yaml
+          name: postgresql-schema # <- Fill this volume with the content of the ConfigMap
+#kubectl create configmap postgresql-schema --from-file=schema.sql=routing-service/db/schema.sql --dry-run=client -o yaml | kubectl apply -f -
 #kubectl apply -f k8s/postgresql-schema-job.yaml
