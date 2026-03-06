@@ -1,47 +1,42 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: routing-service
+  name: duckdb-worker
   labels:
-    app: routing-service
+    app: duckdb-worker
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: routing-service
+      app: duckdb-worker
   template:
     metadata:
       labels:
-        app: routing-service
+        app: duckdb-worker
     spec:
       containers:
-      - name: routing-service
-        image: routing-service:latest
+      - name: duckdb-worker
+        image: duckdb-worker:latest
         imagePullPolicy: Never
-        envFrom:
-        - configMapRef:
-            name: routing-service-config
-        - secretRef:
-            name: postgresql-secret
         ports:
-        - containerPort: 8000
+        - containerPort: 8002
           name: http
         resources:
           requests:
-            cpu: 100m
-            memory: 128Mi
-          limits:
-            cpu: 500m
+            cpu: 200m
             memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 2Gi
         readinessProbe:
           httpGet:
             path: /health
-            port: 8000
+            port: 8002
           initialDelaySeconds: 5
           periodSeconds: 10
         livenessProbe:
           httpGet:
             path: /health
-            port: 8000
+            port: 8002
           initialDelaySeconds: 15
           periodSeconds: 20

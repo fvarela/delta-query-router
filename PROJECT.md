@@ -67,6 +67,13 @@ The routing algorithm that combines multiple decision factors:
 - Purpose: Store query logs, routing decisions, cost metrics, and table metadata cache
 - Rationale: Rich querying for analytics dashboards; ACID guarantees; no vendor lock-in; runs efficiently in Kubernetes as StatefulSet; supports time-series queries for observability
 
+**Correlation ID (Traceability)**
+- Every query submission generates a UUID `correlation_id` in the routing-service at the point of entry
+- The `correlation_id` is passed through to all backends (DuckDB worker, Databricks) as part of every request
+- All log entries across all services reference the same `correlation_id`, making every query's full journey joinable in PostgreSQL
+- User identity (`user_id`) is captured once at the routing-service entry point and stored alongside the `correlation_id` in `query_logs`
+- Backends (DuckDB worker, Databricks) are stateless with respect to users — they receive and log the `correlation_id` but do not manage sessions or user state
+
 **Metadata Caching Strategy**
 - Cache table metadata (size, row counts, governance rules) with time-to-live to minimize Unity Catalog API calls
 - Cache-with-TTL provides fast lookups (5-10ms) for frequently-queried tables while ensuring governance metadata stays fresh
@@ -128,53 +135,126 @@ The routing algorithm that combines multiple decision factors:
 **Tech Stack:** Python, FastAPI, sqlglot, databricks-sdk, deltalake-python, PostgreSQL client
 
 ### web-ui (Dashboard)
-**Purpose:** Interactive web interface for query submission and observability  
-**Status:** Not started  
-**Requirements:**
-- Query submission form
-- Real-time routing decision visualization
-- Cost savings metrics dashboard
-- Query history and filtering
-- Routing configuration controls
+**Purpose:** Interactive web interface for query submission, observability, and operational control  
+**Status:** Basic scaffold deployed (Phase 1)  
+**Pages / Sections:**
+
+**System Health**
+- Red/green status indicators for all components: routing-service, DuckDB worker, PostgreSQL, Databricks
+- Landing page — first thing visible on load
+- Polls the routing-service `/health/backends` endpoint every 15 seconds using Streamlit's rerun mechanism; uses `streamlit-autorefresh` on interactive pages to avoid blocking user input
+
+**Query Console**
+- SQL editor for submitting queries through the router
+- Displays routing decision alongside results: engine chosen, complexity score, reason
+- Shows query execution time and estimated cost
+- Primary interactive feature and demo surface
+
+**Live Query Logs**
+- View routing decision history from PostgreSQL for any query ID
+- Filter by engine, status, time range
+- Future: real-time log streaming from DuckDB worker or Databricks
+
+**Observability Dashboard**
+- Cost savings over time (router vs all-Databricks baseline)
+- Routing distribution: % of queries routed to DuckDB vs Databricks
+- Latency percentiles by engine
+- Primary demo and evaluation surface
+
+**Router Configuration**
+- Adjust routing thresholds (complexity score cutoff, data size limits)
+- Enable/disable governance constraint checks
+- Switch between routing strategies
+- Lower priority — implement after core routing logic is stable
+
+**Operations**
+- Trigger TPC-DS data ingestion job (see data-populator module)
+- Expose scale factor selection (SF=1 for local dev, SF=100 for cloud)
+- Show ingestion job status by polling Kubernetes Job state
+- Clear table metadata cache
+- Reset routing statistics
 
 **Tech Stack:** Streamlit, Python
 
 ### benchmark-runner (Evaluation)
-**Purpose:** Execute benchmark queries and measure routing performance  
+**Purpose:** Execute TPC-DS benchmark queries and measure routing performance  
 **Status:** Not started  
 **Requirements:**
-- Load benchmark query sets (TPC-H, TPC-DS, or custom)
-- Execute queries sequentially with routing
-- Measure and log latency, cost, accuracy
-- Generate comparison reports (router vs all-Databricks baseline)
-- Support A/B testing of routing strategies
+- Load the TPC-DS predefined query set (99 queries) from the standard query templates
+- Execute queries sequentially through the router and record routing decisions
+- Execute the same queries directly on Databricks SQL Warehouse to establish the baseline
+- Measure and log latency, cost, and routing accuracy for every query
+- Generate comparison reports: router vs all-Databricks baseline
+- Support A/B testing of routing strategies by swapping routing configuration between runs
+- Depends on data-populator having completed successfully before running
 
 **Tech Stack:** Python, databricks-sdk
 
 ### data-populator (Test Data)
-**Purpose:** Populate Delta Lake tables from public datasets for testing  
+**Purpose:** Populate Delta Lake tables from the TPC-DS benchmark dataset for testing and benchmarking  
 **Status:** Not started  
 **Requirements:**
-- Download public datasets (e.g., NYC Taxi, IMDB)
-- Convert to Delta Lake format using DuckDB
-- Upload to Databricks Unity Catalog
-- Create tables with varying sizes (small, medium, large)
-- Apply sample governance rules for testing
+- Generate TPC-DS data using DuckDB's native `tpcds` extension (no external download needed)
+- Support configurable scale factors: SF=1 for local dev, SF=100 for cloud/benchmarking
+- Write all 24 TPC-DS tables as Delta Lake format using deltalake-python
+- Target storage is configurable: local path (dev) or S3/ADLS (cloud)
+- Upload Delta tables to Databricks Unity Catalog and register as external tables
+- Apply sample governance rules (row-level security, column masking) to a subset of tables for governance routing tests
+- Runs as a Kubernetes Job, triggerable from the web-ui Operations page
+- Job status is queryable so the web-ui can poll and display progress
 
-**Tech Stack:** Python, DuckDB, deltalake-python, databricks-sdk
+**TPC-DS Table Set (24 tables):** call_center, catalog_page, catalog_returns, catalog_sales, customer, customer_address, customer_demographics, date_dim, household_demographics, income_band, item, promotion, reason, ship_mode, store, store_returns, store_sales, time_dim, warehouse, web_page, web_returns, web_sales, web_site, dbgen_version
+
+**Tech Stack:** Python, DuckDB (tpcds extension), deltalake-python, databricks-sdk
 
 ### infrastructure (IaC)
-**Purpose:** Terraform configuration for all cloud resources  
+**Purpose:** Provision all new cloud resources and deploy all applications via a single `terraform apply`, connecting to an existing Azure tenant with a pre-existing Unity Catalog metastore  
 **Status:** Not started  
-**Requirements:**
-- Kubernetes cluster (AKS/EKS/GKE)
-- Databricks workspace and Unity Catalog
-- SQL Warehouse configuration
-- PostgreSQL StatefulSet
-- Networking and ingress
-- Spot node pools for DuckDB workers
 
-**Tech Stack:** Terraform, Helm charts
+**Scope — What Terraform Creates:**
+- Databricks resources inside an existing workspace: dedicated catalog, schemas, SQL Warehouse, service principal, and all necessary permissions
+- AKS cluster with spot node pools for DuckDB workers
+- Networking and ingress
+- Helm releases for all in-cluster applications (routing-service, web-ui, duckdb-worker, postgresql)
+
+**Scope — What Terraform Does NOT Touch:**
+- The Databricks workspace itself — pre-existing, referenced by URL
+- The Unity Catalog metastore — pre-existing, referenced by ID
+- Other workspaces or shared tenant resources
+
+**Prerequisites (must exist before `terraform apply`):**
+Documented in `infrastructure/terraform/prerequisites.md`. Key inputs:
+- Existing Databricks workspace URL and account ID
+- Existing Unity Catalog metastore ID
+- Azure subscription and resource group
+
+All external dependencies are declared explicitly as Terraform input variables, making assumptions visible rather than hidden.
+
+**Tech Stack:** Terraform, Helm
+
+**IaC Split:**
+- **Terraform** owns all cloud infrastructure and Helm releases via the `helm_release` resource — acting as the bridge between infrastructure and application deployment
+- **Helm** owns all in-cluster application resources: Deployments, Services, StatefulSets, ConfigMaps, Secrets, ingress rules. One chart per service
+- A single `terraform apply` provisions all infrastructure and deploys all applications end-to-end
+
+**Directory Structure:**
+```
+infrastructure/
+  terraform/
+    prerequisites.md  # documents what must exist before terraform apply
+    main.tf           # AKS cluster, resource groups, networking
+    databricks.tf     # new workspace, SQL Warehouse, schemas, governance rules
+    helm.tf           # helm_release resources for all charts
+    variables.tf      # explicit inputs for all external dependencies
+    outputs.tf
+  helm/
+    routing-service/
+    duckdb-worker/
+    web-ui/
+    postgresql/
+```
+
+**Migration Note:** Current raw YAML manifests in `k8s/` will be converted to Helm chart templates when the infrastructure phase begins. This is a straightforward migration — existing YAMLs become parameterized templates with image tags and environment-specific values extracted to `values.yaml`.
 
 ---
 
@@ -194,6 +274,7 @@ The routing algorithm that combines multiple decision factors:
 - Log every routing decision with full context (inputs, scores, reasoning)
 - Track actual vs estimated costs and latencies
 - Enable post-hoc analysis of routing accuracy
+- Every query is assigned a `correlation_id` at entry — all logs across all services are joinable by this key
 
 **Cost Optimization**
 - Keep one DuckDB worker always warm (eliminate cold starts)
@@ -208,3 +289,10 @@ The routing algorithm that combines multiple decision factors:
 - **2025-02-13:** Single `.taskmaster` at project root, not per-module projects
 - **2025-02-13:** PROJECT.md consolidates all project knowledge (no separate architecture.md, modules/*.md for now)
 - **2025-02-13:** Development workflow: update PROJECT.md → generate PRD → task-master parse-prd → verify tasks.json
+- **2026-03-04:** Chose TPC-DS (SF=100) as the primary benchmark dataset — predefined 99-query set enables out-of-the-box benchmarking; DuckDB tpcds extension eliminates external data download
+- **2026-03-04:** data-populator runs as a Kubernetes Job triggered from the web-ui Operations page, not as a standalone script
+- **2026-03-04:** Web UI expanded to include System Health, Query Console, Live Logs, Observability Dashboard, Router Configuration, and Operations sections
+- **2026-03-05:** Adopted correlation_id (UUID) as the traceability mechanism across all services — generated at routing-service entry, passed to all backends, stored in query_logs alongside user_id. Backends are stateless with respect to users and sessions.
+- **2026-03-05:** IaC strategy: Terraform + Helm. Terraform owns cloud infrastructure and Helm releases; Helm owns in-cluster application resources. Single terraform apply deploys everything. Chosen over Terraform-only (poor fit for app deployment lifecycle) and Pulumi (less mature Databricks provider).
+- **2026-03-05:** Databricks IaC scope: reuse existing workspace and Unity Catalog metastore rather than provisioning from scratch. Terraform manages resources inside the existing workspace (catalog, schemas, SQL Warehouse, service principal, permissions) but does not create or modify the workspace or metastore. External dependencies provided as explicit input variables.
+- **2026-03-06:** Web UI communicates exclusively with the routing-service — it has no direct connections to PostgreSQL or DuckDB worker. Backend health and query results are always proxied through the routing-service API. This keeps the UI decoupled from backend topology changes.

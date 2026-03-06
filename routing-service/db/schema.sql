@@ -2,6 +2,8 @@
 -- Tables for query logging, routing decisions, cost tracking, and metadata caching
 CREATE TABLE IF NOT EXISTS query_logs (
     id              SERIAL PRIMARY KEY,
+    correlation_id  UUID UNIQUE NOT NULL,
+    user_id         VARCHAR(255),
     query_text      TEXT NOT NULL,
     submitted_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     completed_at    TIMESTAMPTZ,
@@ -40,3 +42,4 @@ CREATE TABLE IF NOT EXISTS table_metadata_cache (
 CREATE INDEX IF NOT EXISTS idx_query_logs_submitted_at ON query_logs(submitted_at);
 CREATE INDEX IF NOT EXISTS idx_routing_decisions_query_log_id ON routing_decisions(query_log_id);
 CREATE INDEX IF NOT EXISTS idx_cost_metrics_query_log_id ON cost_metrics(query_log_id);
+CREATE INDEX IF NOT EXISTS idx_query_logs_correlation_id ON query_logs(correlation_id);
