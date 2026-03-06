@@ -18,6 +18,11 @@ spec:
       - name: routing-service
         image: routing-service:latest
         imagePullPolicy: Never
+        envFrom:
+        - configMapRef:
+            name: routing-service-config
+        - secretRef:
+            name: postgresql-secret
         ports:
         - containerPort: 8000
           name: http

@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name:  routing-service-config
+data:
+  POSTGRES_HOST: postgresql
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: deltarouter
+  DUCKDB_WORKER_URL: http://duckdb-worker:8002
