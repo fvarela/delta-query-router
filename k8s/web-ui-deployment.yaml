@@ -18,6 +18,9 @@ spec:
       - name: web-ui
         image: web-ui:latest
         imagePullPolicy: Never
+        envFrom:
+        - configMapRef:
+            name: web-ui-config
         ports:
         - containerPort: 8501
           name: http
