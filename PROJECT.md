@@ -140,9 +140,10 @@ The routing algorithm that combines multiple decision factors:
 **Pages / Sections:**
 
 **System Health**
-- Red/green status indicators for all components: routing-service, DuckDB Worker, PostgreSQL, Databricks
+- Five service indicators: Web UI (always green — implicit), Routing Service, PostgreSQL, DuckDB Worker, Databricks
+- Databricks shows grey 'Not Configured' state until Databricks integration is implemented
 - Landing page — first thing visible on load
-- Polls the routing-service `/health/backends` endpoint every 15 seconds; uses `streamlit-autorefresh` on interactive pages to avoid blocking user input
+- Polls the routing-service `/health/backends` endpoint every 15 seconds; polling mechanism moves to native React (setInterval) after Phase 4 migration
 
 **Query Console**
 - SQL editor for submitting queries through the router
@@ -275,8 +276,8 @@ Potential integrations that would extend the platform's value but are not yet sc
 
 - [x] **Phase 1 - Local Dev Environment:** Minikube cluster, FastAPI routing-service and Streamlit web-ui scaffolded, containerized with Docker using uv, deployed to Kubernetes with manifests, accessible via port-forward
 - [x] **Phase 2 - Supporting Infrastructure:** PostgreSQL deployed as StatefulSet with persistent storage and database schema (query_logs, routing_decisions, cost_metrics, table_metadata_cache); DuckDB worker built as FastAPI app and deployed; routing-service wired to both backends via ConfigMap; correlation_id/user_id schema migration applied; all 4 services running and verified in cluster
-- [ ] **Phase 3 - Service Wiring & System Health:** Build web-ui System Health page with green/red indicators polling every 15 seconds; add web-ui ConfigMap with ROUTING_SERVICE_URL; rebuild and redeploy web-ui image. Deliverable: browser shows live health dashboard with all 4 services green.
-- [ ] **Phase 4 - Migrate Web UI to React + FastAPI:** Replace Streamlit with Vite + React + TypeScript frontend served by FastAPI as static files. Implement full UI shell: left sidebar navigation, logo placeholder top-center, theme TBD. System Health page wired to real endpoints with 15-second polling. All other pages show [ COMING SOON ] placeholders. Remove Streamlit dependencies, update Dockerfile, redeploy. Deliverable: same System Health functionality as Phase 3 running in React, with the complete navigation shell in place for all future pages.
+- [x] **Phase 3 - Service Wiring & System Health:** Build web-ui System Health page with green/red indicators polling every 15 seconds; add web-ui ConfigMap with ROUTING_SERVICE_URL; rebuild and redeploy web-ui image. Deliverable: browser shows live health dashboard with all 4 services green.
+- [ ] **Phase 4 - Migrate Web UI to React + FastAPI:** Replace Streamlit with Vite + React + TypeScript frontend served by FastAPI as static files. Implement full UI shell: left sidebar navigation, logo placeholder top-center, theme TBD. System Health page with five service indicators (Web UI, Routing Service, PostgreSQL, DuckDB Worker, Databricks), where Databricks shows a grey 'Not Configured' state until integrated. All other pages show [ COMING SOON ] placeholders. Remove Streamlit dependencies, update Dockerfile, redeploy. Deliverable: same System Health functionality as Phase 3 running in React, with the complete navigation shell in place for all future pages.
 
 ---
 
