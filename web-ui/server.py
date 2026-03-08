@@ -1,27 +1,22 @@
 """FastAPI backend for delta-router web UI."""
+
 import os
 from pathlib import Path
 import httpx
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+
 app = FastAPI(title="delta-router web-ui")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-ROUTING_SERVICE_URL = os.environ.get(
-    "ROUTING_SERVICE_URL", "http://localhost:8000"
-)
+
+ROUTING_SERVICE_URL = os.environ.get("ROUTING_SERVICE_URL", "http://localhost:8000")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
 
 @app.get("/api/health")
 async def health():
     """K8s liveness/readiness probe."""
     return {"status": "ok"}
+
 
 @app.get("/api/health/services")
 async def health_services():
@@ -42,6 +37,7 @@ async def health_services():
         except (httpx.HTTPError, httpx.ConnectError):
             result["routing_service"] = {"status": "error", "detail": "unreachable"}
             return result  # Can't check backends if routing-service is down
+
         # Check backends via routing-service
         try:
             resp = await client.get(f"{ROUTING_SERVICE_URL}/health/backends")
@@ -59,14 +55,10 @@ async def health_services():
                     result[svc_key] = {"status": "error", "detail": detail}
         except (httpx.HTTPError, httpx.ConnectError):
             pass  # Leave as "unknown"
+
     return result
-# --- Static file serving + SPA fallback ---
+
+
+# --- Static file serving (single page, no SPA fallback) ---
 if STATIC_DIR.is_dir():
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-    @app.get("/{path:path}")
-    async def spa_fallback(path: str):
-        """Serve index.html for any non-API route (SPA client-side routing)."""
-        file = STATIC_DIR / path
-        if file.is_file():
-            return FileResponse(file)
-        return FileResponse(STATIC_DIR / "index.html")
+    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

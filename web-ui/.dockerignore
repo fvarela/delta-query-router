@@ -35,9 +35,3 @@ Thumbs.db
 .pytest_cache
 .coverage
 htmlcov
-
-# Build output (generated inside Docker)
-static
-
-# Node (handled in stage 1, not needed in stage 2)
-frontend/node_modules

@@ -87,9 +87,9 @@ The routing algorithm that combines multiple decision factors:
 - Purpose: REST API for query submission, routing decisions, and metrics retrieval
 - Rationale: Modern Python async framework; excellent performance; automatic OpenAPI documentation; easy integration with Databricks and DuckDB SDKs
 
-**Streamlit (Web UI)**
-- Purpose: Interactive dashboard for query submission, routing configuration, and observability
-- Rationale: Rapid development in pure Python; built-in charting and data visualization; live metrics updates; perfect for prototypes and demos
+**Vanilla HTML + jQuery (Web UI)**
+- Purpose: Minimal single-page dashboard for system health, query submission, and observability
+- Rationale: Zero build step; no Node.js dependency; jQuery loaded from CDN; FastAPI serves a single index.html as a static file; setInterval + fetch for polling — simpler than any framework for this use case
 
 ### Core Libraries
 
@@ -111,9 +111,9 @@ The routing algorithm that combines multiple decision factors:
 - Purpose: Centralized logging of all query executions, routing decisions, and cost calculations
 - Rationale: Single source of truth for evaluation; enables complex analytical queries for dashboards; supports A/B testing between routing strategies
 
-**Streamlit Dashboard**
+**Web UI Dashboard**
 - Purpose: Real-time visualization of cost savings, latency distributions, and routing accuracy
-- Rationale: Provides interactive exploration during development; useful for demos
+- Rationale: Single-page vanilla HTML dashboard served by FastAPI; lightweight and sufficient for development and demos
 
 ---
 
@@ -135,47 +135,38 @@ The routing algorithm that combines multiple decision factors:
 **Tech Stack:** Python, FastAPI, sqlglot, databricks-sdk, deltalake-python, PostgreSQL client
 
 ### web-ui (Dashboard)
-**Purpose:** Interactive web interface for query submission, observability, and operational control  
-**Status:** Basic scaffold deployed (Phase 1)  
-**Pages / Sections:**
+**Purpose:** Minimal single-page web interface for system health monitoring, query submission, and observability  
+**Status:** Vanilla HTML + jQuery deployed (Phase 5 complete)
+
+**Architecture:** FastAPI backend (server.py) serves a single static index.html file. The frontend uses plain HTML, CSS, and jQuery (loaded from CDN). No build step, no Node.js, no framework. All sections live on one page.
+
+**Sections (single page, all visible):**
 
 **System Health**
-- Five service indicators: Web UI (always green — implicit), Routing Service, PostgreSQL, DuckDB Worker, Databricks
+- Five service indicators as colored dots (green/red/grey) with plain text labels: Web UI, Routing Service, PostgreSQL, DuckDB Worker, Databricks
 - Databricks shows grey 'Not Configured' state until Databricks integration is implemented
-- Landing page — first thing visible on load
-- Polls the routing-service `/health/backends` endpoint every 15 seconds; polling mechanism moves to native React (setInterval) after Phase 4 migration
+- Polls /api/health/services every 15 seconds via setInterval + fetch
+- Web UI indicator is always green (implicit — the page is rendering)
 
-**Query Console**
-- SQL editor for submitting queries through the router
+**Query Console** (future)
+- SQL textarea for submitting queries through the router
 - Displays routing decision alongside results: engine chosen, complexity score, reason
 - Shows query execution time and estimated cost
-- Primary interactive feature and demo surface
 
-**Live Query Logs**
-- View routing decision history from PostgreSQL for any query ID
-- Filter by engine, status, time range
-- Future: real-time log streaming from DuckDB worker or Databricks
+**Query Log** (future)
+- Recent query history table fetched from routing-service API
+- Shows engine, status, latency, cost per query
 
-**Observability Dashboard**
-- Cost savings over time (router vs all-Databricks baseline)
+**Observability** (future)
+- Cost savings summary: router vs all-Databricks baseline
 - Routing distribution: % of queries routed to DuckDB vs Databricks
-- Latency percentiles by engine
-- Primary demo and evaluation surface
+- Latency breakdown by engine
 
-**Router Configuration**
-- Adjust routing thresholds (complexity score cutoff, data size limits)
-- Enable/disable governance constraint checks
-- Switch between routing strategies
-- Lower priority — implement after core routing logic is stable
-
-**Operations**
-- Trigger TPC-DS data ingestion job (see data-populator module)
-- Expose scale factor selection (SF=1 for local dev, SF=100 for cloud)
-- Show ingestion job status by polling Kubernetes Job state
+**Operations** (future)
+- Trigger TPC-DS data ingestion job
 - Clear table metadata cache
-- Reset routing statistics
 
-**Tech Stack:** Vite, React, TypeScript, FastAPI, Python
+**Tech Stack:** FastAPI (Python), HTML, CSS, jQuery (CDN)
 
 ### benchmark-runner (Evaluation)
 **Purpose:** Execute TPC-DS benchmark queries and measure routing performance  
@@ -278,6 +269,7 @@ Potential integrations that would extend the platform's value but are not yet sc
 - [x] **Phase 2 - Supporting Infrastructure:** PostgreSQL deployed as StatefulSet with persistent storage and database schema (query_logs, routing_decisions, cost_metrics, table_metadata_cache); DuckDB worker built as FastAPI app and deployed; routing-service wired to both backends via ConfigMap; correlation_id/user_id schema migration applied; all 4 services running and verified in cluster
 - [x] **Phase 3 - Service Wiring & System Health:** Build web-ui System Health page with green/red indicators polling every 15 seconds; add web-ui ConfigMap with ROUTING_SERVICE_URL; rebuild and redeploy web-ui image. Deliverable: browser shows live health dashboard with all 4 services green.
 - [x] **Phase 4 - Migrate Web UI to React + FastAPI:** Replace Streamlit with Vite + React + TypeScript frontend served by FastAPI as static files. Implement full UI shell: left sidebar navigation, logo placeholder top-center, theme TBD. System Health page with five service indicators (Web UI, Routing Service, PostgreSQL, DuckDB Worker, Databricks), where Databricks shows a grey 'Not Configured' state until integrated. All other pages show [ COMING SOON ] placeholders. Remove Streamlit dependencies, update Dockerfile, redeploy. Deliverable: same System Health functionality as Phase 3 running in React, with the complete navigation shell in place for all future pages.
+- [x] **Phase 5 - Simplify Web UI to Vanilla HTML + jQuery:** Replace React + Vite frontend with a single static index.html using plain HTML, CSS, and jQuery (CDN). Remove frontend/ directory, Node.js dependency, and multi-stage Docker build. Revert to single-stage Python Dockerfile. Keep FastAPI server.py and /api/health/services endpoint unchanged. Implement System Health indicators as colored dots with plain text labels on a single page — no sidebar, no routing, no framework. Remove Node.js 20+ from dev prerequisites. Deliverable: same health indicator functionality as Phase 4, served from a single HTML file with no build step.
 
 ---
 
@@ -321,3 +313,5 @@ Potential integrations that would extend the platform's value but are not yet sc
 - **2026-03-06:** Web UI communicates exclusively with the routing-service — it has no direct connections to PostgreSQL or DuckDB worker. Backend health and query results are always proxied through the routing-service API. This keeps the UI decoupled from backend topology changes.
 - **2026-03-07:** Decided to migrate web-ui from Streamlit to Vite + React + TypeScript served by FastAPI static files. Streamlit's execution model (full page rerun on every interaction) creates friction for interactive pages like Query Console and Live Logs. React gives full control over rendering, state, and polling without blocking constraints. UI theme TBD.
 - **2026-03-08:** Dev environment requires Node.js 20+ and npm in addition to existing prerequisites (Docker, Minikube, kubectl, Python 3.13+, uv). Node.js is only needed locally for React development — it is not present in the production container (multi-stage Docker build).
+- **2026-03-08:** Simplified web-ui from React + Vite + TypeScript to vanilla HTML + jQuery served by FastAPI. React was over-engineered for a dashboard that currently shows 5 health indicators. The new approach eliminates the Node.js dependency, the multi-stage Docker build, and the entire frontend/ directory. Auto-refresh polling (the original reason for leaving Streamlit) is trivially handled by setInterval + fetch in plain JavaScript. jQuery chosen for DOM manipulation convenience. All UI sections live on a single page — no sidebar navigation, no client-side routing.
+- **2026-03-08:** Dev environment no longer requires Node.js — removed as part of React-to-vanilla-HTML simplification. Prerequisites are now: Docker, Minikube, kubectl, Python 3.13+, uv.
