@@ -175,7 +175,7 @@ The routing algorithm that combines multiple decision factors:
 - Clear table metadata cache
 - Reset routing statistics
 
-**Tech Stack:** Streamlit, Python (to be replaced with React + FastAPI in Phase 4)
+**Tech Stack:** Vite, React, TypeScript, FastAPI, Python
 
 ### benchmark-runner (Evaluation)
 **Purpose:** Execute TPC-DS benchmark queries and measure routing performance  
@@ -320,3 +320,4 @@ Potential integrations that would extend the platform's value but are not yet sc
 - **2026-03-05:** Databricks IaC scope: reuse existing workspace and Unity Catalog metastore rather than provisioning from scratch. Terraform manages resources inside the existing workspace (catalog, schemas, SQL Warehouse, service principal, permissions) but does not create or modify the workspace or metastore. External dependencies provided as explicit input variables.
 - **2026-03-06:** Web UI communicates exclusively with the routing-service — it has no direct connections to PostgreSQL or DuckDB worker. Backend health and query results are always proxied through the routing-service API. This keeps the UI decoupled from backend topology changes.
 - **2026-03-07:** Decided to migrate web-ui from Streamlit to Vite + React + TypeScript served by FastAPI static files. Streamlit's execution model (full page rerun on every interaction) creates friction for interactive pages like Query Console and Live Logs. React gives full control over rendering, state, and polling without blocking constraints. UI theme TBD.
+- **2026-03-08:** Dev environment requires Node.js 20+ and npm in addition to existing prerequisites (Docker, Minikube, kubectl, Python 3.13+, uv). Node.js is only needed locally for React development — it is not present in the production container (multi-stage Docker build).
