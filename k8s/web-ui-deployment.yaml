@@ -33,13 +33,13 @@ spec:
             memory: 1Gi
         readinessProbe:
           httpGet:
-            path: /
+            path: /api/health
             port: 8501
           initialDelaySeconds: 5
           periodSeconds: 10
         livenessProbe:
           httpGet:
-            path: /
+            path: /api/health
             port: 8501
           initialDelaySeconds: 15
           periodSeconds: 20
