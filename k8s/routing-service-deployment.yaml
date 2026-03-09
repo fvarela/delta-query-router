@@ -14,6 +14,7 @@ spec:
       labels:
         app: routing-service
     spec:
+      serviceAccountName: routing-service
       containers:
       - name: routing-service
         image: routing-service:latest
@@ -23,6 +24,8 @@ spec:
             name: routing-service-config
         - secretRef:
             name: postgresql-secret
+        - secretRef:
+            name: admin-credentials
         ports:
         - containerPort: 8000
           name: http

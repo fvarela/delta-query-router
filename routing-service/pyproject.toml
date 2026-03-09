@@ -4,8 +4,10 @@ version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.13"
 dependencies = [
+    "databricks-sdk>=0.97.0",
     "fastapi>=0.129.0",
     "httpx>=0.28.1",
+    "kubernetes>=35.0.0",
     "psycopg2-binary>=2.9.11",
     "uvicorn>=0.40.0",
 ]
