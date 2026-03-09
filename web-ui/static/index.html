@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Delta Router</title>
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; }
+    .indicators { display: flex; gap: 2rem; flex-wrap: wrap; margin: 1.5rem 0; }
+    .indicator { display: flex; align-items: center; gap: 0.5rem; }
+    .dot {
+      width: 12px; height: 12px; border-radius: 50%;
+      display: inline-block; background: #9ca3af;
+    }
+    .dot.connected { background: #22c55e; }
+    .dot.error { background: #ef4444; }
+    .dot.unknown { background: #f59e0b; }
+    .dot.not_configured { background: #9ca3af; }
+    .status-text { font-size: 0.85rem; color: #666; }
+    #last-checked { color: #888; font-size: 0.9rem; }
+    section { margin-top: 2rem; border-top: 1px solid #eee; padding-top: 1rem; }
+    section p { color: #999; }
+  </style>
+</head>
+<body>
+  <h1>System Health</h1>
+  <p id="last-checked">Last checked: --:--:--</p>
+
+  <div class="indicators">
+    <div class="indicator">
+      <span id="dot-web-ui" class="dot connected"></span>
+      <strong>Web UI</strong>
+      <span id="text-web-ui" class="status-text">Connected</span>
+    </div>
+    <div class="indicator">
+      <span id="dot-routing-service" class="dot"></span>
+      <strong>Routing Service</strong>
+      <span id="text-routing-service" class="status-text"></span>
+    </div>
+    <div class="indicator">
+      <span id="dot-postgresql" class="dot"></span>
+      <strong>PostgreSQL</strong>
+      <span id="text-postgresql" class="status-text"></span>
+    </div>
+    <div class="indicator">
+      <span id="dot-duckdb-worker" class="dot"></span>
+      <strong>DuckDB Worker</strong>
+      <span id="text-duckdb-worker" class="status-text"></span>
+    </div>
+    <div class="indicator">
+      <span id="dot-databricks" class="dot not_configured"></span>
+      <strong>Databricks</strong>
+      <span id="text-databricks" class="status-text">Not Configured</span>
+    </div>
+  </div>
+
+  <section id="query-console">
+    <h2>Query Console</h2>
+    <p>Coming Soon</p>
+  </section>
+
+  <section id="query-log">
+    <h2>Query Log</h2>
+    <p>Coming Soon</p>
+  </section>
+
+  <section id="observability">
+    <h2>Observability</h2>
+    <p>Coming Soon</p>
+  </section>
+
+  <section id="operations">
+    <h2>Operations</h2>
+    <p>Coming Soon</p>
+  </section>
+
+  <script>
+    var SERVICE_MAP = {
+      web_ui:         { dot: '#dot-web-ui',         text: '#text-web-ui' },
+      routing_service:{ dot: '#dot-routing-service', text: '#text-routing-service' },
+      postgresql:     { dot: '#dot-postgresql',      text: '#text-postgresql' },
+      duckdb_worker:  { dot: '#dot-duckdb-worker',  text: '#text-duckdb-worker' },
+      databricks:     { dot: '#dot-databricks',      text: '#text-databricks' }
+    };
+
+    var STATUS_LABELS = {
+      connected: 'Connected',
+      error: 'Error',
+      unknown: 'Unknown',
+      not_configured: 'Not Configured'
+    };
+
+    function updateIndicator(key, data) {
+      var els = SERVICE_MAP[key];
+      if (!els) return;
+      var status = data.status || 'unknown';
+      var label = data.detail || STATUS_LABELS[status] || status;
+      $(els.dot).attr('class', 'dot ' + status);
+      $(els.text).text(label);
+    }
+
+    function fetchHealth() {
+      $.getJSON('/api/health/services')
+        .done(function(data) {
+          $.each(data, function(key, val) {
+            updateIndicator(key, val);
+          });
+        })
+        .fail(function() {
+          updateIndicator('routing_service', { status: 'unknown' });
+          updateIndicator('postgresql',      { status: 'unknown' });
+          updateIndicator('duckdb_worker',   { status: 'unknown' });
+        });
+
+      var now = new Date();
+      var ts = now.toLocaleTimeString('en-GB', { hour12: false });
+      $('#last-checked').text('Last checked: ' + ts);
+    }
+
+    $(function() {
+      fetchHealth();
+      setInterval(fetchHealth, 15000);
+    });
+  </script>
+</body>
+</html>

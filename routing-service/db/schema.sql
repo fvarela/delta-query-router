@@ -38,8 +38,22 @@ CREATE TABLE IF NOT EXISTS table_metadata_cache (
     cached_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     ttl_seconds         INTEGER NOT NULL DEFAULT 300
 );
+CREATE TABLE IF NOT EXISTS collections (
+    id              SERIAL PRIMARY KEY,
+    name            TEXT NOT NULL UNIQUE,
+    routing_mode    TEXT NOT NULL CHECK (routing_mode IN ('duckdb', 'databricks', 'smart')),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS collection_queries (
+    id              SERIAL PRIMARY KEY,
+    collection_id   INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+    sequence        INTEGER NOT NULL,
+    sql_text        TEXT NOT NULL,
+    UNIQUE (collection_id, sequence)
+);
 -- Indexes for common query patterns
 CREATE INDEX IF NOT EXISTS idx_query_logs_submitted_at ON query_logs(submitted_at);
 CREATE INDEX IF NOT EXISTS idx_routing_decisions_query_log_id ON routing_decisions(query_log_id);
 CREATE INDEX IF NOT EXISTS idx_cost_metrics_query_log_id ON cost_metrics(query_log_id);
 CREATE INDEX IF NOT EXISTS idx_query_logs_correlation_id ON query_logs(correlation_id);
+CREATE INDEX IF NOT EXISTS idx_collection_queries_collection_id ON collection_queries(collection_id);
