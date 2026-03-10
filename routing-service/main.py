@@ -4,6 +4,7 @@ import httpx
 import psycopg2
 from fastapi import FastAPI, Depends, HTTPException, Header
 from pydantic import BaseModel
+from databricks.sdk import WorkspaceClient
 
 app = FastAPI()
 
@@ -20,9 +21,47 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 # In-memory token store: {token_hex: username}
 _active_tokens: dict[str, str] = {}
 
+_workspace_client: WorkspaceClient | None = None
+_databricks_host: str | None = None
+_databricks_username: str | None = None
+_warehouse_id: str | None = None
+
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+class DatabricksCredentials(BaseModel):
+    host: str
+    token: str | None = None
+    client_id: str | None = None
+    client_secret: str | None = None
+
+def _save_to_k8s_secret(creds: DatabricksCredentials):
+    from kubernetes import client as k8s_client, config as k8s_config
+    try:
+        k8s_config.load_incluster_config()
+    except Exception:
+        return #Not running in cluster, skip sliently
+    v1 = k8s_client.CoreV1Api()
+    secret_data = {"DATABRICKS_HOST": creds.host}
+    if creds.token:
+        secret_data["DATABRICKS_TOKEN"] = creds.token
+    if creds.client_id:
+        secret_data["DATABRICKS_CLIENT_ID"] = creds.client_id
+    if creds.client_secret:
+        secret_data["DATABRICKS_CLIENT_SECRET"] = creds.client_secret
+    secret = k8s_client.V1Secret(
+        metadata=k8s_client.V1ObjectMeta(name="databricks-credentials"),
+        string_data=secret_data,
+    )
+    try:
+        v1.read_namespaced_secret("databricks-credentials", "default")
+        v1.replace_namespaced_secret("databricks-credentials", "default", secret)
+    except k8s_client.exceptions.ApiException as e:
+        if e.status == 404:
+            v1.create_namespaced_secret("default", secret)
+        else:
+            raise
 
 @app.post("/api/auth/login")
 async def login(creds: LoginRequest):
@@ -41,9 +80,38 @@ async def verify_token(authorization: str = Header(None)) -> str:
         raise HTTPException(status_code=401, detail="Invalid token")
     return username
 
+
+@app.post("/api/settings/databricks")
+async def save_databricks_settings(creds: DatabricksCredentials, username: str = Depends(verify_token)):
+    global _workspace_client, _databricks_host, _databricks_username
+    try:
+        if creds.token:
+            wc = WorkspaceClient(host=creds.host, token=creds.token)
+        elif creds.client_id and creds.client_secret:
+            wc = WorkspaceClient(host=creds.host, client_id=creds.client_id, client_secret=creds.client_secret)
+        else:
+            raise HTTPException(status_code=400, detail="Provide either token or client_id+client_secret")
+        me = wc.current_user.me()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to connect: {e}")
+    _workspace_client = wc
+    _databricks_host = creds.host
+    _databricks_username = me.user_name
+    _save_to_k8s_secret(creds)
+    return {"status": "connected", "host": creds.host, "username": me.user_name}
+
 @app.get("/api/settings/databricks")
 async def get_databricks_settings(username: str = Depends(verify_token)):
-    return {"configured": False}
+    if _workspace_client is None:
+        return {"configured": False}
+    return {
+        "configured": True,
+        "host": _databricks_host,
+        "username": _databricks_username,
+        "warehouse_id": _warehouse_id,
+    }
 
 @app.get("/health")
 async def health():
