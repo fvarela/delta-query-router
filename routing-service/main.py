@@ -143,4 +143,12 @@ async def health_backends():
             backends["duckdb_worker"] = {"status": "connected"}
     except Exception as e:
         backends["duckdb_worker"] = {"status": "error", "detail": str(e)}
+    if _workspace_client is None:
+        backends["databricks"] = {"status": "not_configured"}
+    else:
+        try:
+            _workspace_client.current_user.me()
+            backends["databricks"] = {"status": "connected"}
+        except Exception as e:
+            backends["databricks"] = {"status": "error", "detail": str(e)}
     return backends
