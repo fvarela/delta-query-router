@@ -3,8 +3,10 @@
 import os
 from pathlib import Path
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
+
 
 app = FastAPI(title="delta-router web-ui")
 
@@ -46,18 +48,68 @@ async def health_services():
             for svc_key, backend_key in [
                 ("postgresql", "postgresql"),
                 ("duckdb_worker", "duckdb_worker"),
+                ("databricks", "databricks"),
             ]:
                 backend = backends.get(backend_key, {})
-                if backend.get("status") == "connected":
+                status = backend.get("status")
+                if status == "connected":
                     result[svc_key] = {"status": "connected"}
+                elif status == "not_configured":
+                    result[svc_key] = {"status": "not_configured"}
                 else:
-                    detail = backend.get("error", "unhealthy")
+                    detail = backend.get("detail", "unhealthy")
                     result[svc_key] = {"status": "error", "detail": detail}
+
         except (httpx.HTTPError, httpx.ConnectError):
             pass  # Leave as "unknown"
 
     return result
 
+@app.post("/api/auth/login")
+async def proxy_login(request: Request):
+    body = await request.body()
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.post(f"{ROUTING_SERVICE_URL}/api/auth/login", content=body, 
+                                 headers={"Content-Type": "application/json"})
+        return Response(content=resp.content, status_code=resp.status_code, media_type="application/json")
+
+@app.get("/api/settings/databricks")
+async def proxy_get_databricks(request: Request):
+    headers = {}
+    if request.headers.get("authorization"):
+        headers["Authorization"] = request.headers["authorization"]
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.get(f"{ROUTING_SERVICE_URL}/api/settings/databricks", headers=headers)
+        return Response(content=resp.content, status_code=resp.status_code, media_type="application/json")
+
+@app.post("/api/settings/databricks")
+async def proxy_save_databricks(request: Request):
+    body = await request.body()
+    headers = {"Content-Type": "application/json"}
+    if request.headers.get("authorization"):
+        headers["Authorization"] = request.headers["authorization"]
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(f"{ROUTING_SERVICE_URL}/api/settings/databricks", content=body, headers=headers)
+        return Response(content=resp.content, status_code=resp.status_code, media_type="application/json")
+
+@app.get("/api/databricks/warehouses")
+async def proxy_get_warehouses(request: Request):
+    headers = {}
+    if request.headers.get("authorization"):
+        headers["Authorization"] = request.headers["authorization"]
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.get(f"{ROUTING_SERVICE_URL}/api/databricks/warehouses", headers=headers)
+        return Response(content=resp.content, status_code=resp.status_code, media_type="application/json")
+
+@app.put("/api/settings/warehouse")
+async def proxy_save_warehouse(request: Request):
+    body = await request.body()
+    headers = {"Content-Type": "application/json"}
+    if request.headers.get("authorization"):
+        headers["Authorization"] = request.headers["authorization"]
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.put(f"{ROUTING_SERVICE_URL}/api/settings/warehouse", content=body, headers=headers)
+        return Response(content=resp.content, status_code=resp.status_code, media_type="application/json")
 
 # --- Static file serving (single page, no SPA fallback) ---
 if STATIC_DIR.is_dir():
