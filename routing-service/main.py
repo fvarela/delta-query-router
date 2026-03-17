@@ -152,3 +152,20 @@ async def health_backends():
         except Exception as e:
             backends["databricks"] = {"status": "error", "detail": str(e)}
     return backends
+
+@app.get("/api/databricks/warehouses")
+async def list_warehouses(username: str = Depends(verify_token)):
+    if _workspace_client is None:
+        raise HTTPException(status_code=400, detail="Databricks not configured")
+    try:
+        warehouses = _workspace_client.warehouses.list()
+        return [
+            {
+                "id": wh.id,
+                "name": wh.name,
+                "state": wh.state.value if wh.state else "UNKNOWN"
+            }
+            for wh in warehouses
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list warehouses: {e}")

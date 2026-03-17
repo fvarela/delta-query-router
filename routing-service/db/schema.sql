@@ -38,22 +38,29 @@ CREATE TABLE IF NOT EXISTS table_metadata_cache (
     cached_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     ttl_seconds         INTEGER NOT NULL DEFAULT 300
 );
-CREATE TABLE IF NOT EXISTS collections (
-    id              SERIAL PRIMARY KEY,
-    name            TEXT NOT NULL UNIQUE,
-    routing_mode    TEXT NOT NULL CHECK (routing_mode IN ('duckdb', 'databricks', 'smart')),
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+CREATE TABLE IF NOT EXISTS routing_defaults (
+    id              INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    routing_mode    VARCHAR(20) NOT NULL DEFAULT 'smart' CHECK (routing_mode IN ('duckdb', 'databricks', 'smart')),
+    complexity_threshold    FLOAT NOT NULL DEFAULT 5.0,
+    max_table_size_bytes    BIGINT NOT NULL DEFAULT 1073741824,
+    check_governance        BOOLEAN NOT NULL DEFAULT TRUE,
+    require_api_key         BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE TABLE IF NOT EXISTS collection_queries (
+-- Seed with defaults
+INSERT INTO routing_defaults (id) VALUES (1) ON CONFLICT DO NOTHING;
+CREATE TABLE IF NOT EXISTS api_keys (
     id              SERIAL PRIMARY KEY,
-    collection_id   INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
-    sequence        INTEGER NOT NULL,
-    sql_text        TEXT NOT NULL,
-    UNIQUE (collection_id, sequence)
+    key_prefix      VARCHAR(8) NOT NULL,
+    key_hash        VARCHAR(255) NOT NULL,
+    name            VARCHAR(255) NOT NULL,
+    user_id         VARCHAR(255) NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    revoked_at      TIMESTAMPTZ
 );
+CREATE INDEX IF NOT EXISTS idx_api_keys_key_prefix ON api_keys(key_prefix);
 -- Indexes for common query patterns
 CREATE INDEX IF NOT EXISTS idx_query_logs_submitted_at ON query_logs(submitted_at);
 CREATE INDEX IF NOT EXISTS idx_routing_decisions_query_log_id ON routing_decisions(query_log_id);
 CREATE INDEX IF NOT EXISTS idx_cost_metrics_query_log_id ON cost_metrics(query_log_id);
 CREATE INDEX IF NOT EXISTS idx_query_logs_correlation_id ON query_logs(correlation_id);
-CREATE INDEX IF NOT EXISTS idx_collection_queries_collection_id ON collection_queries(collection_id);

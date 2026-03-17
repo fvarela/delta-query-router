@@ -31,6 +31,108 @@ The routing algorithm that combines multiple decision factors:
 
 ---
 
+## Design Decisions
+
+### ODQ-1: Collection data model simplification — DECIDED
+
+**Decision (2026-03-14):** Collections are purely a group of queries — no `routing_mode`, no engine info. Routing is determined by the page-level toggle at execution time. Schema uses a separate `queries` table with FK to `collections` (normalized design).
+
+**Schema:**
+- `collections`: id, name, description, created_at, updated_at
+- `queries`: id, collection_id (FK), query_text, sequence_number
+
+### ODQ-2: Benchmarks as a separate entity — DECIDED
+
+**Decision (2026-03-14):** Benchmarks are a first-class entity with their own DB tables. A benchmark runs all queries in a collection on all available engines, recording results per-engine per-query. A warm-up phase precedes the benchmark: a probe query is sent to each engine to ensure it is warm, and cold-start time is recorded. Engine identity uses a string ID for now; the formal engine registry is deferred to ODQ-4. Benchmarks are triggered from the collection UI on the main page, with a benchmark history list and detail view per collection.
+
+**Design notes:**
+- Engine configurations are portable across workspaces — a SQL Warehouse benchmark result applies to any warehouse with the same config (cluster size, Photon, serverless, region), regardless of workspace. To be formalized in ODQ-4.
+- DuckDB engines should also support configurable deployment modes (always-on vs on-demand) and resource settings. Multiple DuckDB configurations can coexist. Also deferred to ODQ-4.
+- Cold-start is measured during warm-up, not during benchmark queries. Results contain only warm-engine performance data.
+
+**Schema:**
+- `benchmarks`: id, collection_id (FK), status, created_at, updated_at
+- `benchmark_engine_warmups`: id, benchmark_id (FK), engine_id (string), cold_start_time_ms, started_at
+- `benchmark_results`: id, benchmark_id (FK), engine_id (string), query_id (FK to queries), execution_time_ms, data_scanned_bytes, other_metrics (JSONB)
+
+### ODQ-3: ML models for routing predictions — DECIDED
+
+**Decision (2026-03-14):** ML models trained on benchmark data predict execution time and cost per engine. scikit-learn random forest multi-output regression. Training runs as a K8s Job, triggered manually via API. Models require explicit user activation after reviewing hold-out validation metrics. If two benchmarks share the same engine set, their training data can be combined.
+
+**Model design:**
+- **Framework:** scikit-learn (random forest regressor, multi-output)
+- **Training:** K8s Job triggered via `POST /api/models/train`. Reads benchmark results from PostgreSQL, trains model, stores serialized model (joblib) and validation metrics
+- **Activation:** Manual. User reviews hold-out validation metrics (train/test split) in the UI, then explicitly activates the model via `POST /api/models/{id}/activate`. No model enters the routing path without human review
+- **Target variables:** Two regression outputs per engine — `predicted_execution_time_ms` and `predicted_cost_usd`. At routing time, the router computes a weighted score per engine: `score = w_time * normalized_time + w_cost * normalized_cost` and picks the lowest. Weights (`w_time`, `w_cost`) are user-configurable via routing settings (exposed as a "Speed ← → Cost" slider in the UI)
+- **Query features** (extracted via sqlglot AST): `num_tables`, `num_joins`, `num_aggregations`, `num_subqueries`, `has_group_by`, `has_order_by`, `has_limit`, `has_window_functions`, `estimated_data_bytes`, `max_table_size_bytes`, `num_columns_selected`
+- **Engine features** (from engine configuration): `engine_type` (databricks_sql/duckdb), `cluster_size`, `has_photon`, `is_serverless`, `memory_gb`
+- Features are abstract — no table names, no raw SQL. Models generalize across different datasets and workspaces
+
+**Schema:**
+- `models`: id, linked_engines (JSONB array of engine_id strings), model_path (file path to serialized model), accuracy_metrics (JSONB), is_active (boolean), created_at, updated_at
+- `routing_settings`: id (singleton, always 1), time_weight (float, default 0.5), cost_weight (float, default 0.5), updated_at
+
+**Future considerations (not in current scope):**
+- Region-awareness: warn the user if DuckDB engine and data are in different regions, which would invalidate benchmark results from same-region runs
+- New-benchmark notifications: alert the user when benchmark data exists that the active model was not trained on, suggesting retraining
+- Automated retraining with configurable triggers
+
+### ODQ-4: Multi-engine support (N warehouses + N DuckDB configs) — DECIDED
+
+**Decision (2026-03-14):** Each engine (Databricks SQL Warehouse or DuckDB configuration) is a row in the `engines` table. DuckDB configurations are separate K8s Deployments, each with its own Service and resource limits — Cluster Autoscaler handles node provisioning when pods can't be scheduled. The `engines` table is built with the first feature that needs it (likely benchmarks), not as a standalone migration. Engine IDs in existing benchmark and model tables become FKs once the engines table lands.
+
+**Engine registry schema:**
+- `engines`: id (string PK, e.g. `databricks:small-serverless`, `duckdb:8gb-ram`), engine_type (enum: `databricks_sql` / `duckdb`), display_name, config (JSONB — cluster_size, has_photon, is_serverless, memory_gb, region, etc.), k8s_service_name (for DuckDB engines — the K8s Service the routing-service calls), catalog_id (FK to engine_catalog, nullable — NULL for manually registered engines), is_temporary (bool, default false — true for benchmark-created engines), benchmark_id (FK to benchmarks, nullable — which benchmark created this temporary engine), is_active (boolean), created_at, updated_at
+- `engine_preferences`: id, engine_id (FK to engines), preference_order (int), created_at — stores user-defined engine ordering for fallback routing when no ML model is available
+
+**DuckDB multi-config deployment model:**
+- Each DuckDB configuration (e.g., "2GB RAM", "8GB RAM", "16GB RAM") is a separate K8s Deployment + Service
+- Resource requests/limits on the Deployment spec control memory and CPU allocation
+- The routing-service calls the engine's `k8s_service_name` (e.g., `duckdb-worker-small:8080`, `duckdb-worker-large:8080`)
+- On managed K8s (EKS/GKE/AKS), Cluster Autoscaler detects unschedulable pods and provisions new nodes (2-5 min). Spot node pools with `minSize: 0` scale to zero when no large DuckDB pods are needed
+- On Minikube (local dev), only the default small config runs; large configs are not deployed
+
+**Databricks multi-warehouse model:**
+- Each SQL Warehouse is identified by its configuration (cluster size, Photon, serverless, region), not by workspace-specific ID
+- Engine configurations are portable across workspaces: benchmark results for one workspace apply to any warehouse with the same config
+- Users select which warehouses are active for routing in the Settings modal
+
+**Engine preference ordering:**
+- Users set a preference order for fallback routing (when no ML model is available and no hard rules match)
+- The preference order is stored in `engine_preferences` and editable in the Settings modal (drag-to-reorder or numbered list)
+
+**Implementation ordering:** Option C — the engines table is built with the first feature that needs it, not as a standalone task. Existing `engine_id` string references in `benchmark_engine_warmups`, `benchmark_results`, and `models.linked_engines` will be updated to FKs when the table lands.
+
+### ODQ-5: Routing logic restructure (hard rules → ML → fallback) — DECIDED
+
+**Decision (2026-03-15):** Layered 4-stage routing pipeline replacing the previous deterministic scoring approach:
+1. **Mandatory hard rules** (system-defined, `is_system = true`): engine-agnostic access constraints — e.g., "table not externally accessible → smallest enabled Databricks engine." Always applied regardless of routing mode.
+2. **User-defined hard rules** (configurable, restorable to defaults)
+3. **ML model prediction** (when a model is available for the engine set)
+4. **Fallback** to user-defined engine preference order, then DuckDB as ultimate default. No match never rejects a query.
+
+Per-query mode interaction: `smart` runs the full pipeline; `duckdb` and `databricks` apply mandatory rules first, then route to the chosen engine.
+
+**Schema:**
+- `routing_rules`: id (serial PK), priority (int), condition_type (text), condition_value (text), target_engine (text), is_system (bool), enabled (bool)
+- Mandatory rules seeded by migration, protected from user modification at API level
+- Specific mandatory rules deferred to implementation
+
+### ODQ-6: Web UI layout changes — DECIDED
+
+**Decision (2026-03-15):** Unity Catalog browser kept as left panel — navigates catalogs → schemas → tables, shows table metadata on click, quick action loads `SELECT * FROM catalog.schema.table LIMIT 100` into query editor. Batch operations on collections dropped — no "Run All" / "Run Selected" buttons; individual queries run from editor, batch execution done via benchmarks (ODQ-2). Right panel simplified to collection list and query list without checkboxes or selection order tracking. Edited query persistence is deferred/optimistic — edits held in memory with visual "modified" indicator, persisted only on explicit collection save, confirmation prompt on navigation with unsaved changes.
+
+### ODQ-7: Engine catalog & managed benchmark lifecycle — DECIDED
+
+**Decision (2026-03-15):** Predefined catalog of 6 engine configs: 3 Databricks Serverless (2X-Small, Medium, Large) and 3 DuckDB (2GB/2CPU, 8GB/4CPU, 16GB/8CPU). Catalog stored in `engine_catalog` PostgreSQL table, distinct from live `engines` table — describes what can be instantiated, not what currently exists. Predefined configs seeded by migration with `is_default = true`; users can add custom configs, defaults can be disabled but not deleted.
+
+**Benchmark lifecycle:** User selects configs from catalog → confirmation dialog with cost warning → temporary engines created in parallel → wait for ready (timeout 10min Databricks, 2min DuckDB) → warm-up probe → benchmark queries → cleanup all temporary engines. Partial failure: continue with remaining engines, report failures. Cold-start time stored in `benchmark_engine_warmups` (per-benchmark observation). Orphan protection via benchmark ID tags and TTL-based cleanup job.
+
+**Schema:**
+- `engine_catalog`: id (serial PK), engine_type (enum), display_name, config (JSONB), is_default (bool), enabled (bool), created_at, updated_at
+
+---
+
 ## Architecture
 
 ### Execution Engines
@@ -42,6 +144,7 @@ The routing algorithm that combines multiple decision factors:
 **DuckDB (Containerized)**
 - Purpose: Execute simple queries on small to medium datasets without governance constraints
 - Rationale: Extremely fast for OLAP queries on columnar data; native Delta Lake support; runs efficiently in single-node containers; 10-50x cheaper than warehouse for eligible queries
+- Multiple configurations supported: each DuckDB configuration (e.g., 2GB RAM, 8GB RAM, 16GB RAM) runs as a separate K8s Deployment with its own Service. The routing-service addresses each by its K8s Service name (stored in the `engines` table). Cluster Autoscaler provisions nodes on demand — if a large-memory pod can't be scheduled, the autoscaler adds a node from the configured node pool. In local dev (Minikube), only the small config runs; large configs are skipped
 - External access rules (determines which tables DuckDB can read):
   - EXTERNAL tables with `storage_location` → DuckDB reads directly from cloud storage
   - MANAGED tables with `HAS_DIRECT_EXTERNAL_ENGINE_READ_SUPPORT` → DuckDB reads via credential vending (read-only, short-lived cloud storage credentials)
@@ -92,9 +195,9 @@ The routing algorithm that combines multiple decision factors:
 - Purpose: REST API for query submission, routing decisions, and metrics retrieval
 - Rationale: Modern Python async framework; excellent performance; automatic OpenAPI documentation; easy integration with Databricks and DuckDB SDKs
 
-**Vanilla HTML + jQuery (Web UI)**
-- Purpose: Minimal single-page dashboard for system health, query submission, and observability
-- Rationale: Zero build step; no Node.js dependency; jQuery loaded from CDN; FastAPI serves a single index.html as a static file; setInterval + fetch for polling — simpler than any framework for this use case
+**React + TypeScript (Web UI)**
+- Purpose: Single-page application for system configuration, query submission, Unity Catalog browsing, collection management, and observability
+- Rationale: Vite build step produces static assets served by FastAPI; TypeScript provides type safety across the full UI specification; React component model maps cleanly to the multi-panel layout (TopBar, LeftPanel, CenterPanel, RightPanel, SettingsModal); Tailwind CSS + shadcn/ui (Radix primitives) for consistent component styling
 
 ### Credential Storage
 
@@ -132,6 +235,10 @@ This is sufficient for local development on Minikube where access is via port-fo
 - Purpose: Direct Delta Lake table access for DuckDB
 - Rationale: Enables DuckDB to read Delta tables without Spark; bindings to Rust Delta library; efficient columnar reads
 
+**scikit-learn**
+- Purpose: ML model training for routing predictions
+- Rationale: Lightweight, no GPU required, well-suited for tabular regression tasks; random forest multi-output regression predicts execution time and cost per engine from benchmark data; models serialized with joblib for storage and loading
+
 ### Observability
 
 **PostgreSQL-Based Metrics Store**
@@ -140,7 +247,7 @@ This is sufficient for local development on Minikube where access is via port-fo
 
 **Web UI Dashboard**
 - Purpose: Real-time visualization of cost savings, latency distributions, and routing accuracy
-- Rationale: Single-page vanilla HTML dashboard served by FastAPI; lightweight and sufficient for development and demos
+- Rationale: React SPA with Vite build output served as static files by FastAPI; component-based architecture supports the multi-panel layout
 
 ---
 
@@ -159,13 +266,13 @@ This is sufficient for local development on Minikube where access is via port-fo
 - Execute queries on chosen engine (DuckDB or Databricks)
 - Log all decisions and metrics to PostgreSQL
 
-**Tech Stack:** Python, FastAPI, sqlglot, databricks-sdk, deltalake-python, PostgreSQL client
+**Tech Stack:** Python, FastAPI, sqlglot, databricks-sdk, deltalake-python, scikit-learn, PostgreSQL client, kubernetes (Python client for K8s API — engine registration, DuckDB deployment management)
 
 ### web-ui (Dashboard)
 **Purpose:** Convenience interface for configuring the system, submitting queries, browsing Unity Catalog, managing query collections, and viewing results. The UI is not required — all functionality is exposed via the routing-service API for programmatic use by external services.  
-**Status:** System Health indicators deployed (Phase 5 vanilla HTML)
+**Status:** Phase 6 backend complete (auth, Databricks credentials, health). Frontend migrating from jQuery to React (Phase 7).
 
-**Architecture:** FastAPI backend (server.py) serves a single static index.html file. The frontend uses plain HTML, CSS, and jQuery (loaded from CDN). No build step, no Node.js, no framework. Everything lives on a single page.
+**Architecture:** FastAPI backend (server.py) serves Vite-built static assets (index.html + JS/CSS bundles in static/assets/). React source lives in web-ui/frontend/ (development only — not included in production image). The Dockerfile uses a multi-stage build: Node stage runs `npm run build` to produce static assets, Python stage copies the build output and runs FastAPI/uvicorn. Everything is a single-page React app.
 
 **Single-Page Layout:**
 
@@ -174,7 +281,7 @@ This is sufficient for local development on Minikube where access is via port-fo
 **Settings modal:**
 - Databricks connection: workspace URL + PAT, or workspace URL + client ID + client secret (service principal)
 - User enters credentials; backend validates them, writes to K8s Secret, reinitializes the SDK client
-- SQL Warehouse selector: after connecting, lists available warehouses; user selects which one to use
+- Engine management: after connecting, lists available SQL Warehouses and registered DuckDB configurations. User selects which engines are active for routing. Engine preference order (drag-to-reorder or numbered list) sets fallback priority when no ML model is available
 - Access requires admin login (see Authentication section)
 
 **Left panel — Unity Catalog Browser:**
@@ -193,40 +300,40 @@ This is sufficient for local development on Minikube where access is via port-fo
 **Right panel — Collections:**
 - List of saved collections. TPC-DS is a pre-built collection
 - Clicking a collection opens it: shows the collection name and its ordered list of queries (numbered sequentially)
-- Opening a collection sets the page-level routing mode toggle to the collection’s saved routing mode (user can change it freely)
-- Each query in the collection has a checkbox for selection
-- Clicking a query (not the checkbox) loads its SQL into the editor for viewing/editing/running
-- Selection order is tracked and displayed near the action buttons as "current selection: 3, 1, 7"
-- Action buttons on the collection:
-  - "Run All" — always available; runs all queries in default sequence using the current routing mode toggle
-  - "Run Selected" — enabled when ≥1 queries selected; runs them in selection order
-  - "Edit Query" — enabled when exactly 1 query selected; loads it in the editor for editing
-  - "Delete Query" / "Delete Selected" — with confirmation dialog
-- Saving a collection captures the current state of the routing mode toggle
+- Opening a collection does not change the page-level routing mode toggle — routing mode is independent of collections
+- Clicking a query loads its SQL into the editor for viewing/editing/running
+- Visual indicator shows when the editor contains a query from a collection; indicator changes to "modified" if the query is edited
+- Edits are held in memory — persisted only when the user explicitly saves the collection. Confirmation prompt if navigating away with unsaved changes
+- "Run Benchmark" button runs all queries on all available engines (see Benchmarks section)
+- "Delete Query" with confirmation dialog
+- Saving a collection persists its name, description, and ordered list of queries (no routing mode is saved)
 
-**Collection data model:**
-- A collection has: name, routing_mode (`duckdb` / `databricks` / `smart`), ordered list of queries
-- Each query in a collection stores: SQL text, sequence number
-- Routing mode is stored at the collection level, not per query
-- All queries — whether favorites or benchmarks — must belong to a collection. There are no standalone saved queries outside of collections. A "favorite" is simply a collection with one query.
-- Collections are stored in PostgreSQL
+**Collection data model:** See ODQ-1 for schema. Collections are purely groups of queries — no routing mode stored. All saved queries belong to a collection.
 
 **Query Log** (below results or as a collapsible section):
 - Recent query history table fetched from routing-service API
 - Shows engine, status, latency, cost per query
 
-**Tech Stack:** FastAPI (Python), HTML, CSS, jQuery (CDN)
+**Benchmarks** (accessible when a collection is open):
+- "Run Benchmark" button — runs all queries in the current collection on all available engines
+- Benchmark history list (sidebar or collapsible panel) showing past benchmark runs for the current collection
+- Clicking a benchmark run shows details: per-engine per-query results, warm-up times, and comparison across engines
+- Delete individual benchmark runs or "Delete All" (with confirmation) for the current collection
+
+**Tech Stack:** FastAPI (Python), React 18, TypeScript, Vite, Tailwind CSS, shadcn/ui (Radix primitives)
 
 ### benchmark-runner (Evaluation)
-**Purpose:** Execute query collections as benchmarks and measure routing performance  
+**Purpose:** Execute query collections as benchmarks across all available engines and measure comparative performance  
 **Status:** Not started  
 **Requirements:**
-- A benchmark run executes a collection (or a selection of queries within a collection) using the routing-service API
+- A benchmark runs all queries in a collection on all specified engines (SQL Warehouses + DuckDB instances)
+- Before running queries, a warm-up phase sends a probe query (`SELECT 1`) to each engine and records cold-start time in `benchmark_engine_warmups`
+- Once all engines are confirmed warm, benchmark queries execute and results are recorded per-engine per-query in `benchmark_results`
 - TPC-DS is a pre-built collection with 99 queries, loaded during data-populator setup
-- The routing mode for a benchmark run comes from the collection’s saved routing_mode (or the current page toggle if overridden by the user)
-- Measure and log latency, cost, and routing decision for every query
-- Generate comparison reports when the same collection is run with different routing modes
-- Triggered from the web-ui Collections panel or via API
+- Measure and log execution time, data scanned, and other metrics for every query on every engine
+- Engine identity uses the `engines` table: each engine has a unique string ID (e.g., `databricks:small-serverless`, `duckdb:8gb-ram`) with configuration metadata (ODQ-4)
+- Triggered from the web-ui collection panel (main page) or via API (`POST /api/benchmarks`)
+- Benchmark history is viewable per-collection: list of past runs with click-to-view details and delete capability
 - Depends on data-populator having completed successfully for TPC-DS collection
 
 **Tech Stack:** Python, databricks-sdk
@@ -284,7 +391,7 @@ infrastructure/
   terraform/
     prerequisites.md  # documents what must exist before terraform apply
     main.tf           # AKS cluster, resource groups, networking
-    databricks.tf     # new workspace, SQL Warehouse, schemas, governance rules
+    databricks.tf     # catalog, SQL Warehouse, schemas, service principal, permissions
     helm.tf           # helm_release resources for all charts
     variables.tf      # explicit inputs for all external dependencies
     outputs.tf
@@ -321,11 +428,11 @@ The routing-service is the single API backend. The web-ui proxies all calls thro
 - `GET /api/databricks/catalogs/{catalog}/schemas/{schema}/tables` — list tables with type and external access flags
 
 **Query execution:**
-- `POST /api/query` — submit SQL with `routing_mode` (duckdb / databricks / smart) and optional `routing_params`
+- `POST /api/query` — submit SQL with `routing_mode` (duckdb / databricks / smart). Routing pipeline is configured server-side (rules, ML model, preferences) — no per-query parameters.
 - `GET /api/query/{correlation_id}` — retrieve past query result and routing decision
 
 **Collections:**
-- `POST /api/collections` — create a collection (name, routing_mode, queries)
+- `POST /api/collections` — create a collection (name, description, queries)
 - `GET /api/collections` — list all collections
 - `GET /api/collections/{id}` — get collection with all queries
 - `PUT /api/collections/{id}` — update collection metadata
@@ -333,8 +440,51 @@ The routing-service is the single API backend. The web-ui proxies all calls thro
 - `POST /api/collections/{id}/queries` — add query to collection
 - `PUT /api/collections/{id}/queries/{query_id}` — update a query
 - `DELETE /api/collections/{id}/queries/{query_id}` — remove a query
-- `POST /api/collections/{id}/run` — run collection (all or selected queries, with routing_mode)
-- `GET /api/collections/runs/{run_id}` — poll run status and results
+
+**Benchmarks:**
+- `POST /api/benchmarks` — create and start a benchmark (collection_id, catalog_engine_ids). Temporary engines are created from selected catalog entries, benchmarked, then cleaned up.
+- `GET /api/benchmarks` — list all benchmarks (filterable by collection_id)
+- `GET /api/benchmarks/{id}` — get benchmark details, warmup results, and query results
+- `DELETE /api/benchmarks/{id}` — delete a benchmark and its results
+- `DELETE /api/benchmarks?collection_id={id}` — delete all benchmarks for a collection
+
+**ML Models:**
+- `POST /api/models/train` — trigger model training as K8s Job (from benchmark data for specified engine set)
+- `GET /api/models/train/{job_id}` — poll training job status
+- `GET /api/models` — list all trained models with validation metrics and activation status
+- `GET /api/models/{id}` — get model details (linked engines, metrics, feature importance)
+- `POST /api/models/{id}/activate` — activate a model for use in routing
+- `POST /api/models/{id}/deactivate` — deactivate a model
+- `DELETE /api/models/{id}` — delete a model
+- `GET /api/routing/settings` — get routing settings (including time/cost weight slider)
+- `PUT /api/routing/settings` — update routing settings (time/cost weights, etc.)
+
+**Routing Rules:**
+- `GET /api/routing/rules` — list all rules (system + user-defined), ordered by priority
+- `POST /api/routing/rules` — create a user-defined rule
+- `GET /api/routing/rules/{id}` — get a single rule
+- `PUT /api/routing/rules/{id}` — update a user-defined rule (403 if is_system)
+- `DELETE /api/routing/rules/{id}` — delete a user-defined rule (403 if is_system)
+- `PUT /api/routing/rules/{id}/toggle` — enable/disable any rule (including system rules)
+- `POST /api/routing/rules/reset` — delete all user-defined rules, re-seed system defaults
+
+**Engines:**
+- `GET /api/engines` — list all registered engines (active and inactive)
+- `POST /api/engines` — register a new engine (engine_type, display_name, config, k8s_service_name)
+- `GET /api/engines/{id}` — get engine details
+- `PUT /api/engines/{id}` — update engine configuration
+- `DELETE /api/engines/{id}` — deregister an engine
+- `PUT /api/engines/preferences` — set engine preference order (for fallback routing)
+- `GET /api/engines/preferences` — get current engine preference order
+
+**Engine Catalog:**
+- `GET /api/catalog/engines` — list all catalog entries (default + custom), filterable by engine_type and enabled
+- `POST /api/catalog/engines` — add a custom catalog entry
+- `GET /api/catalog/engines/{id}` — get a single catalog entry
+- `PUT /api/catalog/engines/{id}` — update a custom catalog entry (403 if is_default)
+- `DELETE /api/catalog/engines/{id}` — delete a custom catalog entry (403 if is_default)
+- `PUT /api/catalog/engines/{id}/toggle` — enable/disable any entry (including defaults)
+- `POST /api/catalog/engines/reset` — re-enable all defaults, delete all custom entries
 
 **Data ingestion:**
 - `POST /api/ingest/tpcds` — trigger TPC-DS data generation (configurable scale factor)
@@ -378,12 +528,13 @@ Deploying to managed Kubernetes (AKS) introduces three distinct auth boundaries 
 
 ## Development Phases
 
-- [x] **Phase 1 - Local Dev Environment:** Minikube cluster, FastAPI routing-service and Streamlit web-ui scaffolded, containerized with Docker using uv, deployed to Kubernetes with manifests, accessible via port-forward
-- [x] **Phase 2 - Supporting Infrastructure:** PostgreSQL deployed as StatefulSet with persistent storage and database schema (query_logs, routing_decisions, cost_metrics, table_metadata_cache); DuckDB worker built as FastAPI app and deployed; routing-service wired to both backends via ConfigMap; correlation_id/user_id schema migration applied; all 4 services running and verified in cluster
-- [x] **Phase 3 - Service Wiring & System Health:** Build web-ui System Health page with green/red indicators polling every 15 seconds; add web-ui ConfigMap with ROUTING_SERVICE_URL; rebuild and redeploy web-ui image. Deliverable: browser shows live health dashboard with all 4 services green.
-- [x] **Phase 4 - Migrate Web UI to React + FastAPI:** Replace Streamlit with Vite + React + TypeScript frontend served by FastAPI as static files. Implement full UI shell: left sidebar navigation, logo placeholder top-center, theme TBD. System Health page with five service indicators (Web UI, Routing Service, PostgreSQL, DuckDB Worker, Databricks), where Databricks shows a grey 'Not Configured' state until integrated. All other pages show [ COMING SOON ] placeholders. Remove Streamlit dependencies, update Dockerfile, redeploy. Deliverable: same System Health functionality as Phase 3 running in React, with the complete navigation shell in place for all future pages.
-- [x] **Phase 5 - Simplify Web UI to Vanilla HTML + jQuery:** Replace React + Vite frontend with a single static index.html using plain HTML, CSS, and jQuery (CDN). Remove frontend/ directory, Node.js dependency, and multi-stage Docker build. Revert to single-stage Python Dockerfile. Keep FastAPI server.py and /api/health/services endpoint unchanged. Implement System Health indicators as colored dots with plain text labels on a single page — no sidebar, no routing, no framework. Remove Node.js 20+ from dev prerequisites. Also includes pending fixes: add `collections` and `collection_queries` tables to PostgreSQL schema, update routing-service module status, fix data-populator trigger reference. Deliverable: same health indicator functionality as Phase 4, served from a single HTML file with no build step, plus schema and doc consistency fixes.
-- [ ] **Phase 6 - Databricks Integration & Settings UI:** Connect the system to Databricks so the 5th health indicator turns green and all downstream features (routing, catalog browsing, benchmarking) are unblocked. Admin authentication: create `admin-credentials` K8s Secret, add `POST /api/auth/login` endpoint with Bearer token validation middleware on protected routes. Databricks credentials API: implement `POST /api/settings/databricks` (save PAT or service principal credentials to `databricks-credentials` K8s Secret, validate with `w.current_user.me()`, initialize `WorkspaceClient`) and `GET /api/settings/databricks` (return connection status, never return credentials). RBAC: create ServiceAccount + Role + RoleBinding so routing-service can create/update Secrets in its namespace. Settings modal in web-ui: "Settings" link next to health indicators opens a modal with Databricks workspace URL + PAT fields, validation feedback, and SQL Warehouse selector dropdown after successful connection. Update `/health/backends` to check Databricks connectivity — Databricks dot transitions from grey "Not Configured" → green "Connected" or red "Error". SQL Warehouse selection: `GET /api/databricks/warehouses` lists available warehouses, `PUT /api/settings/warehouse` persists the selection. Rebuild and redeploy both routing-service and web-ui images. Deliverable: admin can log in, configure Databricks credentials via the UI, select a SQL Warehouse, and see all 5 health indicators functional.
+- [x] **Phase 1 - Local Dev Environment:** Minikube cluster, routing-service and web-ui scaffolded, containerized, deployed via K8s manifests
+- [x] **Phase 2 - Supporting Infrastructure:** PostgreSQL StatefulSet, DuckDB worker, backend wiring via ConfigMap, correlation_id schema
+- [x] **Phase 3 - Service Wiring & System Health:** Health indicators polling every 15s, web-ui ConfigMap
+- [x] **Phase 4 - React UI:** Superseded by Phase 5, then revived as Phase 7
+- [x] **Phase 5 - Vanilla HTML + jQuery UI:** Single index.html served by FastAPI, no build step, no Node.js. Superseded by Phase 7 React migration.
+- [~] **Phase 6 - Databricks Integration (backend only):** Backend complete (tasks 1-6), UI tasks cancelled (tasks 7-13) — jQuery UI work superseded by React migration. Completed: `databricks-sdk` and `kubernetes` dependencies, `admin-credentials` Secret + RBAC manifests, `POST /api/auth/login` with Bearer token middleware, `POST/GET /api/settings/databricks` with K8s Secret persistence, `/health/backends` Databricks status, web-ui proxy routes for auth/settings/warehouses. Not completed (carry forward to Phase 7): `GET /api/databricks/warehouses` and `PUT /api/settings/warehouse` routing-service endpoints, credential reload on startup, all UI components.
+- [ ] **Phase 7 - React Frontend & Remaining Phase 6 Backend:** Incorporate the Lovable-generated React prototype into web-ui. Set up Vite build pipeline with multi-stage Dockerfile. Replace mock API calls with real `fetch()` calls to the FastAPI proxy. Implement remaining backend endpoints: `GET /api/databricks/warehouses`, `PUT /api/settings/warehouse`, credential reload on startup. Deliver: login flow, Settings modal (Databricks connection + warehouse selector), health indicators, all wired to real backend. Unity Catalog browsing, query editor, collections, and benchmarks use mock data until their backend endpoints are built in later phases.
 
 ---
 
@@ -391,10 +542,11 @@ Deploying to managed Kubernetes (AKS) introduces three distinct auth boundaries 
 
 Small items that don't warrant their own phase but should be addressed. These are folded into the next active phase or handled as quick standalone tasks.
 
-- [x] **PostgreSQL schema: add collections tables.** The Phase 2 schema has `query_logs`, `routing_decisions`, `cost_metrics`, `table_metadata_cache`. Missing: `collections` (id, name, routing_mode, created_at) and `collection_queries` (id, collection_id FK, sequence, sql_text). Add via migration.
-- [x] **routing-service module status.** Currently says "Planning" but has been deployed since Phase 1 with `/health` and since Phase 2 with `/health/backends`. Update to reflect actual state.
-- [x] **data-populator trigger reference.** Still says "triggerable from the web-ui Operations page" but the Operations section was replaced by the Collections/Benchmark panel. Update wording.
-- [x] **Delete `docs/API_ENDPOINTS.md`.** Content consolidated into PROJECT.md. File can be removed.
+- [ ] **PostgreSQL schema: add engines table.** The `engines` table (id string PK, engine_type, display_name, config JSONB, k8s_service_name, catalog_id FK nullable, is_temporary bool, benchmark_id FK nullable, is_active, created_at, updated_at) does not yet exist in `routing-service/db/schema.sql`. Add via migration when the first feature needs it (benchmarks or multi-engine routing). Update `benchmark_engine_warmups.engine_id` and `benchmark_results.engine_id` to FK once table exists.
+- [ ] **PostgreSQL schema: add engine_preferences table.** The `engine_preferences` table (id, engine_id FK, preference_order int, created_at) does not yet exist. Stores user-defined engine ordering for fallback routing when no ML model is available. Add alongside the engines table.
+- [ ] **PostgreSQL schema: add routing_rules table.** The `routing_rules` table (id serial PK, priority int, condition_type text, condition_value text, target_engine text, is_system bool, enabled bool) does not yet exist. Mandatory rules seeded by migration with `is_system = true`. Add when implementing the routing pipeline (ODQ-5).
+- [ ] **PostgreSQL schema: add engine_catalog table.** The `engine_catalog` table (id serial PK, engine_type enum, display_name text, config JSONB, is_default bool, enabled bool, created_at, updated_at) does not yet exist. Predefined configs seeded by migration with `is_default = true`. Add when implementing the benchmark lifecycle (ODQ-7).
+- [ ] **Routing-service RBAC: extend to Deployments and Services.** The routing-service Role currently only covers Secrets. Extend to include `apiGroups: ["apps"]`, `resources: ["deployments"]`, `verbs: ["get", "create", "delete"]` and `apiGroups: [""]`, `resources: ["services"]`, `verbs: ["get", "create", "delete"]` for temporary DuckDB engine provisioning during benchmarks.
 
 ---
 
@@ -408,8 +560,8 @@ Small items that don't warrant their own phase but should be addressed. These ar
 **Modularity**
 - Separate concerns: parsing, metadata retrieval, routing decision, execution
 - Pluggable routing strategies (enable/disable features via configuration)
-- Per-query routing mode: every query carries a `routing_mode` field (`duckdb`, `databricks`, or `smart`) that overrides any global default
-- Smart Routing exposes tunable parameters (`routing_params`): `complexity_threshold` (float, default 5.0 — queries scoring above this go to Databricks), `max_table_size_bytes` (int, default 1GB — tables larger than this go to Databricks), `check_governance` (bool, default true — whether to check row-level security / column masking)
+- Page-level routing mode toggle: `duckdb` (mandatory rules + DuckDB), `databricks` (mandatory rules + Databricks), or `smart` (full 4-layer pipeline: mandatory rules → user rules → ML prediction → fallback)
+- Smart Routing uses a layered pipeline (ODQ-5): mandatory hard rules (engine-agnostic access constraints, always applied), user-defined hard rules, ML model prediction, then fallback to engine preference order. Rules stored in `routing_rules` table. Time/cost weights are user-configurable via routing settings.
 
 **Observability-First**
 - Log every routing decision with full context (inputs, scores, reasoning)
@@ -424,27 +576,4 @@ Small items that don't warrant their own phase but should be addressed. These ar
 
 ---
 
-## Decisions
 
-- **2025-02-13:** Using Task Master for task management with tags per module
-- **2025-02-13:** Single `.taskmaster` at project root, not per-module projects
-- **2025-02-13:** PROJECT.md consolidates all project knowledge (no separate architecture.md, modules/*.md for now)
-- **2025-02-13:** Development workflow: update PROJECT.md → generate PRD → task-master parse-prd → verify tasks.json
-- **2026-03-04:** Chose TPC-DS (SF=100) as the primary benchmark dataset — predefined 99-query set enables out-of-the-box benchmarking; DuckDB tpcds extension eliminates external data download
-- **2026-03-04:** data-populator runs as a Kubernetes Job triggered from the web-ui Operations page, not as a standalone script
-- **2026-03-04:** Web UI expanded to include System Health, Query Console, Live Logs, Observability Dashboard, Router Configuration, and Operations sections
-- **2026-03-05:** Adopted correlation_id (UUID) as the traceability mechanism across all services — generated at routing-service entry, passed to all backends, stored in query_logs alongside user_id. Backends are stateless with respect to users and sessions.
-- **2026-03-05:** IaC strategy: Terraform + Helm. Terraform owns cloud infrastructure and Helm releases; Helm owns in-cluster application resources. Single terraform apply deploys everything. Chosen over Terraform-only (poor fit for app deployment lifecycle) and Pulumi (less mature Databricks provider).
-- **2026-03-05:** Databricks IaC scope: reuse existing workspace and Unity Catalog metastore rather than provisioning from scratch. Terraform manages resources inside the existing workspace (catalog, schemas, SQL Warehouse, service principal, permissions) but does not create or modify the workspace or metastore. External dependencies provided as explicit input variables.
-- **2026-03-06:** Web UI communicates exclusively with the routing-service — it has no direct connections to PostgreSQL or DuckDB worker. Backend health and query results are always proxied through the routing-service API. This keeps the UI decoupled from backend topology changes.
-- **2026-03-07:** Decided to migrate web-ui from Streamlit to Vite + React + TypeScript served by FastAPI static files. Streamlit's execution model (full page rerun on every interaction) creates friction for interactive pages like Query Console and Live Logs. React gives full control over rendering, state, and polling without blocking constraints. UI theme TBD.
-- **2026-03-08:** Dev environment requires Node.js 20+ and npm in addition to existing prerequisites (Docker, Minikube, kubectl, Python 3.13+, uv). Node.js is only needed locally for React development — it is not present in the production container (multi-stage Docker build).
-- **2026-03-08:** Simplified web-ui from React + Vite + TypeScript to vanilla HTML + jQuery served by FastAPI. React was over-engineered for a dashboard that currently shows 5 health indicators. The new approach eliminates the Node.js dependency, the multi-stage Docker build, and the entire frontend/ directory. Auto-refresh polling (the original reason for leaving Streamlit) is trivially handled by setInterval + fetch in plain JavaScript. jQuery chosen for DOM manipulation convenience. All UI sections live on a single page — no sidebar navigation, no client-side routing.
-- **2026-03-08:** Dev environment no longer requires Node.js — removed as part of React-to-vanilla-HTML simplification. Prerequisites are now: Docker, Minikube, kubectl, Python 3.13+, uv.
-- **2026-03-08:** Databricks credentials stored in K8s Secret (`databricks-credentials`), written via routing-service API when user configures connection in the UI. Chosen over PostgreSQL (avoid secrets in DB) and config files on PVC (less elegant, harder to manage). Routing-service ServiceAccount needs RBAC to create/update Secrets.
-- **2026-03-08:** Routing mode is per-query, not global. Each query submission includes a `routing_mode` field: `duckdb` (force DuckDB), `databricks` (force Databricks), or `smart` (use routing algorithm). Benchmarks use the same mechanism — all 99 TPC-DS queries run with the same routing mode, and different modes can be compared by running the benchmark multiple times.
-- **2026-03-09:** Single admin login for local development. Username/password in K8s Secret (`admin-credentials`). Web-UI shows login form; routing-service API requires Bearer token. No user management, no roles. Cloud deployment auth (Azure AD, identity passthrough, managed identities) documented as Future Consideration but not in scope — it is substantial infrastructure plumbing that doesn't contribute to the core routing algorithm.
-- **2026-03-08:** UI is a convenience layer, not the primary interface. All functionality (query submission, routing, benchmarking, Databricks configuration, catalog browsing) is exposed via the routing-service REST API. External services can use the API directly without the web-ui.
-- **2026-03-09:** Introduced "collections" as the unified concept for saving and organizing queries. A collection is a named, ordered list of SQL queries with a routing mode (duckdb/databricks/smart) stored at the collection level. There are no standalone saved queries — all saved queries belong to a collection. A single-query collection serves as a "favorite." TPC-DS is a pre-built collection. Collections replace the separate "benchmark-runner" and "favorites" concepts. Benchmarking is just running a collection. Collections stored in PostgreSQL.
-- **2026-03-09:** Single-page UI layout. Everything on one page: top bar with health indicators + settings link, left panel for Unity Catalog browser, center for query editor + results, right panel for collections. No multi-page navigation, no sidebar routing. Settings is a modal dialog triggered by a link next to the health indicators.
-- **2026-03-09:** Routing mode is a page-level toggle (DuckDB / Databricks / Smart Router), not per-query. Opening a collection sets the toggle to the collection’s saved mode; the user can change it freely. Running a query or collection uses whatever the toggle currently shows. Saving a collection captures the current toggle state.
