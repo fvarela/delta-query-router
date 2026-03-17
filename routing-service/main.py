@@ -169,3 +169,12 @@ async def list_warehouses(username: str = Depends(verify_token)):
         ]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list warehouses: {e}")
+
+class WarehouseSelection(BaseModel):
+    warehouse_id: str
+
+@app.put("/api/settings/warehouse")
+async def save_warehouse(body: WarehouseSelection, username: str = Depends(verify_token)):
+    global _warehouse_id
+    _warehouse_id = body.warehouse_id
+    return {"warehouse_id": body.warehouse_id, "status": "saved"}
