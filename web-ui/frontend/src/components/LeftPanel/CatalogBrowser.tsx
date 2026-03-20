@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { mockApi } from "@/mocks/api";
-import { useAuth, useApp } from "@/contexts/AppContext";
+import { useApp } from "@/contexts/AppContext";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import type { CatalogInfo, SchemaInfo, TableInfo } from "@/types";
 import { ChevronRight, ChevronDown, Folder, Table2, Database } from "lucide-react";
@@ -15,8 +15,7 @@ const formatBytes = (b: number | null) => {
 const formatNumber = (n: number | null) => n == null ? "-" : n.toLocaleString();
 
 export const CatalogBrowser: React.FC = () => {
-  const { token } = useAuth();
-  const { isDatabricksConfigured, setEditorSql, setCollectionContext } = useApp();
+  const { connectedWorkspace, setEditorSql, setCollectionContext } = useApp();
   const [catalogs, setCatalogs] = useState<CatalogInfo[]>([]);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [schemas, setSchemas] = useState<Record<string, SchemaInfo[]>>({});
@@ -25,13 +24,16 @@ export const CatalogBrowser: React.FC = () => {
   const [selectedTable, setSelectedTable] = useState<TableInfo | null>(null);
 
   useEffect(() => {
-    if (!token || !isDatabricksConfigured) return;
+    if (!connectedWorkspace) {
+      setCatalogs([]);
+      return;
+    }
     setLoadingKeys(new Set(["catalogs"]));
-    mockApi.getCatalogs(token).then(c => {
+    mockApi.getCatalogs().then(c => {
       setCatalogs(c);
       setLoadingKeys(prev => { const n = new Set(prev); n.delete("catalogs"); return n; });
     });
-  }, [token, isDatabricksConfigured]);
+  }, [connectedWorkspace]);
 
   const toggleCatalog = async (catalog: string) => {
     const key = catalog;
@@ -39,9 +41,9 @@ export const CatalogBrowser: React.FC = () => {
       setExpanded(prev => ({ ...prev, [key]: false }));
       return;
     }
-    if (!schemas[catalog] && token) {
+    if (!schemas[catalog]) {
       setLoadingKeys(prev => new Set(prev).add(key));
-      const s = await mockApi.getSchemas(token, catalog);
+      const s = await mockApi.getSchemas(catalog);
       setSchemas(prev => ({ ...prev, [catalog]: s }));
       setLoadingKeys(prev => { const n = new Set(prev); n.delete(key); return n; });
     }
@@ -54,9 +56,9 @@ export const CatalogBrowser: React.FC = () => {
       setExpanded(prev => ({ ...prev, [key]: false }));
       return;
     }
-    if (!tables[key] && token) {
+    if (!tables[key]) {
       setLoadingKeys(prev => new Set(prev).add(key));
-      const t = await mockApi.getTables(token, catalog, schema);
+      const t = await mockApi.getTables(catalog, schema);
       setTables(prev => ({ ...prev, [key]: t }));
       setLoadingKeys(prev => { const n = new Set(prev); n.delete(key); return n; });
     }
@@ -72,17 +74,26 @@ export const CatalogBrowser: React.FC = () => {
     setCollectionContext(null);
   };
 
-  if (!isDatabricksConfigured) {
+  if (!connectedWorkspace) {
     return (
-      <div className="p-3 text-muted-foreground text-[12px]">
-        Connect to Databricks in Settings to browse catalogs.
+      <div className="flex flex-col h-full text-[12px]">
+        <div className="px-3 py-1.5 border-b border-panel-border flex items-center gap-1.5">
+          <Database size={14} className="text-primary" />
+          <span className="font-semibold text-foreground">Catalog Browser</span>
+        </div>
+        <div className="p-3 text-muted-foreground">
+          Connect to a workspace to browse catalogs.
+        </div>
       </div>
     );
   }
 
   return (
     <div className="flex flex-col h-full">
-      <div className="px-3 py-2 border-b border-panel-border text-[12px] font-semibold text-foreground">Unity Catalog</div>
+      <div className="px-3 py-1.5 border-b border-panel-border flex items-center gap-1.5 text-[12px]">
+        <Database size={14} className="text-primary" />
+        <span className="font-semibold text-foreground">Catalog Browser</span>
+      </div>
       <div className="flex-1 overflow-y-auto text-[12px]">
         {loadingKeys.has("catalogs") && <div className="p-3"><LoadingSpinner /></div>}
         {catalogs.map(cat => (

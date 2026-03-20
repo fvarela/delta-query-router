@@ -1,20 +1,13 @@
-export interface HealthStatus {
-  web_ui: { status: string; detail?: string };
-  routing_service: { status: string; detail?: string };
-  postgresql: { status: string; detail?: string };
-  duckdb_worker: { status: string; detail?: string };
-  databricks: { status: string; detail?: string };
+// --- Workspace ---
+export interface Workspace {
+  id: string;
+  name: string;
+  url: string;
+  token: string | null; // PAT — null means not yet entered
+  connected: boolean;
 }
 
-export interface LoginRequest {
-  username: string;
-  password: string;
-}
-
-export interface LoginResponse {
-  token: string;
-}
-
+// --- Databricks settings (kept for mock API compat) ---
 export interface DatabricksSettings {
   configured: boolean;
   host?: string;
@@ -39,6 +32,7 @@ export interface Warehouse {
   state: string;
 }
 
+// --- Collections & Queries ---
 export interface Collection {
   id: number;
   name: string;
@@ -58,6 +52,7 @@ export interface Query {
   sequence_number: number;
 }
 
+// --- Engine catalog ---
 export interface EngineCatalogEntry {
   id: number;
   engine_type: "databricks_sql" | "duckdb";
@@ -76,6 +71,7 @@ export interface EnginePreference {
   preference_order: number;
 }
 
+// --- Routing rules ---
 export interface RoutingRule {
   id: number;
   priority: number;
@@ -86,11 +82,19 @@ export interface RoutingRule {
   enabled: boolean;
 }
 
+// --- Routing settings ---
 export interface RoutingSettings {
   time_weight: number;
   cost_weight: number;
 }
 
+// --- Run mode ---
+export type RunMode = "single" | "multi";
+
+// --- Panel mode (Run vs Train) ---
+export type PanelMode = "run" | "train";
+
+// --- Query execution ---
 export interface QueryExecutionRequest {
   sql: string;
   routing_mode: "smart" | "duckdb" | "databricks";
@@ -115,6 +119,7 @@ export interface QueryExecutionResult {
   rows: any[][];
 }
 
+// --- Benchmarks ---
 export interface BenchmarkSummary {
   id: number;
   collection_id: number;
@@ -144,6 +149,7 @@ export interface BenchmarkResult {
   data_scanned_bytes: number;
 }
 
+// --- ML Models ---
 export interface Model {
   id: number;
   linked_engines: string[];
@@ -154,8 +160,10 @@ export interface Model {
   };
   is_active: boolean;
   created_at: string;
+  benchmark_count?: number;
 }
 
+// --- Unity Catalog ---
 export interface CatalogInfo {
   name: string;
 }
@@ -178,15 +186,30 @@ export interface TableInfo {
   columns: { name: string; type_text: string }[];
 }
 
+// --- Routing log (live pipeline events) ---
+export type RoutingLogLevel = "info" | "rule" | "decision" | "warn" | "error";
+
+export interface RoutingLogEvent {
+  timestamp: string; // HH:MM:SS.mmm
+  level: RoutingLogLevel;
+  stage: string; // e.g. "parse", "rules", "ml_model", "engine", "execute", "complete"
+  message: string;
+}
+
+// --- Query log ---
 export interface LogEntry {
   correlation_id: string;
   timestamp: string;
   query_text: string;
   engine: string;
   engine_display_name: string;
-  status: "success" | "error";
+  status: "running" | "success" | "error";
   latency_ms: number;
   cost_usd: number;
+  // Per-query detail data (populated after execution)
+  routing_decision?: QueryExecutionResult["routing_decision"];
+  routing_events?: RoutingLogEvent[];
 }
 
+// --- Kept for backwards compat but no longer used for routing toggle ---
 export type RoutingMode = "smart" | "duckdb" | "databricks";

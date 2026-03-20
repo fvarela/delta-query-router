@@ -95,11 +95,11 @@ The routing algorithm that combines multiple decision factors:
 **Databricks multi-warehouse model:**
 - Each SQL Warehouse is identified by its configuration (cluster size, Photon, serverless, region), not by workspace-specific ID
 - Engine configurations are portable across workspaces: benchmark results for one workspace apply to any warehouse with the same config
-- Users select which warehouses are active for routing in the Settings modal
+- Users select which warehouses are active for routing in the right panel Engines section
 
 **Engine preference ordering:**
 - Users set a preference order for fallback routing (when no ML model is available and no hard rules match)
-- The preference order is stored in `engine_preferences` and editable in the Settings modal (drag-to-reorder or numbered list)
+- The preference order is stored in `engine_preferences` and editable in the right panel Engines section (drag-to-reorder or numbered list)
 
 **Implementation ordering:** Option C — the engines table is built with the first feature that needs it, not as a standalone task. Existing `engine_id` string references in `benchmark_engine_warmups`, `benchmark_results`, and `models.linked_engines` will be updated to FKs when the table lands.
 
@@ -121,6 +121,26 @@ Per-query mode interaction: `smart` runs the full pipeline; `duckdb` and `databr
 ### ODQ-6: Web UI layout changes — DECIDED
 
 **Decision (2026-03-15):** Unity Catalog browser kept as left panel — navigates catalogs → schemas → tables, shows table metadata on click, quick action loads `SELECT * FROM catalog.schema.table LIMIT 100` into query editor. Batch operations on collections dropped — no "Run All" / "Run Selected" buttons; individual queries run from editor, batch execution done via benchmarks (ODQ-2). Right panel simplified to collection list and query list without checkboxes or selection order tracking. Edited query persistence is deferred/optimistic — edits held in memory with visual "modified" indicator, persisted only on explicit collection save, confirmation prompt on navigation with unsaved changes.
+
+### ODQ-8: UI restructuring — inline workspace and routing management — DECIDED
+
+**Decision (2026-03-19):** Major UI restructuring eliminating the Settings modal in favor of inline management panels. Key changes:
+
+1. **Workspaces moved to left panel.** Multiple Databricks workspaces can be added and managed (name, URL, PAT token) directly in the left panel above the Unity Catalog browser. Each workspace has connect/disconnect/delete actions. The catalog browser activates only when a workspace is connected.
+
+2. **Right panel split into two tabs: Routing and Collections.** The Routing tab contains all routing configuration inline (no modal): Engines, Run Mode, Rules, and ML Model sections stacked vertically. The Collections tab retains the collection list, query list, and benchmark functionality.
+
+3. **Run mode simplified to 2-state: Single Engine / Multi Engine.** Replaces the previous 3-state toggle (DuckDB / Databricks / Smart Router) that was planned for the center panel. In Single Engine mode, user selects one engine via radio buttons. In Multi Engine mode, user selects multiple engines via checkboxes, and the Rules + ML Model sections become visible for routing configuration.
+
+4. **Engines section shows contextual Databricks warning.** When no workspace is connected, only DuckDB engines are listed and a red message reads "Select a Databricks Workspace to enable Databricks Engines."
+
+5. **Rules section simplified.** Titled "Rules" (not "Hard Rules"). Shows only custom (non-system) rules in a 4-column table: Condition (table name / data size / table complexity), Comparator (greater than / less than / equal to), Value, Target Engine (DuckDB / Databricks). Add/delete via inline form. Only visible in Multi Engine mode.
+
+6. **ML Model section inline.** Shows trained models with radio-button activation, compatibility check against enabled engines, expandable details, and "Train New Model" button. Only visible in Multi Engine mode.
+
+7. **No Settings modal.** All configuration previously planned for a modal (Databricks connection, engine selection, warehouse selection) is now handled inline in the left panel (workspaces) and right panel (engines/routing).
+
+8. **No login flow / auth context in current frontend.** Authentication is deferred — the frontend currently operates without a login screen or Bearer token injection. Auth will be added when the frontend is wired to the real backend.
 
 ### ODQ-7: Engine catalog & managed benchmark lifecycle — DECIDED
 
@@ -270,55 +290,48 @@ This is sufficient for local development on Minikube where access is via port-fo
 
 ### web-ui (Dashboard)
 **Purpose:** Convenience interface for configuring the system, submitting queries, browsing Unity Catalog, managing query collections, and viewing results. The UI is not required — all functionality is exposed via the routing-service API for programmatic use by external services.  
-**Status:** Phase 6 backend complete (auth, Databricks credentials, health). Frontend migrating from jQuery to React (Phase 7).
+**Status:** Phase 6 backend complete (auth, Databricks credentials, health). React frontend implemented with mock data and extensively redesigned through iterative UX feedback sessions (right panel routing config, left panel workspaces, center panel query editor/results/history). Phase 7 UI redesign complete; wiring to real backend not yet started.
 
-**Architecture:** FastAPI backend (server.py) serves Vite-built static assets (index.html + JS/CSS bundles in static/assets/). React source lives in web-ui/frontend/ (development only — not included in production image). The Dockerfile uses a multi-stage build: Node stage runs `npm run build` to produce static assets, Python stage copies the build output and runs FastAPI/uvicorn. Everything is a single-page React app.
+**Architecture:** FastAPI backend (server.py) serves Vite-built static assets (index.html + JS/CSS bundles in static/assets/). React source lives in web-ui/frontend/ (development only — not included in production image). The Dockerfile uses a multi-stage build: Node stage runs `npm run build` to produce static assets, Python stage copies the build output and runs FastAPI/uvicorn. Everything is a single-page React app. The frontend currently runs entirely on mock data (src/mocks/api.ts) — no real HTTP calls to the backend yet.
 
 **Single-Page Layout:**
 
-**Top bar:** Health indicators (colored dots: green/red/grey) for Web UI, Routing Service, PostgreSQL, DuckDB Worker, Databricks. Databricks shows grey 'Not Configured' until credentials are saved. Polls /api/health/services every 15 seconds. A "Settings" text link/button sits next to the health indicators and opens a modal dialog.
+**Top bar:** "Delta Router" header. Health indicators and Settings modal are not yet implemented — deferred per ODQ-8.
 
-**Settings modal:**
-- Databricks connection: workspace URL + PAT, or workspace URL + client ID + client secret (service principal)
-- User enters credentials; backend validates them, writes to K8s Secret, reinitializes the SDK client
-- Engine management: after connecting, lists available SQL Warehouses and registered DuckDB configurations. User selects which engines are active for routing. Engine preference order (drag-to-reorder or numbered list) sets fallback priority when no ML model is available
-- Access requires admin login (see Authentication section)
+**Left panel — Workspaces + Unity Catalog Browser (20% width):**
+- **Workspaces section (top):** Compact workspace rows — each shows name, URL, and status. PAT token management via a Key icon button that opens a modal with password input (show/hide toggle), Save/Cancel. Connect/disconnect and delete actions per workspace. Status shows "No token", "Token set — ready to connect", or "Connected". Add new workspaces via inline form (name + URL).
+- **Catalog Browser (below workspaces):** Headed with "Catalog Browser" title and blue Database icon. Tree navigation: catalogs → schemas → tables. Clicking a table shows its details (type, format, size, external access flags, columns). "Load Sample Query" button populates editor with `SELECT * FROM catalog.schema.table LIMIT 100`. Color indicator shows which tables DuckDB can read (green) vs not (amber). Only active when a workspace is connected — otherwise shows "Connect to a workspace to browse catalogs."
 
-**Left panel — Unity Catalog Browser:**
-- Tree navigation: catalogs → schemas → tables
-- Clicking a table shows its details (type, format, size, external access flags, columns if available)
-- "Load sample query" button populates the editor with `SELECT * FROM catalog.schema.table LIMIT 1`
-- Indicates which tables DuckDB can read (external engine flags) vs which must go to Databricks
+**Center panel — Query Editor + Results + Query History (50% width):**
+- **Query Editor (fixed top):** SQL textarea for writing and editing queries. "Run" button to execute the current query (disabled when no query entered).
+- **Results area (fixed, non-scrollable):** Shows execution metrics (engine, latency, cost, rows) and a data table limited to 10 rows maximum. No routing decision details here — those live in the query detail modal.
+- **Query History (scrollable, takes remaining space):** The only scrollable area in the center panel. Sticky table header. Rows show timestamp, query preview, engine, status badge, latency, and cost. Completed rows are clickable (`cursor-pointer` + hover highlight); running rows are not clickable. No "Details" button column.
+- **Query Detail Modal:** Opens when clicking a completed history row. Contains: header with full query text + close button (X), summary row (timestamp, engine, status badge, latency, cost), Routing Decision in a grid layout (Engine, Stage, Reason, Complexity), and a Routing Log in dark terminal-style display showing color-coded streaming events by level (info/rule/decision/warn/error) and stage ([PARSE]/[RULES]/[ML]/[ENGINE]/[EXEC]/[DONE]). Closes on backdrop click, close button, or Escape key.
 
-**Center — Query Editor:**
-- SQL textarea for writing and editing queries
-- Routing mode toggle above the textarea: three-state selector (DuckDB / Databricks / Smart Router). This is a page-level setting — it applies to whatever query or collection is run next
-- "Run" button to execute the current query
-- "Add to Collection" button — enabled when the editor contains a query not in the currently open collection; lets the user pick an existing collection or create a new one
-- Results area below the editor: routing decision trace (engine chosen, complexity score, reason), execution time, estimated cost / cost savings
+**Right panel — Routing + Collections (30% width):**
+Two tabs: **Routing** and **Queries & Benchmarks** (renamed from "Collections").
 
-**Right panel — Collections:**
-- List of saved collections. TPC-DS is a pre-built collection
-- Clicking a collection opens it: shows the collection name and its ordered list of queries (numbered sequentially)
-- Opening a collection does not change the page-level routing mode toggle — routing mode is independent of collections
-- Clicking a query loads its SQL into the editor for viewing/editing/running
-- Visual indicator shows when the editor contains a query from a collection; indicator changes to "modified" if the query is edited
-- Edits are held in memory — persisted only when the user explicitly saves the collection. Confirmation prompt if navigating away with unsaved changes
-- "Run Benchmark" button runs all queries on all available engines (see Benchmarks section)
-- "Delete Query" with confirmation dialog
-- Saving a collection persists its name, description, and ordered list of queries (no routing mode is saved)
+*Routing tab:*
+- **Passive routing mode indicator:** Shows "Direct" (single engine) or "Smart Routing" (multiple engines) based on how many engines are enabled — no toggle button.
+- **Workflow visualization:** Pipeline graphic showing Query → Rules → ML Model → Engine, illustrating the routing stages.
+- **Rules section:** Titled "Rules" with a count header showing active rules. Simplified inline display with a modal for full rule management (add/edit/delete, move up/down priority). Only visible when Smart Routing is active.
+- **ML Models section:** Count header showing compatible models. Radio-button activation with compatibility check against enabled engines. "Train New Model..." subtle link opens a 3-step train wizard panel (select collection → configure → review & train). Only visible when Smart Routing is active.
+- **Engines section:** Table layout with columns: checkbox | Type icon | Engine name | Specs summary. Always checkboxes (no radio buttons). Databricks engines show a subtle indicator and are hidden when no workspace is connected. Single engine triggers "Direct" mode; multiple engines trigger "Smart Routing" mode. Empty state message when only one engine is enabled.
+
+*Queries & Benchmarks tab (renamed from Collections):*
+- "Query Collections" header with explanatory text
+- Collection items with query counts
+- Clicking opens collection detail with ordered query list
+- Benchmark functionality per collection
 
 **Collection data model:** See ODQ-1 for schema. Collections are purely groups of queries — no routing mode stored. All saved queries belong to a collection.
 
-**Query Log** (below results or as a collapsible section):
-- Recent query history table fetched from routing-service API
-- Shows engine, status, latency, cost per query
+**Benchmarks** (accessible when a collection is open in the Collections tab):
+- "Run Benchmark" button with progress stages (Provisioning engines → Warming up → Running queries → Cleaning up → Complete)
+- Benchmark history list showing past runs per collection
+- Clicking a benchmark shows details: warm-up times per engine, results matrix (queries × engines) with color highlighting for best/worst times
 
-**Benchmarks** (accessible when a collection is open):
-- "Run Benchmark" button — runs all queries in the current collection on all available engines
-- Benchmark history list (sidebar or collapsible panel) showing past benchmark runs for the current collection
-- Clicking a benchmark run shows details: per-engine per-query results, warm-up times, and comparison across engines
-- Delete individual benchmark runs or "Delete All" (with confirmation) for the current collection
+**State management:** Global AppContext provides: editor state (SQL, results, collection context), workspaces (list + connected workspace), engines (catalog entries, enabled IDs), routing mode (derived from engine count — Direct vs Smart Routing), models (list + active model ID), query history (with per-query routing events and decisions), panel mode (run/train for the right panel train wizard). All data loaded from mock API on mount.
 
 **Tech Stack:** FastAPI (Python), React 18, TypeScript, Vite, Tailwind CSS, shadcn/ui (Radix primitives)
 
@@ -534,7 +547,7 @@ Deploying to managed Kubernetes (AKS) introduces three distinct auth boundaries 
 - [x] **Phase 4 - React UI:** Superseded by Phase 5, then revived as Phase 7
 - [x] **Phase 5 - Vanilla HTML + jQuery UI:** Single index.html served by FastAPI, no build step, no Node.js. Superseded by Phase 7 React migration.
 - [~] **Phase 6 - Databricks Integration (backend only):** Backend complete (tasks 1-6), UI tasks cancelled (tasks 7-13) — jQuery UI work superseded by React migration. Completed: `databricks-sdk` and `kubernetes` dependencies, `admin-credentials` Secret + RBAC manifests, `POST /api/auth/login` with Bearer token middleware, `POST/GET /api/settings/databricks` with K8s Secret persistence, `/health/backends` Databricks status, web-ui proxy routes for auth/settings/warehouses. Not completed (carry forward to Phase 7): `GET /api/databricks/warehouses` and `PUT /api/settings/warehouse` routing-service endpoints, credential reload on startup, all UI components.
-- [ ] **Phase 7 - React Frontend & Remaining Phase 6 Backend:** Incorporate the Lovable-generated React prototype into web-ui. Set up Vite build pipeline with multi-stage Dockerfile. Replace mock API calls with real `fetch()` calls to the FastAPI proxy. Implement remaining backend endpoints: `GET /api/databricks/warehouses`, `PUT /api/settings/warehouse`, credential reload on startup. Deliver: login flow, Settings modal (Databricks connection + warehouse selector), health indicators, all wired to real backend. Unity Catalog browsing, query editor, collections, and benchmarks use mock data until their backend endpoints are built in later phases.
+- [~] **Phase 7 - React Frontend & Remaining Phase 6 Backend:** React prototype incorporated into web-ui with Vite build pipeline and multi-stage Dockerfile (done). UI restructured per ODQ-8: workspaces in left panel, routing config in right panel Routing tab, collections in right panel Collections tab. Extensive UI redesign completed based on iterative UX feedback (right panel, left panel, center panel — see web-ui module for details). All frontend features use mock data (`src/mocks/api.ts`). Remaining: wire mock API calls to real backend endpoints via fetch wrapper with auth header injection, credential reload on startup, minikube E2E deploy. See taskmaster phase7 tag for detailed task breakdown.
 
 ---
 
@@ -560,7 +573,7 @@ Small items that don't warrant their own phase but should be addressed. These ar
 **Modularity**
 - Separate concerns: parsing, metadata retrieval, routing decision, execution
 - Pluggable routing strategies (enable/disable features via configuration)
-- Page-level routing mode toggle: `duckdb` (mandatory rules + DuckDB), `databricks` (mandatory rules + Databricks), or `smart` (full 4-layer pipeline: mandatory rules → user rules → ML prediction → fallback)
+- Run mode toggle in right panel: `single` (one engine selected, query always runs there) or `multi` (multiple engines enabled, routing pipeline decides). In multi mode, the full 4-layer pipeline applies: mandatory hard rules → user-defined rules → ML prediction → fallback to engine preference order. The backend routing API still accepts `routing_mode` (duckdb / databricks / smart) per query for programmatic use.
 - Smart Routing uses a layered pipeline (ODQ-5): mandatory hard rules (engine-agnostic access constraints, always applied), user-defined hard rules, ML model prediction, then fallback to engine preference order. Rules stored in `routing_rules` table. Time/cost weights are user-configurable via routing settings.
 
 **Observability-First**

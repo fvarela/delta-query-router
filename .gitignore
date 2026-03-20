@@ -49,6 +49,10 @@ Thumbs.db
 # Binaries
 minikube-linux-amd64
 
+# Screenshots (dev artifacts)
+*.png
+screenshots/
+
 # AI tooling and workflow files
 .taskmaster/
 CLAUDE.md

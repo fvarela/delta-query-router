@@ -1,16 +1,100 @@
 import React, { useState, useEffect } from "react";
 import { mockApi } from "@/mocks/api";
-import { useAuth, useApp } from "@/contexts/AppContext";
+import { useApp } from "@/contexts/AppContext";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { StatusBadge } from "@/components/shared/StatusBadge";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
+import { EnginesTable } from "./EnginesTable";
+import { RunModeSelector } from "./RunModeSelector";
+import { HardRules } from "./HardRules";
+import { MLModelSelector } from "./MLModelSelector";
+import { TrainModePanel } from "./TrainModePanel";
 import type { Collection, CollectionWithQueries, BenchmarkSummary, BenchmarkDetail } from "@/types";
-import { ArrowLeft, Plus, Trash2, X } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, X, ChevronDown, ChevronRight, Zap } from "lucide-react";
 
 export const RightPanel: React.FC = () => {
-  const { token } = useAuth();
+  const { runMode, panelMode, setPanelMode, enabledEngineIds, engines, connectedWorkspace } = useApp();
+  const [view, setView] = useState<"routing" | "collections">("routing");
+
+  // Count only visible enabled engines (Databricks hidden when no workspace)
+  const visibleEnabledCount = engines.filter(e => {
+    if (!enabledEngineIds.has(e.id)) return false;
+    if (e.engine_type === "databricks_sql" && !connectedWorkspace) return false;
+    return true;
+  }).length;
+
+  // If in train mode, show the train panel instead of normal routing
+  if (panelMode === "train") {
+    return (
+      <div className="flex flex-col h-full overflow-hidden">
+        <TrainModePanel />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col h-full overflow-hidden">
+      {/* View tabs */}
+      <div className="flex border-b border-panel-border shrink-0">
+        <button
+          onClick={() => setView("routing")}
+          className={`flex-1 px-3 py-1.5 text-[12px] font-medium ${view === "routing" ? "border-b-2 border-primary text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+        >
+          Routing
+        </button>
+        <button
+          onClick={() => setView("collections")}
+          className={`flex-1 px-3 py-1.5 text-[12px] font-medium ${view === "collections" ? "border-b-2 border-primary text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+        >
+          Queries &amp; Benchmarks
+        </button>
+      </div>
+
+      {view === "routing" ? (
+        <div className="flex-1 overflow-y-auto">
+          <EnginesTable />
+          <div className="border-t border-panel-border" />
+          <RunModeSelector />
+          {runMode === "multi" ? (
+            <>
+              <div className="border-t border-panel-border" />
+              <HardRules />
+              <div className="border-t border-panel-border" />
+              <MLModelSelector />
+            </>
+          ) : (
+            <div className="px-3 py-3 text-[11px] text-muted-foreground">
+              {visibleEnabledCount === 0 ? (
+                <p>Select at least one engine to enable query routing.</p>
+              ) : (
+                <p>All queries will be sent directly to the selected engine. Select two or more engines to enable Smart Routing with rules and ML-based decisions.</p>
+              )}
+            </div>
+          )}
+
+          {/* Train Mode link — visually secondary */}
+          <div className="border-t border-panel-border" />
+          <div className="px-3 py-2">
+            <button
+              onClick={() => setPanelMode("train")}
+              className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <Zap size={11} className="text-amber-500/70" />
+              <span>Train New Model...</span>
+            </button>
+          </div>
+        </div>
+      ) : (
+        <CollectionsView />
+      )}
+    </div>
+  );
+};
+
+// ---- Collections sub-view (moved from old RightPanel) ----
+const CollectionsView: React.FC = () => {
   const { setEditorSql, setCollectionContext, refreshCollections } = useApp();
-  const [collections, setCollections] = useState<Collection[]>([]);
+  const [collections, setCollections] = useState<CollectionWithQueries[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeCollection, setActiveCollection] = useState<CollectionWithQueries | null>(null);
   const [showCreate, setShowCreate] = useState(false);
@@ -27,34 +111,37 @@ export const RightPanel: React.FC = () => {
   const [benchmarkStage, setBenchmarkStage] = useState("");
 
   useEffect(() => {
-    if (!token) return;
     setLoading(true);
-    mockApi.getCollections(token).then(c => { setCollections(c); setLoading(false); });
-  }, [token, refreshCollections]);
+    // Load full collection data (with queries) so we can show counts in the list
+    mockApi.getCollections().then(async (cols) => {
+      const full = await Promise.all(cols.map(c => mockApi.getCollection(c.id)));
+      setCollections(full);
+      setLoading(false);
+    });
+  }, [refreshCollections]);
 
   const openCollection = async (id: number) => {
-    if (!token) return;
-    const c = await mockApi.getCollection(token, id);
+    const c = await mockApi.getCollection(id);
     setActiveCollection(c);
     setSelectedQueryId(null);
-    const b = await mockApi.getBenchmarks(token, id);
+    const b = await mockApi.getBenchmarks(id);
     setBenchmarks(b);
     setBenchmarkDetail(null);
   };
 
   const handleCreate = async () => {
-    if (!token || !newName) return;
-    await mockApi.createCollection(token, newName, newDesc);
-    const c = await mockApi.getCollections(token);
-    setCollections(c);
+    if (!newName) return;
+    const created = await mockApi.createCollection(newName, newDesc);
+    const full = await mockApi.getCollection(created.id);
+    setCollections(prev => [...prev, full]);
     setShowCreate(false);
     setNewName("");
     setNewDesc("");
   };
 
   const handleDeleteCollection = async () => {
-    if (!token || deleteCollectionId === null) return;
-    await mockApi.deleteCollection(token, deleteCollectionId);
+    if (deleteCollectionId === null) return;
+    await mockApi.deleteCollection(deleteCollectionId);
     setCollections(prev => prev.filter(c => c.id !== deleteCollectionId));
     if (activeCollection?.id === deleteCollectionId) setActiveCollection(null);
     setDeleteCollectionId(null);
@@ -71,31 +158,30 @@ export const RightPanel: React.FC = () => {
   };
 
   const handleDeleteQuery = async () => {
-    if (!token || !activeCollection || deleteQueryId === null) return;
-    await mockApi.deleteQuery(token, activeCollection.id, deleteQueryId);
-    const c = await mockApi.getCollection(token, activeCollection.id);
+    if (!activeCollection || deleteQueryId === null) return;
+    await mockApi.deleteQuery(activeCollection.id, deleteQueryId);
+    const c = await mockApi.getCollection(activeCollection.id);
     setActiveCollection(c);
     setDeleteQueryId(null);
   };
 
   const handleRunBenchmark = async () => {
-    if (!token || !activeCollection) return;
+    if (!activeCollection) return;
     setRunningBenchmark(true);
     const stages = ["Provisioning engines...", "Warming up engines...", "Running queries...", "Cleaning up temporary engines...", "Complete"];
     for (const stage of stages) {
       setBenchmarkStage(stage);
       await new Promise(r => setTimeout(r, 2000));
     }
-    await mockApi.createBenchmark(token, activeCollection.id, [1, 4, 5]);
-    const b = await mockApi.getBenchmarks(token, activeCollection.id);
+    await mockApi.createBenchmark(activeCollection.id, [1, 4, 5]);
+    const b = await mockApi.getBenchmarks(activeCollection.id);
     setBenchmarks(b);
     setRunningBenchmark(false);
     setBenchmarkStage("");
   };
 
   const openBenchmarkDetail = async (id: number) => {
-    if (!token) return;
-    const d = await mockApi.getBenchmark(token, id);
+    const d = await mockApi.getBenchmark(id);
     setBenchmarkDetail(d);
   };
 
@@ -249,8 +335,12 @@ export const RightPanel: React.FC = () => {
   return (
     <div className="flex flex-col h-full text-[12px]">
       <div className="px-3 py-2 border-b border-panel-border flex items-center justify-between">
-        <span className="font-semibold text-foreground">Collections</span>
+        <span className="font-semibold text-foreground">Query Collections</span>
         <button onClick={() => setShowCreate(true)} className="text-primary hover:text-primary/80"><Plus size={14} /></button>
+      </div>
+
+      <div className="px-3 py-2 text-[10px] text-muted-foreground border-b border-border">
+        Group queries into collections, then run benchmarks to measure engine performance. Benchmark data is used to train ML routing models.
       </div>
 
       {showCreate && (
@@ -269,9 +359,15 @@ export const RightPanel: React.FC = () => {
           <button
             key={c.id}
             onClick={() => openCollection(c.id)}
-            className="flex items-center justify-between w-full px-3 py-2 hover:bg-muted text-left border-b border-border"
+            className="flex flex-col w-full px-3 py-2 hover:bg-muted text-left border-b border-border gap-0.5"
           >
-            <span className="text-foreground">{c.name}</span>
+            <div className="flex items-center justify-between w-full">
+              <span className="text-foreground font-medium">{c.name}</span>
+              <span className="text-[10px] text-muted-foreground">{c.queries.length} queries</span>
+            </div>
+            {c.description && (
+              <span className="text-[10px] text-muted-foreground truncate">{c.description}</span>
+            )}
           </button>
         ))}
       </div>

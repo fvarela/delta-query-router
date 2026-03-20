@@ -1,69 +1,102 @@
-import React, { useState } from "react";
-import { useApp, useAuth } from "@/contexts/AppContext";
+import React, { useState, useCallback, useEffect, useRef } from "react";
+import { useApp } from "@/contexts/AppContext";
 import { mockApi } from "@/mocks/api";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { StatusBadge } from "@/components/shared/StatusBadge";
-import type { QueryExecutionResult } from "@/types";
-import { Play, ChevronDown, ChevronRight } from "lucide-react";
+import type { QueryExecutionResult, RoutingLogEvent, LogEntry } from "@/types";
+import { Play, Clock, Terminal, Info, X } from "lucide-react";
+
+/* ── colour helpers ── */
+
+const levelColor: Record<string, string> = {
+  info: "text-muted-foreground",
+  rule: "text-status-success",
+  decision: "text-primary",
+  warn: "text-status-warning",
+  error: "text-status-error",
+};
+const levelLabel: Record<string, string> = {
+  info: "INFO", rule: "RULE", decision: "ROUTE", warn: "WARN", error: "ERROR",
+};
+const stageLabel: Record<string, string> = {
+  parse: "PARSE", rules: "RULES", ml_model: "ML", engine: "ENGINE", execute: "EXEC", complete: "DONE",
+};
+const latencyColor = (ms: number) => {
+  if (ms < 100) return "text-status-success";
+  if (ms < 500) return "text-status-warning";
+  return "text-status-error";
+};
+
+/* ── main component ── */
 
 export const CenterPanel: React.FC = () => {
-  const { token } = useAuth();
-  const { editorSql, setEditorSql, routingMode, queryResult, setQueryResult, collectionContext } = useApp();
+  const { editorSql, setEditorSql, runMode, singleEngineId, engines, queryResult, setQueryResult, collectionContext } = useApp();
   const [executing, setExecuting] = useState(false);
-  const [logOpen, setLogOpen] = useState(false);
-  const [logs, setLogs] = useState<any[]>([]);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
   const [logFilter, setLogFilter] = useState("all");
-  const [logsLoading, setLogsLoading] = useState(false);
-  const [resultOpen, setResultOpen] = useState(true);
+  const [modalEntry, setModalEntry] = useState<LogEntry | null>(null);
+  // Track live routing events for the currently executing query
+  const [liveEvents, setLiveEvents] = useState<RoutingLogEvent[]>([]);
+  const [liveCorrelationId, setLiveCorrelationId] = useState<string | null>(null);
+
+  const isModified = collectionContext && editorSql !== collectionContext.originalSql;
+
+  /* load query history */
+  const loadLogs = useCallback(async () => {
+    const l = await mockApi.getQueryLogs(logFilter === "all" ? undefined : logFilter);
+    setLogs(l);
+  }, [logFilter]);
+
+  // Load history on mount and when filter changes
+  useEffect(() => { loadLogs(); }, [loadLogs]);
+
+  const handleLogEvent = useCallback((event: RoutingLogEvent) => {
+    setLiveEvents(prev => [...prev, event]);
+  }, []);
 
   const handleRun = async () => {
-    if (!token || !editorSql.trim()) return;
+    if (!editorSql.trim()) return;
     setExecuting(true);
+    setLiveEvents([]);
+    setModalEntry(null);
     try {
-      const result = await mockApi.executeQuery(token, editorSql, routingMode);
+      let routingMode = "smart";
+      if (runMode === "single" && singleEngineId !== null) {
+        const engine = engines.find(e => e.id === singleEngineId);
+        if (engine) routingMode = engine.engine_type === "duckdb" ? "duckdb" : "databricks";
+      }
+
+      const resultPromise = mockApi.executeQuery(editorSql, routingMode, handleLogEvent);
+      // Small delay then refresh to pick up the "running" entry
+      setTimeout(() => loadLogs(), 50);
+
+      const result = await resultPromise;
       setQueryResult(result);
+      setLiveCorrelationId(result.correlation_id);
     } catch {
       // ignore
     } finally {
       setExecuting(false);
+      loadLogs();
     }
   };
 
-  const loadLogs = async () => {
-    if (!token) return;
-    setLogsLoading(true);
-    const l = await mockApi.getQueryLogs(token, logFilter === "all" ? undefined : logFilter);
-    setLogs(l);
-    setLogsLoading(false);
-  };
+  // Poll logs while executing to show live status updates
+  useEffect(() => {
+    if (!executing) return;
+    const interval = setInterval(() => loadLogs(), 300);
+    return () => clearInterval(interval);
+  }, [executing, loadLogs]);
 
-  const toggleLog = () => {
-    const next = !logOpen;
-    setLogOpen(next);
-    if (next) loadLogs();
-  };
-
-  const handleLogFilterChange = async (f: string) => {
-    setLogFilter(f);
-    if (!token || !logOpen) return;
-    setLogsLoading(true);
-    const l = await mockApi.getQueryLogs(token, f === "all" ? undefined : f);
-    setLogs(l);
-    setLogsLoading(false);
-  };
-
-  const isModified = collectionContext && editorSql !== collectionContext.originalSql;
-
-  const latencyColor = (ms: number) => {
-    if (ms < 100) return "text-status-success";
-    if (ms < 500) return "text-status-warning";
-    return "text-status-error";
+  const handleRowClick = (entry: LogEntry) => {
+    if (entry.status === "running") return;
+    setModalEntry(entry);
   };
 
   return (
     <div className="flex flex-col h-full">
-      {/* Editor */}
-      <div className="flex-shrink-0 border-b border-panel-border">
+      {/* ── Query Editor (fixed) ── */}
+      <div className="shrink-0 border-b border-panel-border">
         <textarea
           value={editorSql}
           onChange={e => setEditorSql(e.target.value)}
@@ -73,7 +106,7 @@ export const CenterPanel: React.FC = () => {
         />
       </div>
 
-      {/* Action bar */}
+      {/* ── Action bar (fixed) ── */}
       <div className="flex items-center gap-2 px-3 py-1.5 border-b border-panel-border bg-card shrink-0">
         <button
           onClick={handleRun}
@@ -91,108 +124,123 @@ export const CenterPanel: React.FC = () => {
         )}
       </div>
 
-      {/* Results */}
-      <div className="flex-1 overflow-y-auto">
+      {/* ── Results area (fixed, non-scrollable, max 10 rows) ── */}
+      <div className="shrink-0">
         {!queryResult && !executing && (
-          <div className="flex items-center justify-center h-full text-muted-foreground text-[13px]">
+          <div className="flex items-center justify-center h-24 text-muted-foreground text-[13px]">
             Run a query to see results here.
           </div>
         )}
-        {executing && (
-          <div className="flex items-center justify-center h-32">
+        {executing && !queryResult && (
+          <div className="flex items-center justify-center h-20">
             <LoadingSpinner size={24} />
           </div>
         )}
-        {queryResult && !executing && <ResultsView result={queryResult} resultOpen={resultOpen} setResultOpen={setResultOpen} latencyColor={latencyColor} />}
+        {queryResult && <ResultsView result={queryResult} />}
       </div>
 
-      {/* Query Log */}
-      <div className="border-t border-panel-border shrink-0">
-        <button onClick={toggleLog} className="flex items-center gap-1 w-full px-3 py-1.5 text-[12px] font-semibold text-foreground hover:bg-muted">
-          {logOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-          Query Log
-        </button>
-        {logOpen && (
-          <div className="max-h-48 overflow-y-auto border-t border-border">
-            <div className="px-3 py-1">
-              <select value={logFilter} onChange={e => handleLogFilterChange(e.target.value)} className="text-[11px] border border-border rounded px-1.5 py-0.5 bg-background text-foreground">
-                <option value="all">All Engines</option>
-                <option value="duckdb">DuckDB</option>
-                <option value="databricks">Databricks</option>
-              </select>
-            </div>
-            {logsLoading ? (
-              <div className="p-3"><LoadingSpinner /></div>
-            ) : (
-              <table className="w-full text-[11px]">
-                <thead>
-                  <tr className="bg-muted">
-                    <th className="text-left px-2 py-1 border-b border-border">Timestamp</th>
-                    <th className="text-left px-2 py-1 border-b border-border">Query</th>
-                    <th className="text-left px-2 py-1 border-b border-border">Engine</th>
-                    <th className="text-center px-2 py-1 border-b border-border">Status</th>
-                    <th className="text-right px-2 py-1 border-b border-border">Latency</th>
-                    <th className="text-right px-2 py-1 border-b border-border">Cost</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {logs.map((l, i) => (
-                    <tr key={l.correlation_id} className={i % 2 ? "bg-card" : ""}>
-                      <td className="px-2 py-1 border-b border-border whitespace-nowrap text-muted-foreground">{l.timestamp}</td>
-                      <td className="px-2 py-1 border-b border-border max-w-[200px] truncate font-mono text-foreground">{l.query_text.slice(0, 60)}</td>
-                      <td className="px-2 py-1 border-b border-border whitespace-nowrap text-foreground">{l.engine_display_name}</td>
-                      <td className="px-2 py-1 border-b border-border text-center">
-                        <StatusBadge variant={l.status === "success" ? "success" : "error"}>{l.status === "success" ? "Success" : "Error"}</StatusBadge>
-                      </td>
-                      <td className={`px-2 py-1 border-b border-border text-right ${latencyColor(l.latency_ms)}`}>{l.latency_ms}ms</td>
-                      <td className="px-2 py-1 border-b border-border text-right text-foreground">${l.cost_usd.toFixed(4)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        )}
+      {/* ── Query History (scrollable, takes remaining space) ── */}
+      <div className="flex-1 min-h-0 flex flex-col border-t border-panel-border">
+        <div className="flex items-center gap-2 px-3 py-1.5 bg-card shrink-0">
+          <Clock size={12} className="text-muted-foreground" />
+          <span className="text-[12px] font-semibold text-foreground">Query History</span>
+          <select
+            value={logFilter}
+            onChange={e => { setLogFilter(e.target.value); }}
+            className="ml-auto text-[11px] border border-border rounded px-1.5 py-0.5 bg-background text-foreground"
+          >
+            <option value="all">All Engines</option>
+            <option value="duckdb">DuckDB</option>
+            <option value="databricks">Databricks</option>
+          </select>
+        </div>
+        <div className="flex-1 min-h-0 overflow-y-auto border-t border-border">
+          <table className="w-full text-[11px]">
+            <thead className="sticky top-0 z-10">
+              <tr className="bg-muted">
+                <th className="text-left px-2 py-1 border-b border-border">Time</th>
+                <th className="text-left px-2 py-1 border-b border-border">Query</th>
+                <th className="text-left px-2 py-1 border-b border-border">Engine</th>
+                <th className="text-center px-2 py-1 border-b border-border">Status</th>
+                <th className="text-right px-2 py-1 border-b border-border">Latency</th>
+                <th className="text-right px-2 py-1 border-b border-border">Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {logs.map((l, i) => (
+                <tr
+                  key={l.correlation_id}
+                  onClick={() => handleRowClick(l)}
+                  className={`${i % 2 ? "bg-card" : ""} ${l.status !== "running" ? "cursor-pointer hover:bg-primary/5" : ""}`}
+                >
+                  <td className="px-2 py-1 border-b border-border whitespace-nowrap text-muted-foreground">
+                    {l.timestamp.slice(11, 19) || l.timestamp}
+                  </td>
+                  <td className="px-2 py-1 border-b border-border max-w-[200px] truncate font-mono text-foreground">
+                    {l.query_text.slice(0, 60)}
+                  </td>
+                  <td className="px-2 py-1 border-b border-border whitespace-nowrap text-foreground">
+                    {l.status === "running" ? <span className="text-muted-foreground italic">routing...</span> : l.engine_display_name}
+                  </td>
+                  <td className="px-2 py-1 border-b border-border text-center">
+                    {l.status === "running" ? (
+                      <span className="inline-flex items-center gap-1 text-primary text-[10px] font-medium">
+                        <LoadingSpinner size={10} /> Running
+                      </span>
+                    ) : (
+                      <StatusBadge variant={l.status === "success" ? "success" : "error"}>
+                        {l.status === "success" ? "Success" : "Error"}
+                      </StatusBadge>
+                    )}
+                  </td>
+                  <td className={`px-2 py-1 border-b border-border text-right ${l.status === "running" ? "text-muted-foreground" : latencyColor(l.latency_ms)}`}>
+                    {l.status === "running" ? "—" : `${l.latency_ms}ms`}
+                  </td>
+                  <td className="px-2 py-1 border-b border-border text-right text-foreground">
+                    {l.status === "running" ? "—" : `$${l.cost_usd.toFixed(4)}`}
+                  </td>
+                </tr>
+              ))}
+              {logs.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-3 py-4 text-center text-muted-foreground text-[12px]">
+                    No queries yet. Run a query to see history here.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
+
+      {/* ── Query Detail Modal ── */}
+      {modalEntry && (
+        <QueryDetailModal
+          entry={modalEntry}
+          liveEvents={modalEntry.correlation_id === liveCorrelationId ? liveEvents : undefined}
+          onClose={() => setModalEntry(null)}
+        />
+      )}
     </div>
   );
 };
 
-const ResultsView: React.FC<{
-  result: QueryExecutionResult;
-  resultOpen: boolean;
-  setResultOpen: (b: boolean) => void;
-  latencyColor: (ms: number) => string;
-}> = ({ result, resultOpen, setResultOpen, latencyColor }) => (
-  <div className="p-3 space-y-3">
-    {/* Routing Decision */}
-    <div>
-      <button onClick={() => setResultOpen(!resultOpen)} className="flex items-center gap-1 text-[12px] font-semibold text-foreground">
-        {resultOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-        Routing Decision
-      </button>
-      {resultOpen && (
-        <div className="mt-1 pl-4 space-y-1 text-[12px]">
-          <p><span className="text-muted-foreground">Engine:</span> <StatusBadge variant={result.routing_decision.engine.startsWith("duckdb") ? "success" : "info"}>{result.routing_decision.engine_display_name}</StatusBadge></p>
-          <p><span className="text-muted-foreground">Stage:</span> <span className="text-foreground">{result.routing_decision.stage.replace(/_/g, " ")}</span></p>
-          <p><span className="text-muted-foreground">Reason:</span> <span className="text-foreground">{result.routing_decision.reason}</span></p>
-          <p><span className="text-muted-foreground">Complexity:</span> <span className="text-foreground">{result.routing_decision.complexity_score}</span></p>
-        </div>
-      )}
-    </div>
+/* ── Results View (metrics + data table, non-scrollable, max 10 rows) ── */
 
+const ResultsView: React.FC<{ result: QueryExecutionResult }> = ({ result }) => (
+  <div className="p-3 space-y-2">
     {/* Metrics */}
     <div className="flex gap-4 text-[12px]">
-      <span className={latencyColor(result.execution.execution_time_ms)}>⏱ {result.execution.execution_time_ms}ms</span>
-      <span className="text-foreground">📊 {(result.execution.data_scanned_bytes / 1024 / 1024).toFixed(1)} MB</span>
-      <span className="text-foreground">💰 ${result.execution.estimated_cost_usd.toFixed(4)}</span>
+      <span className={latencyColor(result.execution.execution_time_ms)}>Time: {result.execution.execution_time_ms}ms</span>
+      <span className="text-foreground">Scanned: {(result.execution.data_scanned_bytes / 1024 / 1024).toFixed(1)} MB</span>
+      <span className="text-foreground">Cost: ${result.execution.estimated_cost_usd.toFixed(4)}</span>
       {result.execution.cost_savings_usd > 0 && (
-        <span className="text-status-success">💚 ${result.execution.cost_savings_usd.toFixed(4)} saved</span>
+        <span className="text-status-success">Saved: ${result.execution.cost_savings_usd.toFixed(4)}</span>
       )}
     </div>
 
-    {/* Results Table */}
-    <div className="overflow-auto border border-border rounded">
+    {/* Results Table (max 10 rows, no scroll) */}
+    <div className="border border-border rounded">
       <table className="w-full text-[11px]">
         <thead>
           <tr className="bg-muted">
@@ -202,7 +250,7 @@ const ResultsView: React.FC<{
           </tr>
         </thead>
         <tbody>
-          {result.rows.map((row, i) => (
+          {result.rows.slice(0, 10).map((row, i) => (
             <tr key={i} className={i % 2 ? "bg-card" : ""}>
               {row.map((cell, j) => (
                 <td key={j} className="px-2 py-1 border-b border-border font-mono text-foreground">{String(cell)}</td>
@@ -212,6 +260,124 @@ const ResultsView: React.FC<{
         </tbody>
       </table>
     </div>
-    <p className="text-[11px] text-muted-foreground">Showing {result.rows.length} rows</p>
+    <p className="text-[11px] text-muted-foreground">
+      Showing {Math.min(result.rows.length, 10)} of {result.rows.length} rows
+    </p>
   </div>
 );
+
+/* ── Query Detail Modal ── */
+
+const QueryDetailModal: React.FC<{
+  entry: LogEntry;
+  liveEvents?: RoutingLogEvent[];
+  onClose: () => void;
+}> = ({ entry, liveEvents, onClose }) => {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const events = liveEvents || entry.routing_events || [];
+  const decision = entry.routing_decision;
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [events.length]);
+
+  // Close on Escape
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      {/* Backdrop */}
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+
+      {/* Modal */}
+      <div className="relative bg-card border border-border rounded-lg shadow-xl w-[700px] max-w-[90vw] max-h-[80vh] flex flex-col">
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+          <div>
+            <h3 className="text-[13px] font-semibold text-foreground">Query Details</h3>
+            <p className="text-[11px] text-muted-foreground font-mono mt-0.5 max-w-[550px] truncate">
+              {entry.query_text}
+            </p>
+          </div>
+          <button onClick={onClose} className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground">
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Summary row */}
+        <div className="flex items-center gap-4 px-4 py-2 border-b border-border text-[11px] shrink-0">
+          <span className="text-muted-foreground">{entry.timestamp}</span>
+          <span className="text-foreground">{entry.engine_display_name}</span>
+          <StatusBadge variant={entry.status === "success" ? "success" : "error"}>
+            {entry.status === "success" ? "Success" : "Error"}
+          </StatusBadge>
+          <span className={latencyColor(entry.latency_ms)}>{entry.latency_ms}ms</span>
+          <span className="text-foreground">${entry.cost_usd.toFixed(4)}</span>
+        </div>
+
+        {/* Scrollable content */}
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          {/* Routing Decision */}
+          {decision && (
+            <div className="px-4 py-3 border-b border-border">
+              <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground mb-2">
+                <Info size={11} />
+                <span className="font-semibold">Routing Decision</span>
+              </div>
+              <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
+                <span className="text-muted-foreground">Engine</span>
+                <span><StatusBadge variant={decision.engine.startsWith("duckdb") ? "success" : "info"}>{decision.engine_display_name}</StatusBadge></span>
+                <span className="text-muted-foreground">Stage</span>
+                <span className="text-foreground">{decision.stage.replace(/_/g, " ")}</span>
+                <span className="text-muted-foreground">Reason</span>
+                <span className="text-foreground">{decision.reason}</span>
+                <span className="text-muted-foreground">Complexity</span>
+                <span className="text-foreground">{decision.complexity_score}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Routing Log */}
+          {events.length > 0 && (
+            <div className="bg-[#1a1a2e]">
+              <div className="flex items-center gap-1.5 px-4 py-1.5 border-b border-white/10">
+                <Terminal size={11} className="text-primary" />
+                <span className="text-[11px] font-semibold text-[#888]">Routing Log</span>
+                <span className="text-[10px] text-[#666]">({events.length} events)</span>
+              </div>
+              <div ref={scrollRef} className="p-3 font-mono text-[11px] leading-relaxed">
+                {events.map((ev, i) => (
+                  <div key={i} className="flex gap-2 py-px hover:bg-white/5">
+                    <span className="text-[#666] shrink-0 select-none">{ev.timestamp}</span>
+                    <span className={`shrink-0 w-[42px] text-right font-semibold ${levelColor[ev.level] || "text-muted-foreground"}`}>
+                      {levelLabel[ev.level] || ev.level}
+                    </span>
+                    <span className="shrink-0 w-[48px] text-[#888]">
+                      [{stageLabel[ev.stage] || ev.stage}]
+                    </span>
+                    <span className={`${ev.level === "decision" ? "text-primary font-semibold" : ev.level === "rule" ? "text-status-success" : ev.level === "warn" ? "text-status-warning" : ev.level === "error" ? "text-status-error" : "text-[#ccc]"}`}>
+                      {ev.message}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* No detail available */}
+          {!decision && events.length === 0 && (
+            <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">
+              No routing details available for this query.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
