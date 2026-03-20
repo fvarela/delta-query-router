@@ -25,7 +25,7 @@ let nextCollectionId = 3;
 let nextQueryId = 100;
 let nextRuleId = 100;
 let nextModelId = 3;
-let nextBenchmarkId = 2;
+let nextBenchmarkId = 4;
 let nextWorkspaceId = 3;
 
 let workspaces: Workspace[] = [
@@ -113,6 +113,32 @@ let benchmarks: BenchmarkDetail[] = [
       { engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", query_id: 5, execution_time_ms: 30, data_scanned_bytes: 800000 },
       { engine_id: "databricks:serverless-2xs", engine_display_name: "Serverless 2X-Small", query_id: 5, execution_time_ms: 160, data_scanned_bytes: 800000 },
       { engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", query_id: 5, execution_time_ms: 25, data_scanned_bytes: 800000 },
+    ],
+  },
+  {
+    id: 2, collection_id: 2, status: "complete", engine_count: 2, created_at: "2026-03-15T14:30:00Z", updated_at: "2026-03-15T14:33:00Z",
+    warmups: [
+      { engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", cold_start_time_ms: 110, started_at: "2026-03-15T14:30:00Z" },
+      { engine_id: "databricks:serverless-2xs", engine_display_name: "Serverless 2X-Small", cold_start_time_ms: 2100, started_at: "2026-03-15T14:30:00Z" },
+    ],
+    results: [
+      { engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", query_id: 6, execution_time_ms: 55, data_scanned_bytes: 2400000 },
+      { engine_id: "databricks:serverless-2xs", engine_display_name: "Serverless 2X-Small", query_id: 6, execution_time_ms: 210, data_scanned_bytes: 2400000 },
+      { engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", query_id: 7, execution_time_ms: 38, data_scanned_bytes: 1800000 },
+      { engine_id: "databricks:serverless-2xs", engine_display_name: "Serverless 2X-Small", query_id: 7, execution_time_ms: 165, data_scanned_bytes: 1800000 },
+    ],
+  },
+  {
+    id: 3, collection_id: 1, status: "complete", engine_count: 2, created_at: "2026-03-16T11:00:00Z", updated_at: "2026-03-16T11:04:00Z",
+    warmups: [
+      { engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", cold_start_time_ms: 150, started_at: "2026-03-16T11:00:00Z" },
+      { engine_id: "databricks:serverless-2xs", engine_display_name: "Serverless 2X-Small", cold_start_time_ms: 2250, started_at: "2026-03-16T11:00:00Z" },
+    ],
+    results: [
+      { engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", query_id: 1, execution_time_ms: 35, data_scanned_bytes: 1200000 },
+      { engine_id: "databricks:serverless-2xs", engine_display_name: "Serverless 2X-Small", query_id: 1, execution_time_ms: 175, data_scanned_bytes: 1200000 },
+      { engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", query_id: 2, execution_time_ms: 420, data_scanned_bytes: 52000000 },
+      { engine_id: "databricks:serverless-2xs", engine_display_name: "Serverless 2X-Small", query_id: 2, execution_time_ms: 310, data_scanned_bytes: 52000000 },
     ],
   },
 ];
@@ -395,9 +421,10 @@ export const mockApi = {
   },
 
   // Benchmarks
-  async getBenchmarks(collectionId: number): Promise<BenchmarkSummary[]> {
+  async getBenchmarks(collectionId?: number): Promise<BenchmarkSummary[]> {
     await delay(200);
-    return benchmarks.filter(b => b.collection_id === collectionId).map(({ warmups: _w, results: _r, ...rest }) => rest);
+    const filtered = collectionId != null ? benchmarks.filter(b => b.collection_id === collectionId) : benchmarks;
+    return filtered.map(({ warmups: _w, results: _r, ...rest }) => rest);
   },
 
   async getBenchmark(id: number): Promise<BenchmarkDetail> {
@@ -500,14 +527,16 @@ export const mockApi = {
     return JSON.parse(JSON.stringify(models));
   },
 
-  async trainModel(enabledEngineIds: string[]): Promise<Model> {
+  async trainModel(enabledEngineIds: string[], _trainingConfig?: { collections?: { id: number; runs: number }[]; benchmarkIds?: number[] }): Promise<Model> {
     await delay(3000);
+    const benchmarkCount = (_trainingConfig?.benchmarkIds?.length ?? 0) +
+      (_trainingConfig?.collections?.reduce((sum, c) => sum + c.runs, 0) ?? 1);
     const m: Model = {
       id: nextModelId++, linked_engines: [...enabledEngineIds],
       model_path: `/models/model_${String(nextModelId - 1).padStart(3, "0")}.joblib`,
       accuracy_metrics: { r_squared: 0.82 + Math.random() * 0.1, mae_ms: 30 + Math.floor(Math.random() * 30) },
       is_active: false, created_at: new Date().toISOString(),
-      benchmark_count: 5 + Math.floor(Math.random() * 15),
+      benchmark_count: benchmarkCount,
     };
     models.push(m);
     return JSON.parse(JSON.stringify(m));

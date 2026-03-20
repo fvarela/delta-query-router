@@ -315,7 +315,7 @@ Two tabs: **Routing** and **Queries & Benchmarks** (renamed from "Collections").
 - **Passive routing mode indicator:** Shows "Direct" (single engine) or "Smart Routing" (multiple engines) based on how many engines are enabled — no toggle button.
 - **Workflow visualization:** Pipeline graphic showing Query → Rules → ML Model → Engine, illustrating the routing stages.
 - **Rules section:** Titled "Rules" with a count header showing active rules. Simplified inline display with a modal for full rule management (add/edit/delete, move up/down priority). Only visible when Smart Routing is active.
-- **ML Models section:** Count header showing compatible models. Radio-button activation with compatibility check against enabled engines. "Train New Model..." subtle link opens a 3-step train wizard panel (select collection → configure → review & train). Only visible when Smart Routing is active.
+- **ML Models section:** Count header showing compatible models. Radio-button activation with compatibility check against enabled engines. Delete button (trash icon) per model for lifecycle management. "Train New Model..." subtle link opens a 4-step train wizard panel. Only visible when Smart Routing is active.
 - **Engines section:** Table layout with columns: checkbox | Type icon | Engine name | Specs summary. Always checkboxes (no radio buttons). Databricks engines show a subtle indicator and are hidden when no workspace is connected. Single engine triggers "Direct" mode; multiple engines trigger "Smart Routing" mode. Empty state message when only one engine is enabled.
 
 *Queries & Benchmarks tab (renamed from Collections):*
@@ -330,6 +330,15 @@ Two tabs: **Routing** and **Queries & Benchmarks** (renamed from "Collections").
 - "Run Benchmark" button with progress stages (Provisioning engines → Warming up → Running queries → Cleaning up → Complete)
 - Benchmark history list showing past runs per collection
 - Clicking a benchmark shows details: warm-up times per engine, results matrix (queries × engines) with color highlighting for best/worst times
+
+**Train wizard** (opens from "Train New Model..." link in ML Models section):
+- **Step 1 — Select Engines:** Checkbox table of all engines (same as Routing tab engines). At least 2 required. Databricks engines provisioned ephemerally if no workspace connected.
+- **Step 2 — Select Query Collections:** Multi-select checkboxes (none, one, or many). Each selected collection has a configurable run count (1–10) via +/- stepper. Summary shows total collections and total runs.
+- **Step 3 — Include Past Benchmarks:** Checkbox list of all completed historical benchmark runs across all collections. Each shows collection name, run ID, date, and engine count. Optional — enriches training data with known-good historical results.
+- **Step 4 — Existing Models:** Read-only reference showing current models with compatibility status against selected engines.
+- **Training action:** Summary of total training data sources (new runs + historical benchmarks). "Start Training" button requires >= 2 engines and >= 1 data source (either new runs or past benchmarks). Progress stages: Provisioning → Running benchmarks → Loading historical data → Collecting metrics → Training → Validating.
+
+**Model lifecycle:** Models can be activated (radio), deactivated, expanded for details, and deleted (trash icon). Deleting an active model deactivates it first.
 
 **State management:** Global AppContext provides: editor state (SQL, results, collection context), workspaces (list + connected workspace), engines (catalog entries, enabled IDs), routing mode (derived from engine count — Direct vs Smart Routing), models (list + active model ID), query history (with per-query routing events and decisions), panel mode (run/train for the right panel train wizard). All data loaded from mock API on mount.
 
