@@ -4,7 +4,7 @@ import { mockApi } from "@/mocks/api";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { StatusBadge } from "@/components/shared/StatusBadge";
 import type { QueryExecutionResult, RoutingLogEvent, LogEntry } from "@/types";
-import { Play, Clock, Terminal, Info, X } from "lucide-react";
+import { Play, Clock, Terminal, Info, X, FolderPlus } from "lucide-react";
 
 /* ── colour helpers ── */
 
@@ -30,7 +30,7 @@ const latencyColor = (ms: number) => {
 /* ── main component ── */
 
 export const CenterPanel: React.FC = () => {
-  const { editorSql, setEditorSql, runMode, singleEngineId, engines, queryResult, setQueryResult, collectionContext } = useApp();
+  const { editorSql, setEditorSql, runMode, singleEngineId, engines, queryResult, setQueryResult, collectionContext, activeCollectionId, triggerRefreshCollections } = useApp();
   const [executing, setExecuting] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [logFilter, setLogFilter] = useState("all");
@@ -40,6 +40,23 @@ export const CenterPanel: React.FC = () => {
   const [liveCorrelationId, setLiveCorrelationId] = useState<string | null>(null);
 
   const isModified = collectionContext && editorSql !== collectionContext.originalSql;
+
+  // "Add to Collection" state
+  const [addingToCollection, setAddingToCollection] = useState(false);
+  const [addedConfirm, setAddedConfirm] = useState(false);
+
+  const handleAddToCollection = async () => {
+    if (!activeCollectionId || !editorSql.trim()) return;
+    setAddingToCollection(true);
+    try {
+      await mockApi.addQuery(activeCollectionId, editorSql.trim());
+      triggerRefreshCollections();
+      setAddedConfirm(true);
+      setTimeout(() => setAddedConfirm(false), 2000);
+    } finally {
+      setAddingToCollection(false);
+    }
+  };
 
   /* load query history */
   const loadLogs = useCallback(async () => {
@@ -121,6 +138,17 @@ export const CenterPanel: React.FC = () => {
             From: {collectionContext.collectionName} / {collectionContext.queryLabel}
             {isModified && " (Modified)"}
           </span>
+        )}
+        {/* Add to Collection button — visible when a collection is open and editor has content */}
+        {activeCollectionId && editorSql.trim() && (
+          <button
+            onClick={handleAddToCollection}
+            disabled={addingToCollection}
+            className="flex items-center gap-1 ml-auto px-3 py-1.5 border border-border rounded-md text-[11px] font-medium text-foreground hover:bg-muted disabled:opacity-50"
+          >
+            <FolderPlus size={12} />
+            {addedConfirm ? "Added!" : "Add to Collection"}
+          </button>
         )}
       </div>
 

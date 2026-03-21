@@ -14,6 +14,10 @@ interface AppContextType {
   refreshCollections: number;
   triggerRefreshCollections: () => void;
 
+  // Active collection (set by CollectionsPanel when a collection is open)
+  activeCollectionId: number | null;
+  setActiveCollectionId: (id: number | null) => void;
+
   // Workspaces
   workspaces: Workspace[];
   setWorkspaces: (ws: Workspace[]) => void;
@@ -64,6 +68,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [collectionContext, setCollectionContext] = useState<{ collectionName: string; queryLabel: string; originalSql: string } | null>(null);
   const [refreshCollections, setRefresh] = useState(0);
   const triggerRefreshCollections = useCallback(() => setRefresh(p => p + 1), []);
+  const [activeCollectionId, setActiveCollectionId] = useState<number | null>(null);
 
   // Workspaces
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -184,6 +189,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       editorSql, setEditorSql, queryResult, setQueryResult,
       collectionContext, setCollectionContext,
       refreshCollections, triggerRefreshCollections,
+      activeCollectionId, setActiveCollectionId,
       workspaces, setWorkspaces, connectedWorkspace, reloadWorkspaces,
       engines, reloadEngines, enabledEngineIds, toggleEngineEnabled, setAllEnginesEnabled,
       singleEngineId, setSingleEngineId,

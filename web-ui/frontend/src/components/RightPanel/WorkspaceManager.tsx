@@ -1,12 +1,13 @@
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { useApp } from "@/contexts/AppContext";
 import { mockApi } from "@/mocks/api";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
-import { Plug, Unplug, Trash2, Plus, Eye, EyeOff, Key } from "lucide-react";
+import { Plug, Unplug, Trash2, Plus, Eye, EyeOff, Key, ChevronDown } from "lucide-react";
 
 export const WorkspaceManager: React.FC = () => {
   const { workspaces, reloadWorkspaces, connectedWorkspace } = useApp();
+  const [open, setOpen] = useState(false);
   const [connecting, setConnecting] = useState<string | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
@@ -17,6 +18,17 @@ export const WorkspaceManager: React.FC = () => {
   const [tokenModalId, setTokenModalId] = useState<string | null>(null);
   const [tokenInput, setTokenInput] = useState("");
   const [showTokenText, setShowTokenText] = useState(false);
+
+  // Close dropdown on click outside
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
 
   const openTokenModal = (id: string) => {
     setTokenModalId(id);
@@ -38,7 +50,7 @@ export const WorkspaceManager: React.FC = () => {
       await mockApi.connectWorkspace(id);
       await reloadWorkspaces();
     } catch {
-      // token missing — ignore
+      // token missing
     } finally {
       setConnecting(null);
     }
@@ -68,74 +80,92 @@ export const WorkspaceManager: React.FC = () => {
   const tokenModalWs = tokenModalId ? workspaces.find(w => w.id === tokenModalId) : null;
 
   return (
-    <div className="text-[12px]">
-      <div className="px-3 py-1.5 border-b border-panel-border flex items-center justify-between">
+    <div ref={wrapperRef} className="text-[12px] relative">
+      {/* ── Compact header bar ── */}
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full px-3 py-1.5 flex items-center gap-2 hover:bg-muted/50 transition-colors"
+      >
+        {/* Status dot */}
+        <span className={`w-2 h-2 rounded-full shrink-0 ${connectedWorkspace ? "bg-status-success" : "bg-muted-foreground/40"}`} />
         <span className="font-semibold text-foreground">Workspaces</span>
-        <button onClick={() => setShowAdd(!showAdd)} className="text-primary hover:text-primary/80"><Plus size={14} /></button>
-      </div>
+        {connectedWorkspace && (
+          <span className="text-[10px] text-muted-foreground truncate">{connectedWorkspace.name}</span>
+        )}
+        {!connectedWorkspace && (
+          <span className="text-[10px] text-muted-foreground">Not connected</span>
+        )}
+        <ChevronDown size={12} className={`ml-auto text-muted-foreground shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
 
-      {showAdd && (
-        <div className="px-3 py-2 border-b border-border space-y-1.5">
-          <input placeholder="Name" value={newName} onChange={e => setNewName(e.target.value)} className="w-full px-2 py-1 border border-border rounded text-[12px] bg-background text-foreground" />
-          <input placeholder="URL (https://...)" value={newUrl} onChange={e => setNewUrl(e.target.value)} className="w-full px-2 py-1 border border-border rounded text-[12px] bg-background text-foreground" />
-          <div className="flex gap-2">
-            <button onClick={handleAdd} className="px-3 py-1 bg-primary text-primary-foreground rounded text-[11px]">Add</button>
-            <button onClick={() => setShowAdd(false)} className="px-3 py-1 border border-border rounded text-[11px] text-foreground">Cancel</button>
+      {/* ── Expandable dropdown ── */}
+      {open && (
+        <div className="border-t border-panel-border bg-background">
+          {/* Add button */}
+          <div className="px-3 py-1 flex justify-end">
+            <button onClick={() => setShowAdd(!showAdd)} className="text-primary hover:text-primary/80"><Plus size={14} /></button>
+          </div>
+
+          {showAdd && (
+            <div className="px-3 py-2 border-b border-border space-y-1.5">
+              <input placeholder="Name" value={newName} onChange={e => setNewName(e.target.value)} className="w-full px-2 py-1 border border-border rounded text-[12px] bg-background text-foreground" />
+              <input placeholder="URL (https://...)" value={newUrl} onChange={e => setNewUrl(e.target.value)} className="w-full px-2 py-1 border border-border rounded text-[12px] bg-background text-foreground" />
+              <div className="flex gap-2">
+                <button onClick={handleAdd} className="px-3 py-1 bg-primary text-primary-foreground rounded text-[11px]">Add</button>
+                <button onClick={() => setShowAdd(false)} className="px-3 py-1 border border-border rounded text-[11px] text-foreground">Cancel</button>
+              </div>
+            </div>
+          )}
+
+          <div className="divide-y divide-border">
+            {workspaces.map(ws => (
+              <div key={ws.id} className={`px-3 py-1.5 ${ws.connected ? "bg-primary/5" : ""}`}>
+                <div className="flex items-center justify-between gap-1">
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium text-foreground truncate">{ws.name}</div>
+                    <div className="text-[10px] text-muted-foreground truncate">{ws.url}</div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    {!ws.connected && (
+                      <button
+                        onClick={() => openTokenModal(ws.id)}
+                        className="px-1.5 py-0.5 text-[10px] border border-border rounded hover:bg-muted text-muted-foreground hover:text-foreground"
+                        title="Set PAT token"
+                      >
+                        <Key size={11} />
+                      </button>
+                    )}
+                    {ws.connected ? (
+                      <button onClick={() => handleDisconnect(ws.id)} className="px-1.5 py-0.5 text-[10px] border border-border rounded hover:bg-muted text-foreground" title="Disconnect">
+                        <Unplug size={12} />
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleConnect(ws.id)}
+                        disabled={!ws.token || connecting === ws.id}
+                        className="px-1.5 py-0.5 text-[10px] border border-border rounded hover:bg-muted disabled:opacity-40 text-foreground"
+                        title={ws.token ? "Connect" : "Set PAT token first"}
+                      >
+                        {connecting === ws.id ? <LoadingSpinner size={12} /> : <Plug size={12} />}
+                      </button>
+                    )}
+                    <button onClick={() => setDeleteId(ws.id)} className="text-muted-foreground hover:text-status-error">
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                </div>
+                <div className="text-[10px] mt-0.5">
+                  {ws.connected
+                    ? <span className="text-status-success">Connected</span>
+                    : ws.token
+                      ? <span className="text-muted-foreground">Ready to connect</span>
+                      : <span className="text-status-warning">No token</span>}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}
-
-      <div className="divide-y divide-border">
-        {workspaces.map(ws => (
-          <div key={ws.id} className={`px-3 py-1.5 ${ws.connected ? "bg-primary/5" : ""}`}>
-            <div className="flex items-center justify-between gap-1">
-              <div className="min-w-0 flex-1">
-                <div className="font-medium text-foreground truncate">{ws.name}</div>
-                <div className="text-[10px] text-muted-foreground truncate">{ws.url}</div>
-              </div>
-              <div className="flex items-center gap-1 shrink-0">
-                {/* Token button — only show when not connected */}
-                {!ws.connected && (
-                  <button
-                    onClick={() => openTokenModal(ws.id)}
-                    className="px-1.5 py-0.5 text-[10px] border border-border rounded hover:bg-muted text-muted-foreground hover:text-foreground"
-                    title="Set PAT token"
-                  >
-                    <Key size={11} />
-                  </button>
-                )}
-                {/* Connect / Disconnect */}
-                {ws.connected ? (
-                  <button onClick={() => handleDisconnect(ws.id)} className="px-1.5 py-0.5 text-[10px] border border-border rounded hover:bg-muted text-foreground" title="Disconnect">
-                    <Unplug size={12} />
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => handleConnect(ws.id)}
-                    disabled={!ws.token || connecting === ws.id}
-                    className="px-1.5 py-0.5 text-[10px] border border-border rounded hover:bg-muted disabled:opacity-40 text-foreground"
-                    title={ws.token ? "Connect" : "Set PAT token first"}
-                  >
-                    {connecting === ws.id ? <LoadingSpinner size={12} /> : <Plug size={12} />}
-                  </button>
-                )}
-                {/* Delete */}
-                <button onClick={() => setDeleteId(ws.id)} className="text-muted-foreground hover:text-status-error">
-                  <Trash2 size={12} />
-                </button>
-              </div>
-            </div>
-            {/* Compact status line */}
-            <div className="text-[10px] mt-0.5">
-              {ws.connected
-                ? <span className="text-status-success">Connected</span>
-                : ws.token
-                  ? <span className="text-muted-foreground">Ready to connect</span>
-                  : <span className="text-status-warning">No token</span>}
-            </div>
-          </div>
-        ))}
-      </div>
 
       {/* PAT Token Modal */}
       {tokenModalId && tokenModalWs && (

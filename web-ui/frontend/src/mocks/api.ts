@@ -19,7 +19,7 @@ const mkLog = (level: RoutingLogLevel, stage: string, message: string): RoutingL
 });
 
 // ---- Mutable state ----
-let connectedWorkspaceId: string | null = null;
+let connectedWorkspaceId: string | null = "ws-1";
 let selectedWarehouseId: string | null = null;
 let nextCollectionId = 3;
 let nextQueryId = 100;
@@ -36,7 +36,7 @@ let storageLatencyProbes: StorageLatencyProbe[] = [
 ];
 
 let workspaces: Workspace[] = [
-  { id: "ws-1", name: "Production", url: "https://adb-1234567890.12.azuredatabricks.net", token: null, connected: false },
+  { id: "ws-1", name: "Production", url: "https://adb-1234567890.12.azuredatabricks.net", token: "dapi_mock_token_12345", connected: true },
   { id: "ws-2", name: "Development", url: "https://adb-9876543210.34.azuredatabricks.net", token: null, connected: false },
 ];
 
