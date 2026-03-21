@@ -1,10 +1,10 @@
-# Intelligent Query Router for Delta Lake
+# Intelligent Query Router for Unity Catalog
 
 ## Overview
 
 ### What We're Building
 
-An intelligent query routing system that analyzes SQL queries against Delta Lake tables and automatically routes them to the most cost-effective execution engine while maintaining governance constraints. The system aims to achieve **50%+ cost reduction with less than 20% latency increase** compared to running all queries on Databricks SQL Warehouse.
+An intelligent query routing system that analyzes SQL queries against Unity Catalog tables (Delta, Iceberg, and other registered formats) and automatically routes them to the most cost-effective execution engine while maintaining governance constraints. The system aims to achieve **50%+ cost reduction with less than 20% latency increase** compared to running all queries on Databricks SQL Warehouse.
 
 ### The Problem
 
@@ -55,25 +55,25 @@ The routing algorithm that combines multiple decision factors:
 - `benchmark_engine_warmups`: id, benchmark_id (FK), engine_id (string), cold_start_time_ms, started_at
 - `benchmark_results`: id, benchmark_id (FK), engine_id (string), query_id (FK to queries), execution_time_ms, data_scanned_bytes, other_metrics (JSONB)
 
-### ODQ-3: ML models for routing predictions — DECIDED
+### ODQ-3: ML models for routing predictions — DECIDED (partially superseded by ODQ-10)
 
 **Decision (2026-03-14):** ML models trained on benchmark data predict execution time and cost per engine. scikit-learn random forest multi-output regression. Training runs as a K8s Job, triggered manually via API. Models require explicit user activation after reviewing hold-out validation metrics. If two benchmarks share the same engine set, their training data can be combined.
+
+**Superseded (2026-03-21):** The single multi-output model design below is superseded by ODQ-10, which separates latency and cost into independent models. The framework, training workflow, activation flow, query features, and engine features defined here remain unchanged. The target variables, `models` schema, and routing-time scoring logic are updated in ODQ-10. The `routing_settings` schema is also updated in ODQ-10.
 
 **Model design:**
 - **Framework:** scikit-learn (random forest regressor, multi-output)
 - **Training:** K8s Job triggered via `POST /api/models/train`. Reads benchmark results from PostgreSQL, trains model, stores serialized model (joblib) and validation metrics
 - **Activation:** Manual. User reviews hold-out validation metrics (train/test split) in the UI, then explicitly activates the model via `POST /api/models/{id}/activate`. No model enters the routing path without human review
-- **Target variables:** Two regression outputs per engine — `predicted_execution_time_ms` and `predicted_cost_usd`. At routing time, the router computes a weighted score per engine: `score = w_time * normalized_time + w_cost * normalized_cost` and picks the lowest. Weights (`w_time`, `w_cost`) are user-configurable via routing settings (exposed as a "Speed ← → Cost" slider in the UI)
+- **Target variables:** ~~Two regression outputs per engine — `predicted_execution_time_ms` and `predicted_cost_usd`.~~ See ODQ-10 for updated target variable design (separate latency and cost models).
 - **Query features** (extracted via sqlglot AST): `num_tables`, `num_joins`, `num_aggregations`, `num_subqueries`, `has_group_by`, `has_order_by`, `has_limit`, `has_window_functions`, `estimated_data_bytes`, `max_table_size_bytes`, `num_columns_selected`
 - **Engine features** (from engine configuration): `engine_type` (databricks_sql/duckdb), `cluster_size`, `has_photon`, `is_serverless`, `memory_gb`
 - Features are abstract — no table names, no raw SQL. Models generalize across different datasets and workspaces
 
-**Schema:**
-- `models`: id, linked_engines (JSONB array of engine_id strings), model_path (file path to serialized model), accuracy_metrics (JSONB), is_active (boolean), created_at, updated_at
-- `routing_settings`: id (singleton, always 1), time_weight (float, default 0.5), cost_weight (float, default 0.5), updated_at
+**Schema:** See ODQ-10 for updated `models` and `routing_settings` schema.
 
 **Future considerations (not in current scope):**
-- Region-awareness: warn the user if DuckDB engine and data are in different regions, which would invalidate benchmark results from same-region runs
+- ~~Region-awareness: warn the user if DuckDB engine and data are in different regions, which would invalidate benchmark results from same-region runs~~ Addressed by ODQ-9 (storage latency probes make benchmarks portable across regions)
 - New-benchmark notifications: alert the user when benchmark data exists that the active model was not trained on, suggesting retraining
 - Automated retraining with configurable triggers
 
@@ -151,9 +151,128 @@ Per-query mode interaction: `smart` runs the full pipeline; `duckdb` and `databr
 **Schema:**
 - `engine_catalog`: id (serial PK), engine_type (enum), display_name, config (JSONB), is_default (bool), enabled (bool), created_at, updated_at
 
+### ODQ-9: Network latency measurement and portable benchmarks — DECIDED
+
+**Decision (2026-03-21):** DuckDB engine performance is dominated by data read time from storage, which varies dramatically based on deployment proximity to data. To make benchmark data and ML models portable across deployment locations, the system measures and factors out network I/O latency as a separate, independently measurable component — analogous to how cold-start latency is already handled.
+
+**Design:**
+- **Storage latency probe:** A lightweight read operation against a known-size file (or table sample) in each storage location that DuckDB engines access. Measures round-trip I/O time from the DuckDB engine to the storage account/bucket. Run automatically as part of benchmark warm-up and on-demand via API.
+- **Per-storage-location measurement:** Latency is measured per storage location (e.g., `abfss://container@account.dfs.core.windows.net/`, `s3://bucket/prefix/`), not per table. Multiple tables in the same storage location share one measurement.
+- **Benchmark normalization:** When training ML models (ODQ-10), the raw benchmark execution time is decomposed as: `total_time = compute_time + io_latency`. The model trains on `compute_time` (total minus measured I/O baseline) so it learns computation cost independent of network location.
+- **Prediction-time recomposition:** At routing time, the predicted latency is: `predicted_compute_time (from model) + current_io_latency (from latest probe) + cold_start_latency (if engine is cold)`. Each component is independently measurable and independently reportable.
+- **Redeployment workflow:** When the system is deployed to a new location, only the storage latency probes need to be re-run (seconds to minutes). Full benchmarks and model retraining are not required — the existing model's compute-time predictions remain valid.
+
+**Schema:**
+- `storage_latency_probes`: id (serial PK), storage_location (text), engine_id (text, FK to engines), probe_time_ms (float), bytes_read (bigint), measured_at (timestamptz)
+- Index on `(storage_location, engine_id, measured_at DESC)` for efficient latest-probe lookups
+
+**API:**
+- `POST /api/latency-probes/run` — trigger storage latency probes for all active DuckDB engines and all known storage locations
+- `GET /api/latency-probes` — list latest probe results, grouped by storage location and engine
+- Probes also run automatically during benchmark warm-up phase (after engine warm-up, before query execution)
+
+**Interaction with benchmarks and models:**
+- `benchmark_results` gains an optional `io_latency_ms` column (nullable float) — populated from the latest probe at benchmark time. Allows retrospective computation of `compute_time = execution_time_ms - io_latency_ms`.
+- ML model training (ODQ-10) uses `compute_time` as the target variable for the latency model when `io_latency_ms` is available, falling back to raw `execution_time_ms` when it is not.
+
+**UI implications:**
+- **Routing tab — Storage Latency section:** A compact section below the Engines table in the right panel Routing tab. Shows latest probe results per storage location in a table (location, latency in ms, timestamp). Latency values color-coded: green (≤50ms), amber (50-150ms), red (>150ms). "Run Probes" button triggers on-demand measurement. Only visible when at least one DuckDB engine is enabled.
+- **Benchmark detail — Storage Probes:** When viewing a benchmark detail (click on a benchmark in the Collections tab), a "Storage Latency Probes" section shows the probe results captured at benchmark time. Displays per-location latency measurements that were used to compute `io_latency_ms` for each benchmark result.
+- **Benchmark results — I/O decomposition:** When `io_latency_ms` is available on a benchmark result, the execution time cell shows an inline decomposition: `45ms (33+12 I/O)` with a tooltip explaining the breakdown (`compute_time + io_latency`). This makes the I/O component visible without adding extra columns.
+
+### ODQ-10: Separate latency and cost models — DECIDED
+
+**Decision (2026-03-21):** The single multi-output model from ODQ-3 (predicting both `execution_time_ms` and `cost_usd` in one model) is replaced by two independent models: a **latency model** and a **cost model**. This separation improves interpretability, allows independent validation, and cleanly integrates with the storage latency decomposition from ODQ-9.
+
+**Supersedes:** ODQ-3 target variables, `models` schema, and `routing_settings` schema. All other ODQ-3 elements (framework, training workflow, activation, features) remain unchanged.
+
+**Latency model:**
+- **Target variable:** `predicted_compute_time_ms` per engine — the computation time excluding I/O latency and cold-start. When `io_latency_ms` is available in benchmark data (ODQ-9), the target is `execution_time_ms - io_latency_ms`. When not available, falls back to raw `execution_time_ms`.
+- **At routing time:** Total predicted latency = `predicted_compute_time_ms` + `io_latency_ms` (latest storage probe for the tables in the query, per ODQ-9) + `cold_start_ms` (from `benchmark_engine_warmups` if engine is cold, 0 if warm — see ODQ-11 for how engine state determines this). Each component is logged separately in the routing decision for full transparency.
+- **Features:** Same query features and engine features as ODQ-3.
+
+**Cost model:**
+- **Target variable:** `predicted_cost_usd` per engine.
+- **For Databricks engines:** Cost may be largely deterministic — based on warehouse size (DBU rate), predicted runtime (from latency model), and pricing tier. A formula-based approach (`cost = dbu_rate * runtime_seconds / 3600`) may suffice without ML. If benchmark data shows significant cost variance beyond what the formula predicts, an ML model can be trained.
+- **For DuckDB engines:** Cost is based on compute resource allocation (memory, CPU) and duration. This is more predictable and may also use a formula. If the deployment uses spot instances, cost variance may warrant an ML model.
+- **Decision:** Start with formula-based cost estimation for both engine types. Add ML cost models only if formula accuracy is insufficient based on benchmark validation.
+- **Features:** Same query features and engine features as ODQ-3, plus `predicted_compute_time_ms` from the latency model (cost depends on how long the query runs).
+
+**Decision logic at routing time:**
+1. For each enabled engine, compute: `latency_score = predicted_compute_time + io_latency + cold_start`
+2. For each enabled engine, compute: `cost_score = predicted_cost_usd` (from formula or cost model)
+3. Normalize both scores across engines (min-max or z-score)
+4. Compute weighted score: `score = w_latency * normalized_latency + w_cost * normalized_cost`
+5. Select engine with lowest score
+6. Weights (`w_latency`, `w_cost`) are user-configurable via the "Speed <-> Cost" slider (exposed in routing settings)
+
+**Note:** Steps 1–2 are extended by ODQ-11 (engine state awareness) to account for stopped-engine startup penalties and running-engine marginal cost. See ODQ-11 for the updated formulas.
+
+**Routing without an ML model (rules-only fallback):**
+Smart Routing does **not** require an active ML model. The routing pipeline layers are: System Rules → If-Then Rules → ML predictions → Cost vs Latency Priority weighting. Without a model, the first two layers still function — system rules enforce mandatory constraints (e.g., writes to Databricks) and user-defined if-then rules route queries by pattern matching. Only ML-based latency/cost predictions and priority-weighted scoring are skipped. This means the Cost vs Latency Priority toggle has no effect until a model is selected. The UI communicates this clearly: the ML Models section shows "none active" in its header and guidance text in the expanded state; the Cost vs Latency Priority section shows a hint explaining that weighting applies once a model is selected.
+
+**Updated schema (supersedes ODQ-3 schema):**
+- `models`: id, linked_engines (JSONB array of engine_id strings), latency_model (JSONB — r_squared float, mae_ms float, model_path text), cost_model (JSONB — r_squared float, mae_usd float, model_path text), training_queries (int), is_active (boolean), created_at, updated_at. Each model is a **bundle** containing one latency sub-model and one cost sub-model trained together on the same benchmark data.
+- `routing_settings`: id (singleton, always 1), latency_weight (float, default 0.5), cost_weight (float, default 0.5), cost_estimation_mode (enum: `formula` / `model`, default `formula`), updated_at
+
+**UI implications:**
+- **Cost vs Latency Priority toggle:** Positioned in the right panel Routing tab, below the ML Models section. Only visible in Smart Routing mode (hidden in Single Engine mode). A discrete 3-step toggle with options: "Low Cost" (latency_weight=0.2), "Balanced" (0.5), "Fast" (0.8). Maps to `latency_weight` and `cost_weight` (they sum to 1.0). Section is collapsible (collapsed by default) with a Scale icon; header shows the active preset label in parentheses.
+- **"How Routing Works" modal:** Replaced by per-section contextual info modals. Each of the 4 collapsible sections (If-Then Rules, ML Models, Cost vs Latency Priority, Storage Latency) has an info (ⓘ) button that opens a shared `RoutingInfoModal` showing a compact pipeline diagram with the current section highlighted and detailed explanation text. See Routing tab description for details.
+- **ML Models section:** Each model is a **bundle** containing a latency sub-model and a cost sub-model trained together. Model cards show the model name, linked engine count, benchmark count, and a "View Details" link. No type badges on the cards. The "View Details" modal shows training metadata (created date, engines, benchmarks, training queries) and both sub-models with their metrics (R², MAE in ms for latency, MAE in USD for cost, model path).
+- **Query Detail Modal — decomposed routing decision:** Each routing decision shows the decomposed latency breakdown: Compute Time + I/O Latency + Cold Start = Total Latency, with each component on its own line and color-coded. A separate "Estimated Cost" line shows the cost estimate in USD. Scoring breakdown shows latency_score, cost_score, and weighted_score — making it clear why a particular engine was chosen.
+
 ---
 
-## Architecture
+### ODQ-11: Running Engine Bonus — DECIDED
+
+**Decision (2026-03-21):** After the existing scoring logic (ML predictions + Cost vs Latency Priority) produces a weighted score for each engine, apply a flat **bonus** (score reduction) to engines whose `runtime_state` is `running`. This nudges the router toward already-running engines without replacing or complicating the ML-based scoring.
+
+**Motivation:**
+- Starting a stopped Databricks warehouse means waiting for cold-start (30s–5min) *and* committing to a billing period — the warehouse runs (and charges DBUs) until auto-stop.
+- A running warehouse has near-zero marginal cost for additional queries.
+- DuckDB engines are always-on (or scale from zero cheaply), so their bonus is smaller.
+- Rather than computing a complex startup penalty from `dbu_rate` and `auto_stop_timeout_minutes`, a simple flat bonus per engine type is more transparent, user-tunable, and equally effective in practice.
+
+**Engine runtime state:**
+Each engine has a `runtime_state` tracked at routing time:
+- `running` — engine is actively processing or idle but still billed
+- `stopped` — engine is not running and would require a cold start
+- `starting` — in the process of starting (treated as `stopped` for scoring)
+- `unknown` — state cannot be determined (treated as `stopped` conservatively)
+
+For Databricks: polled via `GET /api/2.0/sql/warehouses/{id}` every 30–60s, cached in memory.
+For DuckDB: derived from K8s pod status; effectively always `running` in current design.
+
+**Scoring adjustment:**
+After the existing ODQ-10 pipeline produces a `weighted_score` per engine:
+```
+final_score = weighted_score - running_bonus   (if runtime_state === "running")
+final_score = weighted_score                   (if stopped / starting / unknown)
+```
+- `running_bonus_duckdb` — default **0.05** (small; DuckDB is cheap and always-on, so the bonus rarely matters)
+- `running_bonus_databricks` — default **0.15** (larger; reflects the significant cost/latency savings of routing to an already-running warehouse)
+- Both values are **user-editable** in the UI via the "Running Engine Bonus" section.
+- Setting a bonus to **0** effectively disables it for that engine type.
+- A "Reset to Defaults" button restores both to their default values.
+
+**Design constraints:**
+- **Flat and simple.** No formula, no per-engine parameters. Just two numbers.
+- **Self-correcting.** Once a warehouse is running, subsequent queries naturally prefer it. Once it stops, the bonus no longer applies.
+- **User-tunable.** Advanced users can increase or decrease the bonus. Setting to 0 disables it — no separate on/off toggle needed.
+- **Applied last.** The bonus runs after ML scoring and Cost vs Latency Priority, before the final engine selection. It does not interfere with system rules or hard rules (those short-circuit before scoring).
+
+**Parameters added:**
+- `runtime_state` per engine (ephemeral, in-memory cache — not persisted in PostgreSQL).
+- `running_bonus_duckdb` in `routing_settings` (float, default 0.05).
+- `running_bonus_databricks` in `routing_settings` (float, default 0.15).
+
+**UI implications:**
+- **Engines table:** Show engine runtime state as a status dot (green = running, gray = stopped, amber = starting).
+- **Running Engine Bonus section:** New collapsible section in the Routing tab (between Cost vs Latency Priority and Storage Latency). Contains two editable numeric inputs and a "Reset to Defaults" button. Has its own info (ⓘ) button and pipeline stage in RoutingInfoModal.
+- **Routing decision log:** Include bonus application in log output when applicable.
+- **Pipeline diagram:** New "Running Engine Bonus" box between Cost vs Latency Priority and ▸ Selected Engine.
+
+---
 
 ### Execution Engines
 
@@ -163,13 +282,15 @@ Per-query mode interaction: `smart` runs the full pipeline; `duckdb` and `databr
 
 **DuckDB (Containerized)**
 - Purpose: Execute simple queries on small to medium datasets without governance constraints
-- Rationale: Extremely fast for OLAP queries on columnar data; native Delta Lake support; runs efficiently in single-node containers; 10-50x cheaper than warehouse for eligible queries
+- Rationale: Extremely fast for OLAP queries on columnar data; native support for Delta Lake and Iceberg table formats; runs efficiently in single-node containers; 10-50x cheaper than warehouse for eligible queries
 - Multiple configurations supported: each DuckDB configuration (e.g., 2GB RAM, 8GB RAM, 16GB RAM) runs as a separate K8s Deployment with its own Service. The routing-service addresses each by its K8s Service name (stored in the `engines` table). Cluster Autoscaler provisions nodes on demand — if a large-memory pod can't be scheduled, the autoscaler adds a node from the configured node pool. In local dev (Minikube), only the small config runs; large configs are skipped
+- Supported table formats: Delta Lake (via deltalake-python), Iceberg (via DuckDB's native iceberg extension or pyiceberg). The `data_source_format` field on the Unity Catalog `TableInfo` determines which reader to use.
 - External access rules (determines which tables DuckDB can read):
-  - EXTERNAL tables with `storage_location` → DuckDB reads directly from cloud storage
+  - EXTERNAL tables with `storage_location` and format DELTA or ICEBERG → DuckDB reads directly from cloud storage using the appropriate format reader
   - MANAGED tables with `HAS_DIRECT_EXTERNAL_ENGINE_READ_SUPPORT` → DuckDB reads via credential vending (read-only, short-lived cloud storage credentials)
   - Tables with row filters or column masks → NOT accessible externally; must route to Databricks SQL Warehouse
   - Views → must be executed on Databricks SQL Warehouse
+  - Foreign/federated tables (SQL Server, Snowflake, MySQL, PostgreSQL, etc. registered via Lakehouse Federation) → NOT accessible externally; no `storage_location`, no `HAS_DIRECT_EXTERNAL_ENGINE_READ_SUPPORT`; must always route to Databricks SQL Warehouse which acts as the gateway to the federated source
 
 ### Infrastructure
 
@@ -187,9 +308,9 @@ Per-query mode interaction: `smart` runs the full pipeline; `duckdb` and `databr
 
 ### Data & Metadata
 
-**Delta Lake with Unity Catalog**
-- Purpose: Source data storage and metadata/governance layer
-- Rationale: Part of Databricks environment; provides table metadata (size, schema, partitions); exposes governance rules via API; industry-standard lakehouse format
+**Unity Catalog (Metadata & Governance)**
+- Purpose: Source metadata and governance layer for all table formats registered in the catalog
+- Rationale: Part of Databricks environment; provides table metadata (size, schema, partitions, format, storage location); exposes governance rules via API; supports Delta Lake, Iceberg, and foreign/federated tables (via Lakehouse Federation). The `data_source_format` field on `TableInfo` identifies the table format (DELTA, ICEBERG, PARQUET, SQLSERVER, SNOWFLAKE, etc.) and drives format-specific handling in the routing and execution layers
 
 **PostgreSQL**
 - Purpose: Store query logs, routing decisions, cost metrics, and table metadata cache
@@ -255,6 +376,10 @@ This is sufficient for local development on Minikube where access is via port-fo
 - Purpose: Direct Delta Lake table access for DuckDB
 - Rationale: Enables DuckDB to read Delta tables without Spark; bindings to Rust Delta library; efficient columnar reads
 
+**DuckDB Iceberg extension / pyiceberg**
+- Purpose: Direct Iceberg table access for DuckDB
+- Rationale: Enables DuckDB to read Iceberg tables registered in Unity Catalog; DuckDB has a native `iceberg` extension for scanning Iceberg metadata and data files; pyiceberg provides an alternative Python-native path for catalog interaction. The choice between the two will be evaluated during implementation based on credential vending compatibility and read performance
+
 **scikit-learn**
 - Purpose: ML model training for routing predictions
 - Rationale: Lightweight, no GPU required, well-suited for tabular regression tasks; random forest multi-output regression predicts execution time and cost per engine from benchmark data; models serialized with joblib for storage and loading
@@ -290,7 +415,7 @@ This is sufficient for local development on Minikube where access is via port-fo
 
 ### web-ui (Dashboard)
 **Purpose:** Convenience interface for configuring the system, submitting queries, browsing Unity Catalog, managing query collections, and viewing results. The UI is not required — all functionality is exposed via the routing-service API for programmatic use by external services.  
-**Status:** Phase 6 backend complete (auth, Databricks credentials, health). React frontend implemented with mock data and extensively redesigned through iterative UX feedback sessions (right panel routing config, left panel workspaces, center panel query editor/results/history). Phase 7 UI redesign complete; wiring to real backend not yet started.
+**Status:** Phase 6 backend complete (auth, Databricks credentials, health). React frontend implemented with mock data and extensively redesigned through iterative UX feedback sessions (right panel routing config, left panel workspaces, center panel query editor/results/history). Phase 7 UI redesign complete, including ODQ-9 (storage latency probes UI — StorageLatencySection in Routing tab, I/O decomposition in benchmark results, storage probes in benchmark detail) and ODQ-10 (separate latency/cost models UI — discrete Cost vs Latency Priority toggle, model type badges, decomposed latency in query detail modal). Three-color catalog browser (green/amber/red) for Delta, Iceberg, and foreign/federated tables. UX Round 2 complete: removed standalone Routing Mode heading (mode indicator integrated into Engines section as "Single Engine" / "Smart Routing" badges), added consistent icons to all section headers (Server, GitBranch, Brain, Scale, HardDrive), made all non-Engine sections collapsible (collapsed by default). UX Round 3 complete: removed summary rows below collapsed section headers (info moved into header parentheses), simplified Cost vs Latency Priority from 4 to 3 options (removed "Fastest"). UX Round 4 complete: redesigned ML model schema to bundle architecture with separate latency/cost sub-models. UX Round 5 complete: flipped compatibility logic, added guidance text, rules-only fallback hints. UX Round 6 complete: replaced single "How Routing Works" modal with per-section contextual info modals — each collapsible section (If-Then Rules, ML Models, Cost vs Latency Priority, Storage Latency) has an info (ⓘ) button opening a shared RoutingInfoModal with pipeline diagram and section-specific explanation. UX Round 7 complete: fixed RoutingInfoModal pipeline diagram overflow (replaced absolute-positioned Storage Latency annotation with inline flexbox layout) and made detail text concise (structured sections with bold headings instead of long paragraphs). UX Round 8 complete: added System Rules collapsible section (Shield icon, read-only display of built-in rules), made pipeline diagram labels consistent with section headers (Cost vs Latency Priority, Storage Latency), replaced Select Engine box with output indicator (▸ Selected Engine). Wiring to real backend not yet started.
 
 **Architecture:** FastAPI backend (server.py) serves Vite-built static assets (index.html + JS/CSS bundles in static/assets/). React source lives in web-ui/frontend/ (development only — not included in production image). The Dockerfile uses a multi-stage build: Node stage runs `npm run build` to produce static assets, Python stage copies the build output and runs FastAPI/uvicorn. Everything is a single-page React app. The frontend currently runs entirely on mock data (src/mocks/api.ts) — no real HTTP calls to the backend yet.
 
@@ -300,23 +425,28 @@ This is sufficient for local development on Minikube where access is via port-fo
 
 **Left panel — Workspaces + Unity Catalog Browser (20% width):**
 - **Workspaces section (top):** Compact workspace rows — each shows name, URL, and status. PAT token management via a Key icon button that opens a modal with password input (show/hide toggle), Save/Cancel. Connect/disconnect and delete actions per workspace. Status shows "No token", "Token set — ready to connect", or "Connected". Add new workspaces via inline form (name + URL).
-- **Catalog Browser (below workspaces):** Headed with "Catalog Browser" title and blue Database icon. Tree navigation: catalogs → schemas → tables. Clicking a table shows its details (type, format, size, external access flags, columns). "Load Sample Query" button populates editor with `SELECT * FROM catalog.schema.table LIMIT 100`. Color indicator shows which tables DuckDB can read (green) vs not (amber). Only active when a workspace is connected — otherwise shows "Connect to a workspace to browse catalogs."
+- **Catalog Browser (below workspaces):** Headed with "Catalog Browser" title and blue Database icon. Tree navigation: catalogs → schemas → tables. Clicking a table shows its details (type, format, size, external access flags, columns). "Load Sample Query" button populates editor with `SELECT * FROM catalog.schema.table LIMIT 100`. Three-color indicator bar system shows table accessibility: green = DuckDB-readable (Delta or Iceberg format with external access), amber = Databricks-only (native format but governance-blocked, or VIEWs), red = foreign/federated tables (SQL Server, Snowflake, etc. — always Databricks-only). The `data_source_format` field is displayed in the table detail view; foreign formats show in red text with a "Foreign table (Databricks only)" message. Only active when a workspace is connected — otherwise shows "Connect to a workspace to browse catalogs."
 
 **Center panel — Query Editor + Results + Query History (50% width):**
 - **Query Editor (fixed top):** SQL textarea for writing and editing queries. "Run" button to execute the current query (disabled when no query entered).
 - **Results area (fixed, non-scrollable):** Shows execution metrics (engine, latency, cost, rows) and a data table limited to 10 rows maximum. No routing decision details here — those live in the query detail modal.
 - **Query History (scrollable, takes remaining space):** The only scrollable area in the center panel. Sticky table header. Rows show timestamp, query preview, engine, status badge, latency, and cost. Completed rows are clickable (`cursor-pointer` + hover highlight); running rows are not clickable. No "Details" button column.
-- **Query Detail Modal:** Opens when clicking a completed history row. Contains: header with full query text + close button (X), summary row (timestamp, engine, status badge, latency, cost), Routing Decision in a grid layout (Engine, Stage, Reason, Complexity), and a Routing Log in dark terminal-style display showing color-coded streaming events by level (info/rule/decision/warn/error) and stage ([PARSE]/[RULES]/[ML]/[ENGINE]/[EXEC]/[DONE]). Closes on backdrop click, close button, or Escape key.
+- **Query Detail Modal:** Opens when clicking a completed history row. Contains: header with full query text + close button (X), summary row (timestamp, engine, status badge, latency, cost), Routing Decision in a grid layout (Engine, Stage, Reason, Complexity), decomposed latency breakdown when available (Compute Time + I/O Latency + Cold Start = Total Latency, each on its own line with color coding), estimated cost in USD, scoring breakdown (latency_score, cost_score, weighted_score), and a Routing Log in dark terminal-style display showing color-coded streaming events by level (info/rule/decision/warn/error) and stage ([PARSE]/[RULES]/[ML]/[ENGINE]/[EXEC]/[DONE]). Closes on backdrop click, close button, or Escape key.
 
 **Right panel — Routing + Collections (30% width):**
 Two tabs: **Routing** and **Queries & Benchmarks** (renamed from "Collections").
 
-*Routing tab:*
-- **Passive routing mode indicator:** Shows "Direct" (single engine) or "Smart Routing" (multiple engines) based on how many engines are enabled — no toggle button.
-- **Workflow visualization:** Pipeline graphic showing Query → Rules → ML Model → Engine, illustrating the routing stages.
-- **Rules section:** Titled "Rules" with a count header showing active rules. Simplified inline display with a modal for full rule management (add/edit/delete, move up/down priority). Only visible when Smart Routing is active.
-- **ML Models section:** Count header showing compatible models. Radio-button activation with compatibility check against enabled engines. Delete button (trash icon) per model for lifecycle management. "Train New Model..." subtle link opens a 4-step train wizard panel. Only visible when Smart Routing is active.
-- **Engines section:** Table layout with columns: checkbox | Type icon | Engine name | Specs summary. Always checkboxes (no radio buttons). Databricks engines show a subtle indicator and are hidden when no workspace is connected. Single engine triggers "Direct" mode; multiple engines trigger "Smart Routing" mode. Empty state message when only one engine is enabled.
+*Routing tab (sections listed in display order):*
+- **Engines section (always expanded):** Header with Server icon and parenthetical "(No Databricks workspace)" when no workspace is connected. Contains a passive mode indicator showing "Single Engine" or "Smart Routing" badges based on how many engines are enabled — no toggle button. Table layout with columns: checkbox | Type | Specs summary. Always checkboxes (no radio buttons). Databricks engines shown only when a workspace is connected. Single engine triggers "Single Engine" mode; multiple engines trigger "Smart Routing" mode. When in Single Engine mode (or no engines), a guidance message is shown below the table explaining how to enable Smart Routing. **Engine runtime state (ODQ-11):** Each engine row shows a status dot (green = running, gray = stopped, amber = starting) reflecting real-time engine state from the Databricks API / K8s pod status. This gives users visibility into which engines are active and helps explain why the router may prefer one engine over another.
+- **Per-section contextual info modals:** Each of the 6 collapsible sections (System Rules, If-Then Rules, ML Models, Cost vs Latency Priority, Running Engine Bonus, Storage Latency) has an info (ⓘ) button in its header row. Clicking the info button opens a shared `RoutingInfoModal` component that shows: (1) a compact vertical pipeline diagram (System Rules → If-Then Rules → ML Models → Cost vs Latency Priority → Running Engine Bonus → ▸ Selected Engine), with the current section highlighted via `bg-primary/15 border-primary ring-1 ring-primary/30`. The ML Models and Storage Latency boxes sit side-by-side in an inline flexbox row connected by a dashed line (no absolute positioning — avoids modal overflow). Non-ML pipeline boxes use `max-w-[220px]`, the ML row uses `max-w-[320px]`. The final "Selected Engine" is not a box but an output indicator (▸ label), showing the pipeline produces an engine selection as its outcome. Below the diagram: (2) structured detail sections specific to that stage — each section has an optional **bold heading** (e.g., "Governed tables:", "Short-circuit:", "Latency formula:", "Presets:", "When to re-run:") followed by a concise explanation sentence. Pipeline box labels match section header labels exactly for consistency. The info button is a sibling of the collapsible toggle button (not nested inside it) to avoid DOM nesting violations. The modal is shared across all 6 sections via a `stage` prop (`"system" | "rules" | "ml" | "priority" | "bonus" | "storage"`).
+- **System Rules section (collapsible, collapsed by default):** Header with Shield icon, chevron toggle, count of system rules in parentheses, e.g., "(2)", and an info (ⓘ) button. Expanded state shows each system rule as a read-only line (e.g., "Table type = VIEW → Databricks", "Governance = row_filter → Databricks") with an italic note "System rules are built-in and cannot be edited." Only visible when Smart Routing is active.
+- **If-Then Rules section (collapsible, collapsed by default):** Header with GitBranch icon, chevron toggle, count of active rules in parentheses, e.g., "(1)", and an info (ⓘ) button. No summary row when collapsed — the count is sufficient. Expanded state shows all rules inline with an "Edit Rules..." button that opens the full rule management modal (add/edit/delete, move up/down priority). Only visible when Smart Routing is active.
+- **ML Models section (collapsible, collapsed by default):** Header with Brain icon, chevron toggle, parenthetical showing compatible/total count and active status, e.g., "(2/2 compatible, 1 active)" or "(0/2 compatible, none active)", and an info (ⓘ) button. **Compatibility rule:** a model is compatible if it was trained on **at least** all currently enabled engines (enabled_engines ⊆ model.linked_engines). A model trained on more engines than selected is fine; trained on fewer is not. Databricks engines are excluded from compatibility checks when no workspace is connected. No summary row when collapsed. Expanded state shows model cards with radio-button activation (disabled when incompatible), compatibility check, delete button per model. Each model is a **bundle** (latency + cost sub-models trained together). Cards show model name, engine count, benchmark count, and "View Details" link that opens a modal with training metadata and both sub-model metrics (R², MAE, model path). No type badges on cards. **Guidance text** appears below the model list when no model is active: "Select a model to enable ML-based routing..." (if compatible models exist) or "No models cover all selected engines..." (if none are compatible). **Smart Routing works without an ML model** — routing falls back to rules only. Only visible when Smart Routing is active.
+- **Cost vs Latency Priority section (collapsible, collapsed by default):** Header with Scale icon, chevron toggle, active preset label in parentheses, e.g., "(Balanced)", and an info (ⓘ) button. No summary row when collapsed. Expanded state shows a discrete 3-step toggle: "Low Cost" | "Balanced" | "Fast", mapping to `latency_weight` / `cost_weight` (sum to 1.0). When no ML model is active, shows a hint: "No ML model active — routing uses rules only. Priority weighting applies once a model is selected." Only visible when Smart Routing is active.
+- **Running Engine Bonus section (collapsible, collapsed by default):** Header with TrendingUp icon, chevron toggle, parenthetical summary showing current bonus values, e.g., "(DuckDB 0.05, Databricks 0.15)", and an info (ⓘ) button. Expanded state shows scale labels ("0 no bonus" / "1 max") above two editable numeric inputs (DuckDB bonus, Databricks bonus), with a "Reset to Defaults" button that restores default values (0.05 / 0.15). Only visible when Smart Routing is active.
+- **Storage Latency section (collapsible, collapsed by default):** Header with HardDrive icon, chevron toggle, parenthetical showing unique locations probed, e.g., "(2 locations probed)", and an info (ⓘ) button. No summary row when collapsed. "Run Probes" button appears in header only when expanded. Expanded state shows compact table of latest probe results per storage location (location, latency in ms, bytes read, timestamp) with color-coded latency values: green (≤50ms), amber (50-150ms), red (>150ms). Contextual help text: "I/O latency from DuckDB to cloud storage. Factored into latency predictions. Re-run after changing deployment location." Only visible when at least one DuckDB engine is enabled, in Smart Routing mode.
+- **"Train New Model..." link:** Subtle link at the bottom, always visible. Opens the 4-step train wizard panel.
+- **Routing Pipeline Summary (dynamic diagram):** Positioned between the Storage Latency section and the "Train New Model..." link. A compact vertical diagram showing the current routing pipeline state at a glance. Only visible in Smart Routing mode. Each pipeline stage is rendered as a horizontal box with: an icon (matching the corresponding collapsible section), an abbreviated label, and a live status badge. Stages shown: System Rules (badge: rule count), If-Then Rules (badge: rule count), ML Model (badge: "Active" or "None"), Priority (badge: current preset label), Bonus (badge: "duckdb/databricks" values), Storage (badge: locations probed count; only shown when DuckDB engines enabled). Boxes are color-coded: green border/background = healthy/active, amber = needs attention (e.g., no ML model selected, no storage probes), gray = inactive/disabled. Arrows connect stages vertically with a "▸ Selected Engine" output indicator at the bottom. The diagram updates dynamically as the user changes routing configuration (adds rules, activates models, adjusts settings). Implemented in `RoutingPipelineSummary.tsx`.
 
 *Queries & Benchmarks tab (renamed from Collections):*
 - "Query Collections" header with explanatory text
@@ -340,7 +470,7 @@ Two tabs: **Routing** and **Queries & Benchmarks** (renamed from "Collections").
 
 **Model lifecycle:** Models can be activated (radio), deactivated, expanded for details, and deleted (trash icon). Deleting an active model deactivates it first.
 
-**State management:** Global AppContext provides: editor state (SQL, results, collection context), workspaces (list + connected workspace), engines (catalog entries, enabled IDs), routing mode (derived from engine count — Direct vs Smart Routing), models (list + active model ID), query history (with per-query routing events and decisions), panel mode (run/train for the right panel train wizard). All data loaded from mock API on mount.
+**State management:** Global AppContext provides: editor state (SQL, results, collection context), workspaces (list + connected workspace), engines (catalog entries, enabled IDs), routing mode (derived from engine count — Single Engine vs Smart Routing), routing settings (latency_weight, cost_weight, cost_estimation_mode — loaded from API, updated via toggle), storage probes (latest probe results, probesRunning flag, runStorageProbes action), models (list + active model ID), query history (with per-query routing events and decisions), panel mode (run/train for the right panel train wizard). All data loaded from mock API on mount.
 
 **Tech Stack:** FastAPI (Python), React 18, TypeScript, Vite, Tailwind CSS, shadcn/ui (Radix primitives)
 
@@ -508,6 +638,10 @@ The routing-service is the single API backend. The web-ui proxies all calls thro
 - `PUT /api/catalog/engines/{id}/toggle` — enable/disable any entry (including defaults)
 - `POST /api/catalog/engines/reset` — re-enable all defaults, delete all custom entries
 
+**Storage Latency Probes:**
+- `POST /api/latency-probes/run` — trigger storage latency probes for all active DuckDB engines and known storage locations
+- `GET /api/latency-probes` — list latest probe results, grouped by storage location and engine
+
 **Data ingestion:**
 - `POST /api/ingest/tpcds` — trigger TPC-DS data generation (configurable scale factor)
 - `GET /api/ingest/{job_id}` — poll ingestion job status
@@ -546,6 +680,17 @@ Deploying to managed Kubernetes (AKS) introduces three distinct auth boundaries 
 **Why it fits:** delta-router becomes the compute layer; Superset becomes the presentation layer. Cost savings from intelligent routing apply automatically to all dashboard queries without any analyst awareness.
 **Prerequisite:** Core routing logic (query execution via delta-router) must be working and stable before this integration adds value.
 
+### Multi-Catalog Support (Beyond Unity Catalog)
+
+The current system is built around Databricks Unity Catalog as the metadata and governance layer. However, the routing logic itself is catalog-agnostic — it operates on table metadata (size, format, governance flags, storage location) regardless of where that metadata originates. Future versions could support additional catalog systems:
+
+- **Apache Polaris (Iceberg REST Catalog):** Open-source catalog for Iceberg tables, increasingly adopted as a vendor-neutral alternative
+- **AWS Glue Data Catalog:** Common in AWS-native environments, supports both Iceberg and Delta tables
+- **Hive Metastore:** Legacy but still widespread; many organizations maintain tables registered here
+- **Custom REST catalogs:** Any system that can provide table metadata via API
+
+**Why deferred:** Unity Catalog provides the richest metadata (governance rules, manifest capabilities, credential vending) and is the primary target for the Databricks cost optimization use case. Adding catalog abstraction before the core routing is stable would introduce unnecessary complexity. The system's architecture — catalog metadata cached in PostgreSQL, routing decisions based on abstract table properties — already supports this extension without major refactoring when the time comes.
+
 ---
 
 ## Development Phases
@@ -569,6 +714,15 @@ Small items that don't warrant their own phase but should be addressed. These ar
 - [ ] **PostgreSQL schema: add routing_rules table.** The `routing_rules` table (id serial PK, priority int, condition_type text, condition_value text, target_engine text, is_system bool, enabled bool) does not yet exist. Mandatory rules seeded by migration with `is_system = true`. Add when implementing the routing pipeline (ODQ-5).
 - [ ] **PostgreSQL schema: add engine_catalog table.** The `engine_catalog` table (id serial PK, engine_type enum, display_name text, config JSONB, is_default bool, enabled bool, created_at, updated_at) does not yet exist. Predefined configs seeded by migration with `is_default = true`. Add when implementing the benchmark lifecycle (ODQ-7).
 - [ ] **Routing-service RBAC: extend to Deployments and Services.** The routing-service Role currently only covers Secrets. Extend to include `apiGroups: ["apps"]`, `resources: ["deployments"]`, `verbs: ["get", "create", "delete"]` and `apiGroups: [""]`, `resources: ["services"]`, `verbs: ["get", "create", "delete"]` for temporary DuckDB engine provisioning during benchmarks.
+- [ ] **PostgreSQL schema: add storage_latency_probes table.** The `storage_latency_probes` table (id serial PK, storage_location text, engine_id text, probe_time_ms float, bytes_read bigint, measured_at timestamptz) does not yet exist. Stores measured I/O latency from each DuckDB engine to each storage location. Used by ODQ-9 to make benchmark data portable across deployments. Add when implementing network latency measurement.
+- [ ] **PostgreSQL schema: update models table for bundle architecture.** The `models` table uses a bundle approach: each row represents one latency sub-model + one cost sub-model trained together. Remove the `model_type` column and `model_path`/`accuracy_metrics` top-level fields. Add `latency_model` JSONB (r_squared, mae_ms, model_path) and `cost_model` JSONB (r_squared, mae_usd, model_path), plus `training_queries` int. Update when implementing the model training pipeline.
+- [ ] **PostgreSQL schema: add io_latency_ms to benchmark_results.** Per ODQ-9, the `benchmark_results` table needs an optional `io_latency_ms` column (float, nullable) populated from the latest storage latency probe at benchmark time. Allows computing `compute_time = execution_time_ms - io_latency_ms` for model training.
+- [ ] **PostgreSQL schema: update routing_settings for ODQ-10.** Rename `time_weight` to `latency_weight`, rename `cost_weight` to `cost_weight` (unchanged), add `cost_estimation_mode` column (enum: `formula` / `model`, default `formula`).
+- [x] **Catalog browser: display data_source_format for all tables.** Show the `data_source_format` field (DELTA, ICEBERG, PARQUET, SQLSERVER, SNOWFLAKE, etc.) in the table detail view. Foreign/federated tables should show a distinct red indicator alongside the existing green (DuckDB-readable) and amber (Databricks-only) indicators. *(Done — implemented in Phase 7 ODQ-9/ODQ-10 UI work with three-color bar system: green/amber/red.)*
+- [ ] **Routing rules: add foreign/federated table test cases.** Add test cases for routing decisions involving foreign/federated tables (SQL Server, Snowflake, etc. registered via Lakehouse Federation). These tables must always route to Databricks — verify that the existing external access check correctly handles them (no `storage_location`, no `HAS_DIRECT_EXTERNAL_ENGINE_READ_SUPPORT`).
+- [ ] **Engines config JSONB: add runtime_state tracking.** Per ODQ-11, engine `runtime_state` (`running` / `stopped` / `starting` / `unknown`) is polled and cached in memory. Not persisted in PostgreSQL — this is ephemeral operational state.
+- [ ] **Routing-service: engine state polling.** Per ODQ-11, implement periodic polling (every 30–60s) of Databricks warehouse state via `GET /api/2.0/sql/warehouses/{id}` and K8s pod status for DuckDB engines. Cache `runtime_state` in memory. Used by the routing algorithm to apply the running engine bonus.
+- [ ] **PostgreSQL schema: update routing_settings for ODQ-11.** Add `running_bonus_duckdb` (float, default 0.05) and `running_bonus_databricks` (float, default 0.15) to `routing_settings`.
 
 ---
 
@@ -582,7 +736,7 @@ Small items that don't warrant their own phase but should be addressed. These ar
 **Modularity**
 - Separate concerns: parsing, metadata retrieval, routing decision, execution
 - Pluggable routing strategies (enable/disable features via configuration)
-- Run mode toggle in right panel: `single` (one engine selected, query always runs there) or `multi` (multiple engines enabled, routing pipeline decides). In multi mode, the full 4-layer pipeline applies: mandatory hard rules → user-defined rules → ML prediction → fallback to engine preference order. The backend routing API still accepts `routing_mode` (duckdb / databricks / smart) per query for programmatic use.
+- Run mode indicator in right panel Engines section: `Single Engine` (one engine selected, query always runs there) or `Smart Routing` (multiple engines enabled, routing pipeline decides). In multi mode, the full 4-layer pipeline applies: mandatory hard rules → user-defined rules → ML prediction → fallback to engine preference order. The backend routing API still accepts `routing_mode` (duckdb / databricks / smart) per query for programmatic use.
 - Smart Routing uses a layered pipeline (ODQ-5): mandatory hard rules (engine-agnostic access constraints, always applied), user-defined hard rules, ML model prediction, then fallback to engine preference order. Rules stored in `routing_rules` table. Time/cost weights are user-configurable via routing settings.
 
 **Observability-First**
@@ -595,6 +749,8 @@ Small items that don't warrant their own phase but should be addressed. These ar
 - Keep one DuckDB worker always warm (eliminate cold starts)
 - Use Kubernetes spot nodes for burst capacity (85-90% savings)
 - Scale down during idle periods
+- Apply a flat running-engine bonus (score reduction) to engines that are already running — nudges the router toward them without complex penalty formulas (ODQ-11)
+- Bonus values are user-tunable per engine type (DuckDB, Databricks) with sensible defaults; setting to 0 effectively disables (ODQ-11)
 
 ---
 

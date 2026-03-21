@@ -339,6 +339,35 @@ const QueryDetailModal: React.FC<{
                 <span className="text-foreground">{decision.reason}</span>
                 <span className="text-muted-foreground">Complexity</span>
                 <span className="text-foreground">{decision.complexity_score}</span>
+
+                {/* Decomposed latency (ODQ-9 / ODQ-10) */}
+                {decision.total_latency_ms != null && (
+                  <>
+                    <span className="text-muted-foreground">Latency</span>
+                    <span className="text-foreground font-mono">
+                      Compute: {decision.compute_time_ms ?? "?"}ms
+                      {decision.io_latency_ms != null && <> + I/O: {decision.io_latency_ms}ms</>}
+                      {decision.cold_start_ms != null && decision.cold_start_ms > 0 && <> + Cold: {decision.cold_start_ms}ms</>}
+                      {" "}= <span className={latencyColor(decision.total_latency_ms)}>{decision.total_latency_ms}ms</span>
+                    </span>
+                  </>
+                )}
+                {decision.estimated_cost_usd != null && (
+                  <>
+                    <span className="text-muted-foreground">Est. Cost</span>
+                    <span className="text-foreground font-mono">${decision.estimated_cost_usd.toFixed(4)}</span>
+                  </>
+                )}
+                {decision.weighted_score != null && (
+                  <>
+                    <span className="text-muted-foreground">Scoring</span>
+                    <span className="text-foreground font-mono text-[10px]">
+                      Latency: {decision.latency_score?.toFixed(2) ?? "—"}
+                      {" · "}Cost: {decision.cost_score?.toFixed(2) ?? "—"}
+                      {" · "}<span className="font-semibold">Weighted: {decision.weighted_score.toFixed(2)}</span>
+                    </span>
+                  </>
+                )}
               </div>
             </div>
           )}

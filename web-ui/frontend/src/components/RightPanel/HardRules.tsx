@@ -2,7 +2,8 @@ import React, { useState, useEffect } from "react";
 import { mockApi } from "@/mocks/api";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 import type { RoutingRule } from "@/types";
-import { Trash2, Plus, ChevronRight, X, ArrowUp, ArrowDown } from "lucide-react";
+import { Trash2, Plus, ChevronRight, ChevronDown, X, ArrowUp, ArrowDown, GitBranch, Info } from "lucide-react";
+import { RoutingInfoModal } from "./RoutingInfoModal";
 
 const conditionOptions = [
   { value: "table_name", label: "Table Name" },
@@ -23,7 +24,9 @@ const targetOptions = [
 
 export const HardRules: React.FC = () => {
   const [rules, setRules] = useState<RoutingRule[]>([]);
+  const [expanded, setExpanded] = useState(false);
   const [showModal, setShowModal] = useState(false);
+  const [showInfoModal, setShowInfoModal] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [deleteId, setDeleteId] = useState<number | null>(null);
 
@@ -111,21 +114,50 @@ export const HardRules: React.FC = () => {
 
   return (
     <>
-      {/* Compact label */}
+      {/* Collapsible section */}
       <div className="text-[12px]">
-        <button
-          onClick={() => setShowModal(true)}
-          className="w-full px-3 py-1.5 border-b border-panel-border flex items-center justify-between hover:bg-muted/50"
+        <div
+          className="w-full px-3 py-1.5 border-b border-panel-border flex items-center gap-1.5 hover:bg-muted/50"
         >
-          <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="flex items-center gap-1.5 flex-1 min-w-0"
+          >
+            {expanded ? <ChevronDown size={12} className="text-muted-foreground shrink-0" /> : <ChevronRight size={12} className="text-muted-foreground shrink-0" />}
+            <GitBranch size={12} className="text-primary shrink-0" />
             <span className="font-semibold text-foreground">If-Then Rules</span>
             <span className="text-[10px] text-muted-foreground">({customRules.length})</span>
-          </div>
-          <ChevronRight size={12} className="text-muted-foreground" />
-        </button>
-        {summary && (
-          <div className="px-3 py-1 text-[10px] text-muted-foreground truncate">
-            {summary}
+          </button>
+          <button
+            onClick={() => setShowInfoModal(true)}
+            className="text-muted-foreground hover:text-primary transition-colors shrink-0"
+            title="How If-Then Rules work"
+          >
+            <Info size={12} />
+          </button>
+        </div>
+        {expanded && (
+          <div className="px-3 py-2">
+            {customRules.length === 0 ? (
+              <p className="text-[11px] text-muted-foreground">No rules defined.</p>
+            ) : (
+              <div className="space-y-1">
+                {customRules.map(r => {
+                  const { condLabel, comparator, value, targetLabel } = parseRule(r);
+                  return (
+                    <div key={r.id} className="text-[11px] text-muted-foreground truncate">
+                      {condLabel} {comparator} <span className="text-foreground font-medium">{value}</span> → {targetLabel}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            <button
+              onClick={() => setShowModal(true)}
+              className="mt-2 text-[10px] text-primary hover:text-primary/80 font-medium"
+            >
+              Edit Rules...
+            </button>
           </div>
         )}
       </div>
@@ -247,6 +279,12 @@ export const HardRules: React.FC = () => {
         onConfirm={handleDelete}
         onCancel={() => setDeleteId(null)}
         destructive
+      />
+
+      <RoutingInfoModal
+        open={showInfoModal}
+        onClose={() => setShowInfoModal(false)}
+        stage="rules"
       />
     </>
   );

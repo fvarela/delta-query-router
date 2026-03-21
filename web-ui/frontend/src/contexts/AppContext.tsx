@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from "react";
-import type { RunMode, PanelMode, QueryExecutionResult, Workspace, EngineCatalogEntry, Model } from "../types";
+import type { RunMode, PanelMode, QueryExecutionResult, Workspace, EngineCatalogEntry, Model, RoutingSettings, StorageLatencyProbe } from "../types";
 import { mockApi } from "../mocks/api";
 
 // ---- App Context ----
@@ -43,6 +43,16 @@ interface AppContextType {
   setActiveModelId: (id: number | null) => void;
   models: Model[];
   reloadModels: () => Promise<void>;
+
+  // Routing settings (ODQ-10)
+  routingSettings: RoutingSettings;
+  updateRoutingSettings: (settings: Partial<RoutingSettings>) => Promise<void>;
+
+  // Storage latency probes (ODQ-9)
+  storageProbes: StorageLatencyProbe[];
+  reloadStorageProbes: () => Promise<void>;
+  runStorageProbes: () => Promise<void>;
+  probesRunning: boolean;
 }
 
 const AppContext = createContext<AppContextType>(null!);
@@ -133,11 +143,40 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (active) setActiveModelId(active.id);
   }, []);
 
+  // Routing settings (ODQ-10)
+  const [routingSettings, setRoutingSettings] = useState<RoutingSettings>({ latency_weight: 0.5, cost_weight: 0.5, cost_estimation_mode: "formula", running_bonus_duckdb: 0.05, running_bonus_databricks: 0.15 });
+
+  const updateRoutingSettings = useCallback(async (settings: Partial<RoutingSettings>) => {
+    const updated = await mockApi.updateRoutingSettings(settings);
+    setRoutingSettings(updated);
+  }, []);
+
+  // Storage latency probes (ODQ-9)
+  const [storageProbes, setStorageProbes] = useState<StorageLatencyProbe[]>([]);
+  const [probesRunning, setProbesRunning] = useState(false);
+
+  const reloadStorageProbes = useCallback(async () => {
+    const probes = await mockApi.getStorageLatencyProbes();
+    setStorageProbes(probes);
+  }, []);
+
+  const runStorageProbes = useCallback(async () => {
+    setProbesRunning(true);
+    try {
+      await mockApi.runStorageLatencyProbes();
+      await reloadStorageProbes();
+    } finally {
+      setProbesRunning(false);
+    }
+  }, [reloadStorageProbes]);
+
   // Initial data load
   useEffect(() => {
     reloadWorkspaces();
     reloadEngines();
     reloadModels();
+    reloadStorageProbes();
+    mockApi.getRoutingSettings().then(setRoutingSettings);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
@@ -151,6 +190,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       runMode,
       panelMode, setPanelMode,
       activeModelId, setActiveModelId, models, reloadModels,
+      routingSettings, updateRoutingSettings,
+      storageProbes, reloadStorageProbes, runStorageProbes, probesRunning,
     }}>
       {children}
     </AppContext.Provider>

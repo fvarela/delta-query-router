@@ -3,7 +3,26 @@ import { mockApi } from "@/mocks/api";
 import { useApp } from "@/contexts/AppContext";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import type { CatalogInfo, SchemaInfo, TableInfo } from "@/types";
+import { FOREIGN_FORMATS } from "@/types";
 import { ChevronRight, ChevronDown, Folder, Table2, Database } from "lucide-react";
+
+/** Three-color classification for the catalog tree indicator bar.
+ *  Green  = DuckDB-readable (Delta / Iceberg)
+ *  Amber  = Databricks-only (native format but blocked, or VIEWs)
+ *  Red    = Foreign / federated tables (always Databricks)
+ */
+const tableBarColor = (t: TableInfo): string => {
+  if (t.table_type === "FOREIGN") return "bg-red-500";
+  if (t.external_engine_read_support) return "bg-status-success";
+  return "bg-status-warning";
+};
+
+/** Tooltip text for the bar color */
+const tableBarTitle = (t: TableInfo): string => {
+  if (t.table_type === "FOREIGN") return "Foreign / federated — Databricks only";
+  if (t.external_engine_read_support) return "DuckDB readable";
+  return "Databricks only";
+};
 
 const formatBytes = (b: number | null) => {
   if (!b) return "-";
@@ -120,7 +139,7 @@ export const CatalogBrowser: React.FC = () => {
                       selectedTable?.full_name === tbl.full_name ? "bg-muted" : ""
                     }`}
                   >
-                    <div className={`w-1 h-4 rounded-sm mr-1 ${tbl.external_engine_read_support ? "bg-status-success" : "bg-status-warning"}`} />
+                    <div className={`w-1 h-4 rounded-sm mr-1 ${tableBarColor(tbl)}`} title={tableBarTitle(tbl)} />
                     <Table2 size={12} className="text-muted-foreground" />
                     <span className="text-foreground">{tbl.name}</span>
                   </button>
@@ -137,15 +156,26 @@ export const CatalogBrowser: React.FC = () => {
           <h4 className="font-semibold text-[12px] mb-2 text-foreground">{selectedTable.full_name}</h4>
           <div className="space-y-1 text-muted-foreground">
             <p><span className="font-medium text-foreground">Type:</span> {selectedTable.table_type}</p>
-            {selectedTable.data_source_format && <p><span className="font-medium text-foreground">Format:</span> {selectedTable.data_source_format}</p>}
+            {selectedTable.data_source_format && (
+              <p>
+                <span className="font-medium text-foreground">Format:</span>{" "}
+                <span className={
+                  FOREIGN_FORMATS.has(selectedTable.data_source_format) ? "text-red-500 font-medium" : ""
+                }>
+                  {selectedTable.data_source_format}
+                </span>
+              </p>
+            )}
             <p><span className="font-medium text-foreground">Size:</span> {formatBytes(selectedTable.size_bytes)}</p>
             <p><span className="font-medium text-foreground">Rows:</span> {formatNumber(selectedTable.row_count)}</p>
             {selectedTable.storage_location && <p><span className="font-medium text-foreground">Location:</span> {selectedTable.storage_location}</p>}
             <p>
               <span className="font-medium text-foreground">DuckDB Readable:</span>{" "}
-              {selectedTable.external_engine_read_support
-                ? <span className="text-status-success">Yes</span>
-                : <span className="text-status-warning">No — {selectedTable.read_support_reason}</span>}
+              {selectedTable.table_type === "FOREIGN"
+                ? <span className="text-red-500">No — Foreign table (Databricks only)</span>
+                : selectedTable.external_engine_read_support
+                  ? <span className="text-status-success">Yes</span>
+                  : <span className="text-status-warning">No — {selectedTable.read_support_reason}</span>}
             </p>
           </div>
           <div className="mt-2">

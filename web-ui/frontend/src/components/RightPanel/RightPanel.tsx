@@ -5,7 +5,11 @@ import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { StatusBadge } from "@/components/shared/StatusBadge";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 import { EnginesTable } from "./EnginesTable";
-import { RunModeSelector } from "./RunModeSelector";
+import { SystemRules } from "./SystemRules";
+import { StorageLatencySection } from "./StorageLatencySection";
+import { SpeedCostSlider } from "./SpeedCostSlider";
+import { RunningEngineBonus } from "./RunningEngineBonus";
+import { RoutingPipelineSummary } from "./RoutingPipelineSummary";
 import { HardRules } from "./HardRules";
 import { MLModelSelector } from "./MLModelSelector";
 import { TrainModePanel } from "./TrainModePanel";
@@ -53,14 +57,22 @@ export const RightPanel: React.FC = () => {
       {view === "routing" ? (
         <div className="flex-1 overflow-y-auto">
           <EnginesTable />
-          <div className="border-t border-panel-border" />
-          <RunModeSelector />
           {runMode === "multi" ? (
             <>
+              <div className="border-t border-panel-border" />
+              <SystemRules />
               <div className="border-t border-panel-border" />
               <HardRules />
               <div className="border-t border-panel-border" />
               <MLModelSelector />
+              <div className="border-t border-panel-border" />
+              <SpeedCostSlider />
+              <div className="border-t border-panel-border" />
+              <RunningEngineBonus />
+              <div className="border-t border-panel-border" />
+              <StorageLatencySection />
+              <div className="border-t border-panel-border" />
+              <RoutingPipelineSummary />
             </>
           ) : (
             <div className="px-3 py-3 text-[11px] text-muted-foreground">
@@ -230,23 +242,67 @@ const CollectionsView: React.FC = () => {
               </thead>
               <tbody>
                 {queryIds.map((qId, i) => {
-                  const row = engines.map(e => benchmarkDetail.results.find(r => r.query_id === qId && r.engine_display_name === e)?.execution_time_ms ?? 0);
-                  const min = Math.min(...row);
-                  const max = Math.max(...row);
+                  const rowResults = engines.map(e => benchmarkDetail.results.find(r => r.query_id === qId && r.engine_display_name === e));
+                  const times = rowResults.map(r => r?.execution_time_ms ?? 0);
+                  const min = Math.min(...times);
+                  const max = Math.max(...times);
                   return (
                     <tr key={qId} className={i % 2 ? "bg-card" : ""}>
                       <td className="px-2 py-1 border-b border-border font-medium text-foreground">Q{i + 1}</td>
-                      {row.map((v, j) => (
-                        <td key={j} className={`px-2 py-1 border-b border-border text-right ${v === min ? "text-status-success font-semibold" : v === max ? "text-status-error" : "text-foreground"}`}>
-                          {v.toLocaleString()}
-                        </td>
-                      ))}
+                      {rowResults.map((r, j) => {
+                        const v = r?.execution_time_ms ?? 0;
+                        const io = r?.io_latency_ms;
+                        const colorClass = v === min ? "text-status-success font-semibold" : v === max ? "text-status-error" : "text-foreground";
+                        return (
+                          <td key={j} className={`px-2 py-1 border-b border-border text-right ${colorClass}`}>
+                            {io != null
+                              ? <span title={`Compute: ${v - io}ms + I/O: ${io}ms`}>{v.toLocaleString()} <span className="text-[9px] text-muted-foreground font-normal">({v - io}+{io} I/O)</span></span>
+                              : v.toLocaleString()
+                            }
+                          </td>
+                        );
+                      })}
                     </tr>
                   );
                 })}
               </tbody>
             </table>
           </div>
+
+          {/* Storage Probes captured during benchmark */}
+          {benchmarkDetail.storage_probes && benchmarkDetail.storage_probes.length > 0 && (
+            <div>
+              <h4 className="font-semibold mb-1 text-foreground">Storage Latency Probes</h4>
+              <table className="w-full border border-border text-[11px]">
+                <thead>
+                  <tr className="bg-muted">
+                    <th className="text-left px-2 py-1 border-b border-border">Location</th>
+                    <th className="text-left px-2 py-1 border-b border-border">Engine</th>
+                    <th className="text-right px-2 py-1 border-b border-border">Latency (ms)</th>
+                    <th className="text-right px-2 py-1 border-b border-border">Bytes Read</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {benchmarkDetail.storage_probes.map((p, idx) => (
+                    <tr key={idx} className="even:bg-card">
+                      <td className="px-2 py-1 border-b border-border text-foreground truncate max-w-[120px]" title={p.storage_location}>
+                        {p.storage_location.replace(/^.*:\/\/[^/]+\//, "")}
+                      </td>
+                      <td className="px-2 py-1 border-b border-border text-foreground">{p.engine_display_name}</td>
+                      <td className={`px-2 py-1 border-b border-border text-right font-medium ${
+                        p.probe_time_ms < 50 ? "text-status-success" : p.probe_time_ms < 150 ? "text-status-warning" : "text-status-error"
+                      }`}>
+                        {p.probe_time_ms}
+                      </td>
+                      <td className="px-2 py-1 border-b border-border text-right text-muted-foreground">
+                        {(p.bytes_read / 1024).toFixed(0)} KB
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </div>
     );
