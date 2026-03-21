@@ -5,19 +5,13 @@ import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { StatusBadge } from "@/components/shared/StatusBadge";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 import { EnginesTable } from "./EnginesTable";
-import { SystemRules } from "./SystemRules";
-import { StorageLatencySection } from "./StorageLatencySection";
-import { SpeedCostSlider } from "./SpeedCostSlider";
-import { RunningEngineBonus } from "./RunningEngineBonus";
-import { RoutingPipelineSummary } from "./RoutingPipelineSummary";
-import { HardRules } from "./HardRules";
-import { MLModelSelector } from "./MLModelSelector";
+import { RoutingPipeline } from "./RoutingPipeline";
 import { TrainModePanel } from "./TrainModePanel";
 import type { Collection, CollectionWithQueries, BenchmarkSummary, BenchmarkDetail } from "@/types";
-import { ArrowLeft, Plus, Trash2, X, ChevronDown, ChevronRight, Zap } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, X, ChevronDown, ChevronRight } from "lucide-react";
 
 export const RightPanel: React.FC = () => {
-  const { runMode, panelMode, setPanelMode, enabledEngineIds, engines, connectedWorkspace } = useApp();
+  const { runMode, panelMode, enabledEngineIds, engines, connectedWorkspace } = useApp();
   const [view, setView] = useState<"routing" | "collections">("routing");
 
   // Count only visible enabled engines (Databricks hidden when no workspace)
@@ -60,19 +54,7 @@ export const RightPanel: React.FC = () => {
           {runMode === "multi" ? (
             <>
               <div className="border-t border-panel-border" />
-              <SystemRules />
-              <div className="border-t border-panel-border" />
-              <HardRules />
-              <div className="border-t border-panel-border" />
-              <MLModelSelector />
-              <div className="border-t border-panel-border" />
-              <SpeedCostSlider />
-              <div className="border-t border-panel-border" />
-              <RunningEngineBonus />
-              <div className="border-t border-panel-border" />
-              <StorageLatencySection />
-              <div className="border-t border-panel-border" />
-              <RoutingPipelineSummary />
+              <RoutingPipeline />
             </>
           ) : (
             <div className="px-3 py-3 text-[11px] text-muted-foreground">
@@ -83,18 +65,6 @@ export const RightPanel: React.FC = () => {
               )}
             </div>
           )}
-
-          {/* Train Mode link — visually secondary */}
-          <div className="border-t border-panel-border" />
-          <div className="px-3 py-2">
-            <button
-              onClick={() => setPanelMode("train")}
-              className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <Zap size={11} className="text-amber-500/70" />
-              <span>Train New Model...</span>
-            </button>
-          </div>
         </div>
       ) : (
         <CollectionsView />
