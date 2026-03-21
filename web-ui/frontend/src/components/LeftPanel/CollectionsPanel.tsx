@@ -148,41 +148,48 @@ export const CollectionsPanel: React.FC = () => {
           <div>
             <h4 className="font-semibold mb-1 text-foreground">Results (ms)</h4>
             <div className="overflow-x-auto">
-              <table className="w-full border border-border text-[11px]">
+              <table className="border-collapse border border-border text-[11px]" style={{ minWidth: "100%" }}>
                 <thead>
                   <tr className="bg-muted">
-                    <th className="text-left px-2 py-1 border-b border-border">Query</th>
-                    {engines.map(e => <th key={e} className="text-right px-2 py-1 border-b border-border whitespace-nowrap">{e}</th>)}
+                    <th className="text-left px-2 py-1 border-b border-r border-border sticky left-0 bg-muted z-10 min-w-[100px]">Engine</th>
+                    {queryIds.map((_qId, i) => (
+                      <th key={i} className="text-right px-2 py-1 border-b border-border whitespace-nowrap">Q{i + 1}</th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {queryIds.map((qId, i) => {
-                    const rowResults = engines.map(e => benchmarkDetail.results.find(r => r.query_id === qId && r.engine_display_name === e));
-                    const times = rowResults.map(r => r?.execution_time_ms ?? 0);
-                    const min = Math.min(...times);
-                    const max = Math.max(...times);
-                    return (
-                      <tr key={qId} className={i % 2 ? "bg-card" : ""}>
-                        <td className="px-2 py-1 border-b border-border font-medium text-foreground">Q{i + 1}</td>
-                        {rowResults.map((r, j) => {
-                          const v = r?.execution_time_ms ?? 0;
-                          const io = r?.io_latency_ms;
-                          const colorClass = v === min ? "text-status-success font-semibold" : v === max ? "text-status-error" : "text-foreground";
-                          return (
-                            <td key={j} className={`px-2 py-1 border-b border-border text-right ${colorClass}`}>
-                              {io != null
-                                ? <span title={`Compute: ${v - io}ms + I/O: ${io}ms`}>{v.toLocaleString()} <span className="text-[9px] text-muted-foreground font-normal">({v - io}+{io} I/O)</span></span>
-                                : v.toLocaleString()
-                              }
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    );
-                  })}
+                  {engines.map((engine, eIdx) => (
+                    <tr key={engine} className={eIdx % 2 ? "bg-card" : ""}>
+                      <td className="px-2 py-1 border-b border-r border-border font-medium text-foreground sticky left-0 z-10 whitespace-nowrap"
+                          style={{ backgroundColor: eIdx % 2 ? "var(--card)" : "var(--background)" }}>
+                        {engine}
+                      </td>
+                      {queryIds.map((qId, qIdx) => {
+                        const r = benchmarkDetail.results.find(res => res.query_id === qId && res.engine_display_name === engine);
+                        const v = r?.execution_time_ms ?? 0;
+                        const io = r?.io_latency_ms;
+                        // Color: best/worst per query (column)
+                        const colTimes = engines.map(e => benchmarkDetail.results.find(res => res.query_id === qId && res.engine_display_name === e)?.execution_time_ms ?? 0);
+                        const min = Math.min(...colTimes);
+                        const max = Math.max(...colTimes);
+                        const colorClass = v === min ? "text-status-success font-semibold" : v === max ? "text-status-error" : "text-foreground";
+                        return (
+                          <td key={qIdx} className={`px-2 py-1 border-b border-border text-right ${colorClass}`}>
+                            {io != null
+                              ? <span title={`Compute: ${v - io}ms + I/O: ${io}ms`}>{v.toLocaleString()}</span>
+                              : v.toLocaleString()
+                            }
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
+            {benchmarkDetail.results.some(r => r.io_latency_ms != null) && (
+              <p className="text-[9px] text-muted-foreground mt-1">Hover cells for I/O breakdown</p>
+            )}
           </div>
 
           {/* Storage Probes captured during benchmark */}

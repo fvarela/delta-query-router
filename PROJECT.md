@@ -453,7 +453,7 @@ Dedicated to routing configuration — no tabs (collections moved to left panel)
 **Benchmarks** (accessible when a collection is open in the Collections tab):
 - "Run Benchmark" button with progress stages (Provisioning engines → Warming up → Running queries → Cleaning up → Complete)
 - Benchmark history list showing past runs per collection
-- Clicking a benchmark shows details: warm-up times per engine, results matrix (queries × engines) with color highlighting for best/worst times
+- Clicking a benchmark shows details: warm-up times per engine, **transposed results matrix** (engines as rows × queries as "Q1, Q2..." columns) with color highlighting for best/worst times per query. Engine name column is sticky for horizontal scroll. I/O breakdown available on hover.
 
 **Train wizard** (opens from "Train New Model..." button in ML Models pipeline stage detail panel):
 - **Step 1 — Select Engines:** Checkbox table of all engines (same as Routing tab engines). At least 2 required. Databricks engines provisioned ephemerally if no workspace connected.
