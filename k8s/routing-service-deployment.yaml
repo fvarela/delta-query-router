@@ -26,6 +26,9 @@ spec:
             name: postgresql-secret
         - secretRef:
             name: admin-credentials
+        - secretRef:
+            name: databricks-credentials
+            optional: true
         ports:
         - containerPort: 8000
           name: http

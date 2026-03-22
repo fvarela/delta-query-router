@@ -26,6 +26,28 @@ _databricks_host: str | None = None
 _databricks_username: str | None = None
 _warehouse_id: str | None = None
 
+import logging
+
+logger = logging.getLogger("routing-service")
+
+@app.on_event("startup")
+async def load_databricks_credentials():
+    global _workspace_client, _databricks_host, _databricks_username, _warehouse_id
+    host = os.environ.get("DATABRICKS_HOST")
+    token = os.environ.get("DATABRICKS_TOKEN")
+    if not host or not token:
+        logger.info("No DATABRICKS_HOST/DATABRICKS_TOKEN in environment, skipping auto-connect")
+        return
+    try:
+        wc = WorkspaceClient(host=host, token=token)
+        me = wc.current_user.me()
+        _workspace_client = wc
+        _databricks_host = host
+        _databricks_username = me.user_name
+        _warehouse_id = os.environ.get("SQL_WAREHOUSE_ID")
+        logger.info(f"Databricks credentials loaded from environment: {me.user_name}")
+    except Exception as e:
+        logger.warning(f"Failed to load Databricks credentials from environment: {e}")
 class LoginRequest(BaseModel):
     username: str
     password: str
