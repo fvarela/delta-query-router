@@ -300,6 +300,7 @@ export const mockApi = {
   async getCollections(): Promise<Collection[]> {
     // TODO: Replace with real API call — GET /api/collections
     await delay(200);
+    return collections.map(({ queries: _q, ...rest }) => rest);
   },
 
   async getCollection(id: number): Promise<CollectionWithQueries> {
@@ -332,6 +333,7 @@ export const mockApi = {
   async deleteCollection(id: number): Promise<void> {
     // TODO: Replace with real API call — DELETE /api/collections/:id
     await delay(200);
+    collections = collections.filter(c => c.id !== id);
   },
 
   async addQuery(collectionId: number, queryText: string): Promise<Query> {
@@ -563,6 +565,7 @@ export const mockApi = {
   async deleteBenchmark(id: number): Promise<void> {
     // TODO: Replace with real API call — DELETE /api/benchmarks/:id
     await delay(200);
+    benchmarks = benchmarks.filter(b => b.id !== id);
   },
 
   // Engine Catalog
@@ -592,6 +595,7 @@ export const mockApi = {
   async getRoutingRules(): Promise<RoutingRule[]> {
     // TODO: Replace with real API call — GET /api/routing/rules
     await delay(200);
+    return JSON.parse(JSON.stringify(routingRules));
   },
 
   async createRoutingRule(rule: Omit<RoutingRule, "id">): Promise<RoutingRule> {
@@ -614,6 +618,7 @@ export const mockApi = {
   async deleteRoutingRule(id: number): Promise<void> {
     // TODO: Replace with real API call — DELETE /api/routing/rules/:id
     await delay(200);
+    routingRules = routingRules.filter(r => r.id !== id);
   },
 
   async toggleRoutingRule(id: number, enabled: boolean): Promise<RoutingRule> {
@@ -687,6 +692,7 @@ export const mockApi = {
   async deleteModel(id: number): Promise<void> {
     // TODO: Replace with real API call — DELETE /api/models/:id
     await delay(200);
+    models = models.filter(m => m.id !== id);
   },
 
   // Query Log
