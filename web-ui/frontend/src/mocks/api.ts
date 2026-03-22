@@ -1,3 +1,28 @@
+// =============================================================================
+// Mock API Layer
+// =============================================================================
+//
+// REAL (wired to backend):
+//   (none yet — all features use mock data)
+//
+// MOCKED (backend endpoints not yet implemented):
+//   - workspaces:    workspace management, PAT tokens, connect/disconnect
+//   - catalog:       Unity Catalog browsing (catalogs, schemas, tables)
+//   - query:         SQL execution, results, routing decisions, streaming logs
+//   - engines:       engine catalog, enable/disable, runtime status
+//   - rules:         system rules, if-then rules CRUD, reset
+//   - models:        ML model listing, activation, training wizard
+//   - collections:   CRUD operations, query management, Add to Collection
+//   - benchmarks:    benchmark lifecycle, results, storage probes
+//   - query logs:    query history with engine filtering
+//   - routing:       routing settings (weights, bonuses, cost estimation mode)
+//   - storage:       storage latency probes
+//
+// All components import exclusively from this file via `mockApi`.
+// When a real endpoint is available, replace the corresponding mock function
+// body with a fetch/axios call — the function signature stays the same.
+// =============================================================================
+
 import type {
   Workspace, DatabricksSettings, DatabricksCredentials, DatabricksConnectResponse,
   Warehouse, Collection, CollectionWithQueries, Query,
@@ -196,11 +221,13 @@ const tableData: Record<string, TableInfo[]> = {
 export const mockApi = {
   // Workspaces
   async getWorkspaces(): Promise<Workspace[]> {
+    // TODO: Replace with real API call — GET /api/workspaces
     await delay(200);
     return JSON.parse(JSON.stringify(workspaces));
   },
 
   async addWorkspace(name: string, url: string): Promise<Workspace> {
+    // TODO: Replace with real API call — POST /api/workspaces
     await delay(200);
     const ws: Workspace = { id: `ws-${nextWorkspaceId++}`, name, url, token: null, connected: false };
     workspaces.push(ws);
@@ -208,12 +235,14 @@ export const mockApi = {
   },
 
   async deleteWorkspace(id: string): Promise<void> {
+    // TODO: Replace with real API call — DELETE /api/workspaces/:id
     await delay(200);
     if (connectedWorkspaceId === id) connectedWorkspaceId = null;
     workspaces = workspaces.filter(w => w.id !== id);
   },
 
   async setWorkspaceToken(id: string, token: string): Promise<Workspace> {
+    // TODO: Replace with real API call — PUT /api/workspaces/:id/token
     await delay(200);
     const ws = workspaces.find(w => w.id === id);
     if (!ws) throw new Error("Workspace not found");
@@ -222,6 +251,7 @@ export const mockApi = {
   },
 
   async connectWorkspace(id: string): Promise<Workspace> {
+    // TODO: Replace with real API call — POST /api/workspaces/:id/connect
     await delay(600);
     // Disconnect any existing
     workspaces.forEach(w => w.connected = false);
@@ -234,6 +264,7 @@ export const mockApi = {
   },
 
   async disconnectWorkspace(id: string): Promise<Workspace> {
+    // TODO: Replace with real API call — POST /api/workspaces/:id/disconnect
     await delay(200);
     const ws = workspaces.find(w => w.id === id);
     if (!ws) throw new Error("Workspace not found");
@@ -244,11 +275,13 @@ export const mockApi = {
 
   // Catalog browser
   async getCatalogs(): Promise<CatalogInfo[]> {
+    // TODO: Replace with real API call — GET /api/catalog/catalogs
     await delay(300);
     return [{ name: "delta_router_dev" }];
   },
 
   async getSchemas(_catalog: string): Promise<SchemaInfo[]> {
+    // TODO: Replace with real API call — GET /api/catalog/:catalog/schemas
     await delay(300);
     return [
       { name: "tpcds", catalog_name: "delta_router_dev" },
@@ -258,17 +291,19 @@ export const mockApi = {
   },
 
   async getTables(catalog: string, schema: string): Promise<TableInfo[]> {
+    // TODO: Replace with real API call — GET /api/catalog/:catalog/:schema/tables
     await delay(400);
     return tableData[`${catalog}.${schema}`] || [];
   },
 
   // Collections
   async getCollections(): Promise<Collection[]> {
+    // TODO: Replace with real API call — GET /api/collections
     await delay(200);
-    return collections.map(({ queries: _q, ...c }) => c);
   },
 
   async getCollection(id: number): Promise<CollectionWithQueries> {
+    // TODO: Replace with real API call — GET /api/collections/:id
     await delay(200);
     const c = collections.find(c => c.id === id);
     if (!c) throw new Error("Collection not found");
@@ -276,6 +311,7 @@ export const mockApi = {
   },
 
   async createCollection(name: string, description: string): Promise<Collection> {
+    // TODO: Replace with real API call — POST /api/collections
     await delay(300);
     const c: CollectionWithQueries = { id: nextCollectionId++, name, description, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), queries: [] };
     collections.push(c);
@@ -284,6 +320,7 @@ export const mockApi = {
   },
 
   async updateCollection(id: number, data: Partial<Collection>): Promise<Collection> {
+    // TODO: Replace with real API call — PUT /api/collections/:id
     await delay(200);
     const c = collections.find(c => c.id === id);
     if (!c) throw new Error("Not found");
@@ -293,11 +330,12 @@ export const mockApi = {
   },
 
   async deleteCollection(id: number): Promise<void> {
+    // TODO: Replace with real API call — DELETE /api/collections/:id
     await delay(200);
-    collections = collections.filter(c => c.id !== id);
   },
 
   async addQuery(collectionId: number, queryText: string): Promise<Query> {
+    // TODO: Replace with real API call — POST /api/collections/:id/queries
     await delay(200);
     const c = collections.find(c => c.id === collectionId);
     if (!c) throw new Error("Not found");
@@ -308,6 +346,7 @@ export const mockApi = {
   },
 
   async deleteQuery(collectionId: number, queryId: number): Promise<void> {
+    // TODO: Replace with real API call — DELETE /api/collections/:collectionId/queries/:queryId
     await delay(200);
     const c = collections.find(c => c.id === collectionId);
     if (!c) throw new Error("Not found");
@@ -317,6 +356,7 @@ export const mockApi = {
 
   // Query Execution
   async executeQuery(sql: string, routingMode: string, onLog?: (event: RoutingLogEvent) => void): Promise<QueryExecutionResult> {
+    // TODO: Replace with real API call — POST /api/query/execute
     const collectedEvents: RoutingLogEvent[] = [];
     const emit = async (level: RoutingLogLevel, stage: string, message: string, delayMs = 80 + Math.random() * 120) => {
       const ev = mkLog(level, stage, message);
@@ -486,12 +526,14 @@ export const mockApi = {
 
   // Benchmarks
   async getBenchmarks(collectionId?: number): Promise<BenchmarkSummary[]> {
+    // TODO: Replace with real API call — GET /api/benchmarks
     await delay(200);
     const filtered = collectionId != null ? benchmarks.filter(b => b.collection_id === collectionId) : benchmarks;
     return filtered.map(({ warmups: _w, results: _r, storage_probes: _s, ...rest }) => rest);
   },
 
   async getBenchmark(id: number): Promise<BenchmarkDetail> {
+    // TODO: Replace with real API call — GET /api/benchmarks/:id
     await delay(300);
     const b = benchmarks.find(b => b.id === id);
     if (!b) throw new Error("Not found");
@@ -499,6 +541,7 @@ export const mockApi = {
   },
 
   async createBenchmark(collectionId: number, _catalogEngineIds: number[]): Promise<BenchmarkSummary> {
+    // TODO: Replace with real API call — POST /api/benchmarks
     await delay(500);
     const b: BenchmarkDetail = {
       id: nextBenchmarkId++, collection_id: collectionId, status: "complete", engine_count: 3,
@@ -518,17 +561,19 @@ export const mockApi = {
   },
 
   async deleteBenchmark(id: number): Promise<void> {
+    // TODO: Replace with real API call — DELETE /api/benchmarks/:id
     await delay(200);
-    benchmarks = benchmarks.filter(b => b.id !== id);
   },
 
   // Engine Catalog
   async getEngineCatalog(): Promise<EngineCatalogEntry[]> {
+    // TODO: Replace with real API call — GET /api/engines
     await delay(200);
     return JSON.parse(JSON.stringify(engineCatalog));
   },
 
   async toggleEngineCatalogEntry(id: number, enabled: boolean): Promise<EngineCatalogEntry> {
+    // TODO: Replace with real API call — PUT /api/engines/:id
     await delay(200);
     const e = engineCatalog.find(e => e.id === id);
     if (!e) throw new Error("Not found");
@@ -537,6 +582,7 @@ export const mockApi = {
   },
 
   async resetEngineCatalog(): Promise<EngineCatalogEntry[]> {
+    // TODO: Replace with real API call — POST /api/engines/reset
     await delay(300);
     engineCatalog = JSON.parse(JSON.stringify(defaultEngineCatalog));
     return JSON.parse(JSON.stringify(engineCatalog));
@@ -544,11 +590,12 @@ export const mockApi = {
 
   // Routing Rules
   async getRoutingRules(): Promise<RoutingRule[]> {
+    // TODO: Replace with real API call — GET /api/routing/rules
     await delay(200);
-    return JSON.parse(JSON.stringify(routingRules));
   },
 
   async createRoutingRule(rule: Omit<RoutingRule, "id">): Promise<RoutingRule> {
+    // TODO: Replace with real API call — POST /api/routing/rules
     await delay(200);
     const r: RoutingRule = { ...rule, id: nextRuleId++ };
     routingRules.push(r);
@@ -556,6 +603,7 @@ export const mockApi = {
   },
 
   async updateRoutingRule(id: number, data: Partial<RoutingRule>): Promise<RoutingRule> {
+    // TODO: Replace with real API call — PUT /api/routing/rules/:id
     await delay(200);
     const r = routingRules.find(r => r.id === id);
     if (!r) throw new Error("Not found");
@@ -564,11 +612,12 @@ export const mockApi = {
   },
 
   async deleteRoutingRule(id: number): Promise<void> {
+    // TODO: Replace with real API call — DELETE /api/routing/rules/:id
     await delay(200);
-    routingRules = routingRules.filter(r => r.id !== id);
   },
 
   async toggleRoutingRule(id: number, enabled: boolean): Promise<RoutingRule> {
+    // TODO: Replace with real API call — PUT /api/routing/rules/:id/toggle
     await delay(200);
     const r = routingRules.find(r => r.id === id);
     if (!r) throw new Error("Not found");
@@ -577,6 +626,7 @@ export const mockApi = {
   },
 
   async resetRoutingRules(): Promise<RoutingRule[]> {
+    // TODO: Replace with real API call — POST /api/routing/rules/reset
     await delay(300);
     routingRules = [
       { id: 1, priority: 1, condition_type: "table_type", condition_value: "VIEW", target_engine: "databricks", is_system: true, enabled: true },
@@ -587,11 +637,13 @@ export const mockApi = {
 
   // Models
   async getModels(): Promise<Model[]> {
+    // TODO: Replace with real API call — GET /api/models
     await delay(200);
     return JSON.parse(JSON.stringify(models));
   },
 
   async trainModel(enabledEngineIds: string[], _trainingConfig?: { collections?: { id: number; runs: number }[]; benchmarkIds?: number[] }): Promise<Model> {
+    // TODO: Replace with real API call — POST /api/models/train
     await delay(3000);
     const benchmarkCount = (_trainingConfig?.benchmarkIds?.length ?? 0) +
       (_trainingConfig?.collections?.reduce((sum, c) => sum + c.runs, 0) ?? 1);
@@ -616,6 +668,7 @@ export const mockApi = {
   },
 
   async activateModel(id: number): Promise<Model> {
+    // TODO: Replace with real API call — POST /api/models/:id/activate
     await delay(200);
     models.forEach(m => m.is_active = m.id === id);
     const m = models.find(m => m.id === id)!;
@@ -623,6 +676,7 @@ export const mockApi = {
   },
 
   async deactivateModel(id: number): Promise<Model> {
+    // TODO: Replace with real API call — POST /api/models/:id/deactivate
     await delay(200);
     const m = models.find(m => m.id === id);
     if (!m) throw new Error("Not found");
@@ -631,12 +685,13 @@ export const mockApi = {
   },
 
   async deleteModel(id: number): Promise<void> {
+    // TODO: Replace with real API call — DELETE /api/models/:id
     await delay(200);
-    models = models.filter(m => m.id !== id);
   },
 
   // Query Log
   async getQueryLogs(engineFilter?: string): Promise<LogEntry[]> {
+    // TODO: Replace with real API call — GET /api/query/logs
     await delay(200);
     let logs = [...queryLogs];
     if (engineFilter && engineFilter !== "all") {
@@ -647,6 +702,7 @@ export const mockApi = {
 
   // Utility: count benchmark runs for given engines
   async getBenchmarkCountForEngines(engineIds: string[]): Promise<number> {
+    // TODO: Replace with real API call — GET /api/benchmarks/count
     await delay(100);
     // Count unique benchmark results that involve any of the given engine IDs
     let count = 0;
@@ -659,11 +715,13 @@ export const mockApi = {
 
   // Storage Latency Probes (ODQ-9)
   async getStorageLatencyProbes(): Promise<StorageLatencyProbe[]> {
+    // TODO: Replace with real API call — GET /api/storage/probes
     await delay(200);
     return JSON.parse(JSON.stringify(storageLatencyProbes));
   },
 
   async runStorageLatencyProbes(): Promise<StorageLatencyProbe[]> {
+    // TODO: Replace with real API call — POST /api/storage/probes/run
     await delay(2000); // Simulate probe execution time
     const now = new Date().toISOString();
     const newProbes: StorageLatencyProbe[] = [
@@ -677,11 +735,13 @@ export const mockApi = {
 
   // Routing Settings
   async getRoutingSettings(): Promise<RoutingSettings> {
+    // TODO: Replace with real API call — GET /api/routing/settings
     await delay(100);
     return { ...routingSettings };
   },
 
   async updateRoutingSettings(settings: Partial<RoutingSettings>): Promise<RoutingSettings> {
+    // TODO: Replace with real API call — PUT /api/routing/settings
     await delay(200);
     Object.assign(routingSettings, settings);
     return { ...routingSettings };

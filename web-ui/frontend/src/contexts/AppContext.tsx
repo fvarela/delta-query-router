@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from "react";
 import type { RunMode, PanelMode, QueryExecutionResult, Workspace, EngineCatalogEntry, Model, RoutingSettings, StorageLatencyProbe } from "../types";
-import { mockApi } from "../mocks/api";
+import { mockApi } from "@/mocks/api";
 
 // ---- App Context ----
 interface AppContextType {
