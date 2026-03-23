@@ -2,6 +2,7 @@ import os
 import secrets
 import httpx
 import psycopg2
+import db
 from fastapi import FastAPI, Depends, HTTPException, Header
 from pydantic import BaseModel
 from databricks.sdk import WorkspaceClient
@@ -48,6 +49,12 @@ async def load_databricks_credentials():
         logger.info(f"Databricks credentials loaded from environment: {me.user_name}")
     except Exception as e:
         logger.warning(f"Failed to load Databricks credentials from environment: {e}")
+@app.on_event("startup")
+async def init_database():
+    db.init_db()
+@app.on_event("shutdown")
+async def close_database():
+    db.close_db()
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -144,14 +151,7 @@ async def health_backends():
     backends = {}
     # Check PostgreSQL
     try:
-        conn = psycopg2.connect(
-            host=POSTGRES_HOST,
-            port=POSTGRES_PORT,
-            dbname=POSTGRES_DB,
-            user=POSTGRES_USER,
-            password=POSTGRES_PASSWORD,
-            connect_timeout=3,
-        )
+        conn = db.fetch_one("SELECT 1")
         conn.close()
         backends["postgresql"] = {"status": "connected"}
     except Exception as e:

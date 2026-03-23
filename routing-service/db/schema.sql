@@ -58,6 +58,39 @@ CREATE TABLE IF NOT EXISTS api_keys (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     revoked_at      TIMESTAMPTZ
 );
+-- Routing rules: system hard rules + user-defined rules
+CREATE TABLE IF NOT EXISTS routing_rules (
+    id              SERIAL PRIMARY KEY,
+    priority        INTEGER NOT NULL,
+    condition_type  TEXT NOT NULL,
+    condition_value TEXT NOT NULL,
+    target_engine   TEXT NOT NULL,
+    is_system       BOOLEAN NOT NULL DEFAULT FALSE,
+    enabled         BOOLEAN NOT NULL DEFAULT TRUE
+);
+-- Seed system routing rules (hard rules that cannot be deleted, only toggled)
+INSERT INTO routing_rules (id, priority, condition_type, condition_value, target_engine, is_system)
+VALUES
+    (1, 1, 'table_type', 'VIEW', 'databricks', true),
+    (2, 2, 'has_governance', 'row_filter', 'databricks', true),
+    (3, 3, 'has_governance', 'column_mask', 'databricks', true),
+    (4, 4, 'table_type', 'FOREIGN', 'databricks', true),
+    (5, 5, 'external_access', 'false', 'databricks', true)
+ON CONFLICT DO NOTHING;
+
+-- Routing settings: singleton row for global routing configuration
+CREATE TABLE IF NOT EXISTS routing_settings (
+    id                       INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    latency_weight           FLOAT NOT NULL DEFAULT 0.5,
+    cost_weight              FLOAT NOT NULL DEFAULT 0.5,
+    cost_estimation_mode     TEXT NOT NULL DEFAULT 'formula',
+    running_bonus_duckdb     FLOAT NOT NULL DEFAULT 0.05,
+    running_bonus_databricks FLOAT NOT NULL DEFAULT 0.15,
+    updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+-- Seed with defaults
+INSERT INTO routing_settings (id) VALUES (1) ON CONFLICT DO NOTHING;
+
 CREATE INDEX IF NOT EXISTS idx_api_keys_key_prefix ON api_keys(key_prefix);
 -- Indexes for common query patterns
 CREATE INDEX IF NOT EXISTS idx_query_logs_submitted_at ON query_logs(submitted_at);
