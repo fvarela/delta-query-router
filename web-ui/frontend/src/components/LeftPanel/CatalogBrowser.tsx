@@ -2,26 +2,41 @@ import React, { useState, useEffect } from "react";
 import { mockApi } from "@/mocks/api";
 import { useApp } from "@/contexts/AppContext";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
-import type { CatalogInfo, SchemaInfo, TableInfo } from "@/types";
+import type { CatalogInfo, SchemaInfo, TableInfo, StorageAccountStatus } from "@/types";
 import { FOREIGN_FORMATS } from "@/types";
-import { ChevronRight, ChevronDown, Folder, Table2, Database } from "lucide-react";
+import { ChevronRight, ChevronDown, Folder, Table2, Database, ExternalLink, RefreshCw } from "lucide-react";
 
 /** Three-color classification for the catalog tree indicator bar.
- *  Green  = DuckDB-readable (Delta / Iceberg)
- *  Amber  = Databricks-only (native format but blocked, or VIEWs)
+ *  Green  = DuckDB-readable (Delta / Iceberg) AND storage accessible
+ *  Amber  = Databricks-only (native format but blocked, or VIEWs), OR DuckDB-readable but storage inaccessible
  *  Red    = Foreign / federated tables (always Databricks)
  */
-const tableBarColor = (t: TableInfo): string => {
+const tableBarColor = (t: TableInfo, storageAccounts: StorageAccountStatus[]): string => {
   if (t.table_type === "FOREIGN") return "bg-red-500";
-  if (t.external_engine_read_support) return "bg-status-success";
+  if (t.external_engine_read_support) {
+    // Check if the storage account for this table is inaccessible
+    const acct = findStorageAccount(t, storageAccounts);
+    if (acct && acct.status === "inaccessible") return "bg-status-warning";
+    return "bg-status-success";
+  }
   return "bg-status-warning";
 };
 
 /** Tooltip text for the bar color */
-const tableBarTitle = (t: TableInfo): string => {
+const tableBarTitle = (t: TableInfo, storageAccounts: StorageAccountStatus[]): string => {
   if (t.table_type === "FOREIGN") return "Foreign / federated — Databricks only";
-  if (t.external_engine_read_support) return "DuckDB readable";
+  if (t.external_engine_read_support) {
+    const acct = findStorageAccount(t, storageAccounts);
+    if (acct && acct.status === "inaccessible") return "DuckDB readable but storage inaccessible";
+    return "DuckDB readable";
+  }
   return "Databricks only";
+};
+
+/** Find the storage account status matching a table's storage_location */
+const findStorageAccount = (t: TableInfo, storageAccounts: StorageAccountStatus[]): StorageAccountStatus | undefined => {
+  if (!t.storage_location) return undefined;
+  return storageAccounts.find(a => t.storage_location!.includes(a.storage_account));
 };
 
 const formatBytes = (b: number | null) => {
@@ -34,7 +49,7 @@ const formatBytes = (b: number | null) => {
 const formatNumber = (n: number | null) => n == null ? "-" : n.toLocaleString();
 
 export const CatalogBrowser: React.FC = () => {
-  const { connectedWorkspace, setEditorSql, setCollectionContext } = useApp();
+  const { connectedWorkspace, setEditorSql, setCollectionContext, storageAccounts, testStorageConnectivity, storageTestRunning, setOpenSpModal } = useApp();
   const [catalogs, setCatalogs] = useState<CatalogInfo[]>([]);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [schemas, setSchemas] = useState<Record<string, SchemaInfo[]>>({});
@@ -139,7 +154,7 @@ export const CatalogBrowser: React.FC = () => {
                       selectedTable?.full_name === tbl.full_name ? "bg-muted" : ""
                     }`}
                   >
-                    <div className={`w-1 h-4 rounded-sm mr-1 ${tableBarColor(tbl)}`} title={tableBarTitle(tbl)} />
+                    <div className={`w-1 h-4 rounded-sm mr-1 ${tableBarColor(tbl, storageAccounts)}`} title={tableBarTitle(tbl, storageAccounts)} />
                     <Table2 size={12} className="text-muted-foreground" />
                     <span className="text-foreground">{tbl.name}</span>
                   </button>
@@ -177,6 +192,59 @@ export const CatalogBrowser: React.FC = () => {
                   ? <span className="text-status-success">Yes</span>
                   : <span className="text-status-warning">No — {selectedTable.read_support_reason}</span>}
             </p>
+            {/* Storage Access (ODQ-12) */}
+            {selectedTable.storage_location && (() => {
+              const acct = findStorageAccount(selectedTable, storageAccounts);
+              if (!acct) return null;
+              return (
+                <div className="mt-1 pt-1 border-t border-border/50">
+                  <p className="flex items-center gap-1">
+                    <span className="font-medium text-foreground">Storage Access:</span>
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                      acct.status === "accessible" ? "bg-status-success"
+                      : acct.status === "inaccessible" ? "bg-status-error"
+                      : "bg-muted-foreground/40"
+                    }`} />
+                    {acct.status === "accessible" && <span className="text-status-success">Accessible</span>}
+                    {acct.status === "inaccessible" && <span className="text-status-error">Inaccessible</span>}
+                    {acct.status === "untested" && <span className="text-muted-foreground">Untested</span>}
+                  </p>
+                  <p className="text-[10px] font-mono text-muted-foreground mt-0.5">{acct.storage_account}</p>
+                  {acct.status === "inaccessible" && acct.failure_reason && (
+                    <p className="text-[10px] text-status-error mt-0.5">{acct.failure_reason}</p>
+                  )}
+                  <div className="flex items-center gap-2 mt-1">
+                    {acct.status === "inaccessible" && acct.azure_portal_link && (
+                      <a
+                        href={acct.azure_portal_link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-0.5 text-[10px] text-primary hover:text-primary/80"
+                      >
+                        Fix in Azure Portal <ExternalLink size={9} />
+                      </a>
+                    )}
+                    {acct.status !== "accessible" && (
+                      <button
+                        onClick={() => testStorageConnectivity(acct.storage_account)}
+                        disabled={storageTestRunning}
+                        className="inline-flex items-center gap-0.5 text-[10px] text-primary hover:text-primary/80 disabled:opacity-40"
+                      >
+                        <RefreshCw size={9} /> Test
+                      </button>
+                    )}
+                    {!acct.status || acct.status === "untested" ? (
+                      <button
+                        onClick={() => setOpenSpModal(true)}
+                        className="text-[10px] text-primary hover:text-primary/80"
+                      >
+                        Configure SP
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
           <div className="mt-2">
             <p className="font-medium text-foreground mb-1">Columns</p>

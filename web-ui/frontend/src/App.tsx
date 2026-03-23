@@ -2,6 +2,7 @@ import { useState } from "react";
 import { AppProvider } from "./contexts/AppContext";
 import { TopBar } from "./components/TopBar/TopBar";
 import { WorkspaceManager } from "./components/RightPanel/WorkspaceManager";
+import { StorageAccountsManager } from "./components/LeftPanel/StorageAccountsManager";
 import { CatalogBrowser } from "./components/LeftPanel/CatalogBrowser";
 import { CollectionsPanel } from "./components/LeftPanel/CollectionsPanel";
 import { CenterPanel } from "./components/CenterPanel/CenterPanel";
@@ -13,6 +14,8 @@ const LeftPanel = () => {
   return (
     <div className="flex flex-col h-full overflow-hidden">
       <WorkspaceManager />
+      <div className="border-t border-panel-border" />
+      <StorageAccountsManager />
       <div className="border-t border-panel-border" />
       {/* Tabs */}
       <div className="flex border-b border-panel-border shrink-0">

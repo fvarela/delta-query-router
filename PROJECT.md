@@ -271,6 +271,64 @@ final_score = weighted_score                   (if stopped / starting / unknown)
 - **Running Engine Bonus scoring sub-node:** Shown in the RoutingPipeline timeline as a sub-node under Scoring & Select, between Priority and Storage. Status shows current bonus values (e.g., "0.05/0.15"). Click to open detail panel with explanatory text, two editable numeric inputs, and a "Reset to Defaults" button.
 - **Routing decision log:** Include bonus application in log output when applicable.
 
+### ODQ-12: Storage account authorization for external Delta table access — DECIDED
+
+**Decision (2026-03-23):** DuckDB engines read Delta and Iceberg tables directly from cloud storage (Azure ADLS Gen2 in the current deployment). This requires the system to authenticate against each storage account independently of the Databricks workspace connection. The solution adds Azure service principal configuration, automatic storage account discovery from Unity Catalog, and connectivity/permission verification with actionable diagnostic feedback.
+
+**Motivation:**
+- Databricks PAT tokens authorize access to the Databricks workspace and Unity Catalog API, but they do not grant access to the underlying cloud storage where Delta table data files reside.
+- DuckDB workers need storage-level credentials (Azure service principal) to read data files from ADLS Gen2 containers.
+- Storage accounts may have firewall rules, VNet restrictions, or missing role assignments that prevent access — users need clear diagnostics to resolve these issues independently.
+- The system already tracks `storage_location` per table (from Unity Catalog `TableInfo`); this feature leverages that metadata to discover and verify all relevant storage accounts automatically.
+
+**Service principal configuration:**
+- Users provide Azure service principal details (tenant ID, client ID, client secret) via a modal in the UI, following the same pattern as the PAT token modal for Databricks workspaces.
+- Credentials are stored in a K8s Secret (`azure-storage-credentials`) with keys: `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`. Same RBAC pattern as `databricks-credentials` — the routing-service ServiceAccount creates/updates the Secret via the Kubernetes API.
+- The service principal is used by both the routing-service (for connectivity verification) and DuckDB workers (for reading data files from Azure storage). DuckDB workers mount the same Secret as environment variables.
+- A single service principal is configured system-wide. Per-storage-account credentials are not supported in this design — the expectation is that the service principal has been granted access to all relevant storage accounts by the Azure administrator.
+
+**Storage account discovery:**
+- The system extracts unique storage account hostnames from `storage_location` fields across all tables in the connected Unity Catalog (e.g., `abfss://container@myaccount.dfs.core.windows.net/path/` → `myaccount.dfs.core.windows.net`).
+- Discovery runs automatically when the Unity Catalog is browsed (table metadata is already fetched and cached). No manual entry of storage accounts is needed.
+- Each unique storage account hostname is tracked in the `storage_account_status` table with its latest connectivity test result.
+
+**Connectivity and permission verification:**
+- For each discovered storage account, the system authenticates as the service principal (via `azure-identity` `ClientSecretCredential`) and attempts a lightweight operation: list blobs in the root container or read a known path prefix from a table's `storage_location`.
+- The test checks three things in sequence: (1) DNS resolution — the storage account hostname is reachable, (2) network access — the request is not blocked by firewall or VNet rules, (3) authorization — the service principal has at least `Storage Blob Data Reader` role on the storage account or container.
+- Results are cached in `storage_account_status` with a TTL (default 5 minutes). On-demand re-testing is available via the API and UI.
+
+**Diagnostic feedback and failure classification:**
+- Each failure is classified into a category with specific remediation guidance:
+  - `auth` — Service principal lacks role assignment. Guidance: "Grant the Storage Blob Data Reader role to the service principal on this storage account." Link: `https://portal.azure.com/#@{tenant_id}/resource/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Storage/storageAccounts/{account}/iam`
+  - `firewall` — Storage account firewall is blocking access. Guidance: "Add the IP address of the machine running Delta Router to the storage account's firewall allowlist, or add the VNet/subnet to the network rules." Link: `https://portal.azure.com/#@{tenant_id}/resource/.../networking`
+  - `vnet` — Storage account is configured for VNet-only access. Guidance: "The storage account only allows access from within a virtual network. External access requires adding a VNet rule or configuring a private endpoint."
+  - `dns` — Storage account hostname cannot be resolved. Guidance: "Verify the storage account name is correct and exists in the Azure subscription."
+  - `unknown` — Unclassified failure. Guidance: "An unexpected error occurred. Check the routing-service logs for details."
+- Azure portal links are constructed dynamically from the storage account name and (when available) the Azure subscription and resource group. When subscription/resource group are not known, a portal search link is provided instead: `https://portal.azure.com/#browse/Microsoft.Storage%2FStorageAccounts?query={account_name}`
+- Modifying network rules or role assignments directly is out of scope — the system only diagnoses and links.
+
+**Schema:**
+- `storage_account_status`: id (serial PK), storage_account (text — hostname, e.g. `myaccount.dfs.core.windows.net`), storage_location_prefix (text — the `abfss://container@host/` prefix shared by tables on this account), status (enum: `accessible` / `inaccessible` / `untested`), failure_reason (text, nullable), failure_category (enum: `auth` / `firewall` / `vnet` / `dns` / `unknown`, nullable), azure_portal_link (text, nullable), tested_at (timestamptz, nullable), ttl_seconds (int, default 300)
+- Index on `(storage_account, tested_at DESC)` for efficient latest-status lookups
+
+**API:**
+- `POST /api/settings/azure-storage` — save Azure service principal credentials (tenant_id, client_id, client_secret) to K8s Secret
+- `GET /api/settings/azure-storage` — current configuration status (never returns client_secret; returns tenant_id and client_id only, plus a `configured` boolean)
+- `DELETE /api/settings/azure-storage` — remove Azure storage credentials
+- `GET /api/storage-accounts` — list all discovered storage accounts with latest connectivity status, failure reasons, and Azure portal links
+- `POST /api/storage-accounts/test` — trigger connectivity test for all discovered storage accounts. Optional body param `storage_account` to test a single account.
+- `GET /api/storage-accounts/{account}/diagnostics` — detailed diagnostic info for a specific storage account: failure category, remediation steps, Azure portal links, raw error message
+
+**UI implications:**
+- **Left panel — Storage Accounts section (below Workspaces header):** A compact section similar to the Workspaces header. Shows a status summary: "Storage: 3/4 accessible" with a colored dot (green if all accessible, amber if partial, red if none, gray if untested). Clicking expands to show each discovered storage account with its status dot and hostname. "Configure Service Principal" button opens a modal (tenant ID, client ID, client secret inputs — same UX pattern as the PAT token modal). "Test All" button triggers connectivity verification. When no service principal is configured, shows "Configure Azure credentials to enable external table access."
+- **Catalog Browser — table detail view:** Below the existing "DuckDB Readable" line, add a "Storage Access" line showing the storage account hostname with a connectivity status dot (green/red/gray). When red, show the failure reason inline (e.g., "Service principal lacks Storage Blob Data Reader role") and a clickable "Fix in Azure Portal" link. A small "Test" button triggers an on-demand connectivity check for that specific storage account.
+- **Catalog Browser — tree indicator:** Tables whose storage account is inaccessible should show the existing amber indicator (Databricks-only) even if their format and flags would otherwise show green (DuckDB-readable). The bar tooltip should reflect this: "DuckDB readable but storage account not accessible — configure Azure credentials." This makes inaccessibility immediately visible in the tree without requiring users to click into each table.
+
+**Interaction with existing features:**
+- **Routing (ODQ-5):** Storage account inaccessibility becomes a mandatory system rule: "Table's storage account not accessible → route to Databricks." This extends the existing "table not externally accessible" rule to cover storage-level access failures, not just Unity Catalog flags.
+- **Storage latency probes (ODQ-9):** Probes for DuckDB engines require the service principal to be configured and the storage account to be accessible. If the service principal is not configured or the account is inaccessible, probes for that location are skipped with a clear status message.
+- **Benchmarks (ODQ-2/ODQ-7):** DuckDB benchmark results are only meaningful for tables whose storage accounts are accessible. The benchmark UI should warn if any selected collection contains tables with inaccessible storage.
+
 ---
 
 ### Execution Engines
@@ -290,6 +348,7 @@ final_score = weighted_score                   (if stopped / starting / unknown)
   - Tables with row filters or column masks → NOT accessible externally; must route to Databricks SQL Warehouse
   - Views → must be executed on Databricks SQL Warehouse
   - Foreign/federated tables (SQL Server, Snowflake, MySQL, PostgreSQL, etc. registered via Lakehouse Federation) → NOT accessible externally; no `storage_location`, no `HAS_DIRECT_EXTERNAL_ENGINE_READ_SUPPORT`; must always route to Databricks SQL Warehouse which acts as the gateway to the federated source
+  - **Storage account accessibility (ODQ-12):** Even when a table passes the above checks (correct format, external access flags set), DuckDB can only read it if the configured Azure service principal has network access and `Storage Blob Data Reader` (or equivalent) role on the underlying storage account. Tables whose storage account fails connectivity verification are treated as Databricks-only for routing purposes. See ODQ-12 for the verification flow and diagnostic feedback.
 
 ### Infrastructure
 
@@ -342,11 +401,12 @@ final_score = weighted_score                   (if stopped / starting / unknown)
 ### Credential Storage
 
 **Kubernetes Secrets**
-- Purpose: Persist Databricks credentials (PAT or service principal details) across pod restarts
-- Rationale: Kubernetes-native; credentials are base64-encoded and can be encrypted at rest; mounted as environment variables into the routing-service pod; avoids storing secrets in PostgreSQL
-- Flow: User enters credentials in the web-ui Settings section → web-ui calls routing-service API → routing-service writes/updates a K8s Secret via the Kubernetes API → routing-service restarts or reloads to pick up the new environment variables
+- Purpose: Persist Databricks credentials and Azure storage credentials across pod restarts
+- Rationale: Kubernetes-native; credentials are base64-encoded and can be encrypted at rest; mounted as environment variables into the routing-service pod (and DuckDB worker pods for storage credentials); avoids storing secrets in PostgreSQL
+- Flow: User enters credentials in the web-ui → web-ui calls routing-service API → routing-service writes/updates a K8s Secret via the Kubernetes API → routing-service restarts or reloads to pick up the new environment variables
 - RBAC: The routing-service ServiceAccount needs permission to create/update Secrets in its namespace
 - Secret name: `databricks-credentials` containing keys: `DATABRICKS_HOST`, `DATABRICKS_TOKEN` (PAT mode) or `DATABRICKS_CLIENT_ID`, `DATABRICKS_CLIENT_SECRET` (service principal mode)
+- Secret name: `azure-storage-credentials` containing keys: `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` (ODQ-12). Used by routing-service for storage account connectivity verification and by DuckDB workers for reading data files from Azure ADLS Gen2. Both routing-service and duckdb-worker pods mount this Secret as environment variables.
 
 ### Authentication
 
@@ -410,7 +470,7 @@ This is sufficient for local development on Minikube where access is via port-fo
 - Execute queries on chosen engine (DuckDB or Databricks)
 - Log all decisions and metrics to PostgreSQL
 
-**Tech Stack:** Python, FastAPI, sqlglot, databricks-sdk, deltalake-python, scikit-learn, PostgreSQL client, kubernetes (Python client for K8s API — engine registration, DuckDB deployment management)
+**Tech Stack:** Python, FastAPI, sqlglot, databricks-sdk, deltalake-python, scikit-learn, PostgreSQL client, kubernetes (Python client for K8s API — engine registration, DuckDB deployment management), azure-identity + azure-storage-blob (ODQ-12 — service principal authentication and storage account connectivity verification)
 
 ### web-ui (Dashboard)
 **Purpose:** Convenience interface for configuring the system, submitting queries, browsing Unity Catalog, managing query collections, and viewing results. The UI is not required — all functionality is exposed via the routing-service API for programmatic use by external services.  
@@ -424,8 +484,9 @@ This is sufficient for local development on Minikube where access is via port-fo
 
 **Left panel — Workspaces + Catalog/Collections tabs (20% width):**
 - **Workspaces (collapsible header, top):** A compact single-line header showing a status dot (green = connected, gray = not connected), "Workspaces" label, and the connected workspace name (or "Not connected"). Clicking the header expands a dropdown showing all workspaces with full management controls: PAT token modal (Key icon), connect/disconnect, delete, and "Add workspace" inline form. Clicking outside or clicking the header again collapses it. The collapsed state saves vertical space since workspaces are rarely changed after initial setup.
+- **Storage Accounts (collapsible header, below Workspaces):** A compact single-line header showing a colored status dot (green = all accessible, amber = partial access, red = none accessible, gray = untested or no SP configured), "Storage" label, and a summary (e.g., "3/4 accessible" or "Not configured"). Clicking the header expands a dropdown showing: (1) each discovered storage account as a row with status dot, hostname (e.g., `myaccount.dfs.core.windows.net`), and failure reason if inaccessible; (2) a "Test All" button that triggers connectivity verification for all accounts; (3) a "Configure Service Principal" button that opens a modal for entering Azure credentials (tenant ID, client ID, client secret — same UX pattern as the PAT token modal, with masked client secret and show/hide toggle). When no service principal is configured, the expanded dropdown shows only the configuration button and the message "Configure Azure credentials to enable external table access." When a workspace is not connected, storage accounts cannot be discovered — the section shows "Connect a workspace to discover storage accounts." Storage accounts are discovered automatically from `storage_location` fields when the catalog is browsed (ODQ-12).
 - **Tabs: Catalog | Collections:** Two tabs below the workspaces header control which content fills the rest of the left panel. Only one is active at a time.
-- **Catalog tab (default):** Headed with "Catalog Browser" title and blue Database icon. Tree navigation: catalogs → schemas → tables. Clicking a table shows its details (type, format, size, external access flags, columns). "Load Sample Query" button populates editor with `SELECT * FROM catalog.schema.table LIMIT 100`. Three-color indicator bar system shows table accessibility: green = DuckDB-readable (Delta or Iceberg format with external access), amber = Databricks-only (native format but governance-blocked, or VIEWs), red = foreign/federated tables (SQL Server, Snowflake, etc. — always Databricks-only). The `data_source_format` field is displayed in the table detail view; foreign formats show in red text with a "Foreign table (Databricks only)" message. Only active when a workspace is connected — otherwise shows "Connect to a workspace to browse catalogs."
+- **Catalog tab (default):** Headed with "Catalog Browser" title and blue Database icon. Tree navigation: catalogs → schemas → tables. Clicking a table shows its details (type, format, size, external access flags, storage account connectivity, columns). "Load Sample Query" button populates editor with `SELECT * FROM catalog.schema.table LIMIT 100`. Three-color indicator bar system shows table accessibility: green = DuckDB-readable (Delta or Iceberg format with external access **and** storage account accessible), amber = Databricks-only (native format but governance-blocked, or VIEWs, or storage account inaccessible despite DuckDB-readable format), red = foreign/federated tables (SQL Server, Snowflake, etc. — always Databricks-only). Tables whose format and Unity Catalog flags would normally show green but whose storage account is inaccessible (ODQ-12) display amber instead, with tooltip "DuckDB readable but storage account not accessible — configure Azure credentials." The `data_source_format` field is displayed in the table detail view; foreign formats show in red text with a "Foreign table (Databricks only)" message. **Storage access in table detail (ODQ-12):** Below the "DuckDB Readable" line, a "Storage Access" line shows the storage account hostname (extracted from `storage_location`) with a status dot (green = accessible, red = inaccessible, gray = untested). When inaccessible, the failure reason is shown inline (e.g., "Service principal lacks Storage Blob Data Reader role") with a clickable "Fix in Azure Portal" link that opens the relevant Azure portal page. A small "Test" button triggers an on-demand connectivity check for that storage account. When no service principal is configured, shows "Configure Azure credentials" as a link that opens the SP configuration modal. Only active when a workspace is connected — otherwise shows "Connect to a workspace to browse catalogs."
 - **Collections tab:** Shows query collections list with query counts and descriptions. Clicking opens collection detail: ordered query list (click to load into editor), "Run Benchmark" button, benchmark history. See "Benchmarks" section below for full benchmark workflow. **"Add to Collection" workflow:** When a collection is open and the SQL editor has content, the center panel action bar shows an "Add to Collection" button. Clicking it adds the current editor SQL as a new query to the active collection. Brief "Added!" confirmation is shown.
 
 **Center panel — Query Editor + Results + Query History (50% width):**
@@ -464,7 +525,7 @@ Dedicated to routing configuration — no tabs (collections moved to left panel)
 
 **Model lifecycle:** Models can be activated (radio), deactivated, expanded for details, and deleted (trash icon). Deleting an active model deactivates it first.
 
-**State management:** Global AppContext provides: editor state (SQL, results, collection context), workspaces (list + connected workspace), engines (catalog entries, enabled IDs), routing mode (derived from engine count — Single Engine vs Smart Routing), routing settings (latency_weight, cost_weight, cost_estimation_mode — loaded from API, updated via toggle), storage probes (latest probe results, probesRunning flag, runStorageProbes action), models (list + active model ID), query history (with per-query routing events and decisions), panel mode (run/train for the right panel train wizard). All data loaded from mock API on mount.
+**State management:** Global AppContext provides: editor state (SQL, results, collection context), workspaces (list + connected workspace), engines (catalog entries, enabled IDs), routing mode (derived from engine count — Single Engine vs Smart Routing), routing settings (latency_weight, cost_weight, cost_estimation_mode — loaded from API, updated via toggle), storage probes (latest probe results, probesRunning flag, runStorageProbes action), models (list + active model ID), query history (with per-query routing events and decisions), panel mode (run/train for the right panel train wizard), storage accounts (ODQ-12: storageAccounts list with status/failure info, azureStorageConfigured boolean derived from credentials API, reloadStorageAccounts action, testStorageConnectivity action, storageTestRunning flag). All data loaded from mock API on mount.
 
 **Tech Stack:** FastAPI (Python), React 18, TypeScript, Vite, Tailwind CSS, shadcn/ui (Radix primitives)
 
@@ -636,6 +697,14 @@ The routing-service is the single API backend. The web-ui proxies all calls thro
 - `POST /api/latency-probes/run` — trigger storage latency probes for all active engines (DuckDB and Databricks) and known storage locations
 - `GET /api/latency-probes` — list latest probe results, grouped by storage location and engine
 
+**Storage Authorization (ODQ-12):**
+- `POST /api/settings/azure-storage` — save Azure service principal credentials (tenant_id, client_id, client_secret) to K8s Secret. Returns `{ configured: true, tenant_id, client_id }`.
+- `GET /api/settings/azure-storage` — current configuration status. Returns `{ configured: boolean, tenant_id?: string, client_id?: string }`. Never returns client_secret.
+- `DELETE /api/settings/azure-storage` — remove Azure storage credentials (deletes the K8s Secret)
+- `GET /api/storage-accounts` — list all discovered storage accounts (extracted from Unity Catalog table `storage_location` fields) with latest connectivity status, failure reasons, failure categories, and Azure portal links. Requires a connected workspace. Returns array of `{ storage_account, storage_location_prefix, status, failure_reason, failure_category, azure_portal_link, tested_at }`.
+- `POST /api/storage-accounts/test` — trigger connectivity test for all discovered storage accounts. Optional body param `{ storage_account: string }` to test a single account. Requires Azure SP credentials to be configured. Returns updated status for tested accounts.
+- `GET /api/storage-accounts/{account}/diagnostics` — detailed diagnostic info for a specific storage account: failure category, human-readable remediation steps, Azure portal links (IAM page, networking page), raw error message
+
 **Data ingestion:**
 - `POST /api/ingest/tpcds` — trigger TPC-DS data generation (configurable scale factor)
 - `GET /api/ingest/{job_id}` — poll ingestion job status
@@ -695,8 +764,9 @@ The current system is built around Databricks Unity Catalog as the metadata and 
 - [x] **Phase 4 - React UI:** Superseded by Phase 5, then revived as Phase 7
 - [x] **Phase 5 - Vanilla HTML + jQuery UI:** Single index.html served by FastAPI, no build step, no Node.js. Superseded by Phase 7 React migration.
 - [~] **Phase 6 - Databricks Integration (backend only):** Backend complete (tasks 1-6), UI tasks cancelled (tasks 7-13) — jQuery UI work superseded by React migration. Completed: `databricks-sdk` and `kubernetes` dependencies, `admin-credentials` Secret + RBAC manifests, `POST /api/auth/login` with Bearer token middleware, `POST/GET /api/settings/databricks` with K8s Secret persistence, `/health/backends` Databricks status, web-ui proxy routes for auth/settings/warehouses. Not completed (carry forward to Phase 7): `GET /api/databricks/warehouses` and `PUT /api/settings/warehouse` routing-service endpoints, credential reload on startup, all UI components.
-- [~] **Phase 7 - React Frontend & Remaining Phase 6 Backend:** React prototype incorporated into web-ui with Vite build pipeline and multi-stage Dockerfile (done). UI restructured per ODQ-8: workspaces in left panel, routing config in right panel Routing tab, collections in right panel Collections tab. Extensive UI redesign completed based on iterative UX feedback (right panel, left panel, center panel — see web-ui module for details). All frontend features use mock data (`src/mocks/api.ts`). Remaining: wire mock API calls to real backend endpoints via fetch wrapper with auth header injection, credential reload on startup, minikube E2E deploy. See taskmaster phase7 tag for detailed task breakdown.
+- [x] **Phase 7 - React Frontend & Remaining Phase 6 Backend:** React prototype incorporated into web-ui with Vite build pipeline and multi-stage Dockerfile. UI restructured per ODQ-8: workspaces in left panel, routing config in right panel Routing tab, collections in right panel Collections tab. Extensive UI redesign completed based on iterative UX feedback (right panel, left panel, center panel — see web-ui module for details). All frontend features use mock data (`src/mocks/api.ts`). ODQ-12 mock UI also completed: StorageAccountsManager component in left panel, storage access indicators in catalog browser, service principal credential modal, workspace-gated storage account discovery, diagnostic feedback with failure classification — all using mock data. Wiring mock API calls to real backend endpoints deferred to Phase 8.
 - [ ] **Phase 8 - Query Execution, Routing Logic & Catalog Browsing:** Core query execution pipeline: SQL parsing with sqlglot, rule-based routing decisions, execution on DuckDB worker and Databricks SQL Warehouse, Unity Catalog browsing, query logging, and wiring frontend mock API calls to real backend endpoints. After this phase, users can submit SQL and see it routed and executed on real engines. See taskmaster phase8 tag for detailed task breakdown (20 tasks). PRD: `.taskmaster/docs/phase8-query-execution-routing-catalog.md`.
+- [ ] **Phase 9 - Storage Account Authorization (ODQ-12) — Backend & Real API Wiring:** Mock UI completed in Phase 7 (StorageAccountsManager, catalog browser storage indicators, SP credential modal). Remaining backend work: Azure service principal configuration (K8s Secret persistence), automatic storage account discovery from Unity Catalog `storage_location` fields, connectivity and permission verification (`azure-identity` + ADLS Gen2 SDK), diagnostic feedback with failure classification and Azure portal links, mandatory routing rule for inaccessible storage accounts, integration with storage latency probes (skip inaccessible accounts), and wiring frontend mock API calls to real backend endpoints. After this phase, users can configure Azure credentials, see which storage accounts are accessible, and get actionable guidance when access fails.
 
 ---
 
@@ -718,6 +788,9 @@ Small items that don't warrant their own phase but should be addressed. These ar
 - [ ] **Engines config JSONB: add runtime_state tracking.** Per ODQ-11, engine `runtime_state` (`running` / `stopped` / `starting` / `unknown`) is polled and cached in memory. Not persisted in PostgreSQL — this is ephemeral operational state.
 - [ ] **Routing-service: engine state polling.** Per ODQ-11, implement periodic polling (every 30–60s) of Databricks warehouse state via `GET /api/2.0/sql/warehouses/{id}` and K8s pod status for DuckDB engines. Cache `runtime_state` in memory. Used by the routing algorithm to apply the running engine bonus.
 - [x] **PostgreSQL schema: update routing_settings for ODQ-11.** Add `running_bonus_duckdb` (float, default 0.05) and `running_bonus_databricks` (float, default 0.15) to `routing_settings`. *(Folded into Phase 8, Task 1.)*
+- [ ] **PostgreSQL schema: add storage_account_status table.** Per ODQ-12, the `storage_account_status` table (id serial PK, storage_account text, storage_location_prefix text, status enum: `accessible` / `inaccessible` / `untested`, failure_reason text nullable, failure_category enum: `auth` / `firewall` / `vnet` / `dns` / `unknown` nullable, azure_portal_link text nullable, tested_at timestamptz nullable, ttl_seconds int default 300) does not yet exist. Stores connectivity test results for each discovered storage account. Index on `(storage_account, tested_at DESC)`. Add when implementing storage account authorization (ODQ-12).
+- [ ] **K8s Secret: add azure-storage-credentials manifest.** Per ODQ-12, add a K8s Secret manifest for `azure-storage-credentials` (keys: `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`). Mount into both routing-service and duckdb-worker pods as environment variables. Update routing-service RBAC to allow creating/updating this Secret.
+- [ ] **Routing rules: add storage account inaccessibility system rule.** Per ODQ-12, add a mandatory system rule: "Table's storage account not accessible → route to Databricks." This extends the existing external access check to cover storage-level access failures detected by the connectivity verification flow.
 
 ---
 

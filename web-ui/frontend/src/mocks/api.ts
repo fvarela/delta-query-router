@@ -30,6 +30,7 @@ import type {
   QueryExecutionResult, BenchmarkSummary, BenchmarkDetail,
   Model, CatalogInfo, SchemaInfo, TableInfo, LogEntry,
   RoutingLogEvent, RoutingLogLevel, StorageLatencyProbe,
+  StorageAccountStatus, AzureStorageConfig,
 } from "../types";
 
 const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -58,6 +59,20 @@ let storageLatencyProbes: StorageLatencyProbe[] = [
   { id: 2, storage_location: "s3://delta-router/tpcds/", engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", probe_time_ms: 11.8, bytes_read: 1048576, measured_at: "2026-03-14T09:00:30Z" },
   { id: 3, storage_location: "s3://delta-router/analytics/", engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", probe_time_ms: 14.1, bytes_read: 1048576, measured_at: "2026-03-15T14:30:25Z" },
   { id: 4, storage_location: "s3://delta-router/tpcds/", engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", probe_time_ms: 10.5, bytes_read: 1048576, measured_at: "2026-03-16T11:00:28Z" },
+];
+
+// ---- Azure Storage Account Authorization (ODQ-12) ----
+let azureStorageConfig: AzureStorageConfig = {
+  configured: true,
+  tenant_id: "72f988bf-86f1-41af-91ab-2d7cd011db47",
+  client_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+};
+
+let storageAccountStatuses: StorageAccountStatus[] = [
+  { storage_account: "deltarouter.dfs.core.windows.net", storage_location_prefix: "abfss://tpcds@deltarouter.dfs.core.windows.net/", status: "accessible", failure_reason: null, failure_category: null, azure_portal_link: null, tested_at: "2026-03-22T10:15:00Z" },
+  { storage_account: "analyticsstore.dfs.core.windows.net", storage_location_prefix: "abfss://analytics@analyticsstore.dfs.core.windows.net/", status: "accessible", failure_reason: null, failure_category: null, azure_portal_link: null, tested_at: "2026-03-22T10:15:02Z" },
+  { storage_account: "securedatalake.dfs.core.windows.net", storage_location_prefix: "abfss://secure@securedatalake.dfs.core.windows.net/", status: "inaccessible", failure_reason: "Service principal lacks Storage Blob Data Reader role on this storage account", failure_category: "auth", azure_portal_link: "https://portal.azure.com/#@72f988bf-86f1-41af-91ab-2d7cd011db47/resource/subscriptions/sub-1/resourceGroups/rg-data/providers/Microsoft.Storage/storageAccounts/securedatalake/iam", tested_at: "2026-03-22T10:15:04Z" },
+  { storage_account: "privatestore.dfs.core.windows.net", storage_location_prefix: "abfss://private@privatestore.dfs.core.windows.net/", status: "inaccessible", failure_reason: "Storage account firewall is blocking access — add the IP address of Delta Router to the allowlist", failure_category: "firewall", azure_portal_link: "https://portal.azure.com/#@72f988bf-86f1-41af-91ab-2d7cd011db47/resource/subscriptions/sub-1/resourceGroups/rg-data/providers/Microsoft.Storage/storageAccounts/privatestore/networking", tested_at: "2026-03-22T10:15:05Z" },
 ];
 
 let workspaces: Workspace[] = [
@@ -200,16 +215,16 @@ let benchmarks: BenchmarkDetail[] = [
 // ---- Table data ----
 const tableData: Record<string, TableInfo[]> = {
   "delta_router_dev.tpcds": [
-    { name: "customer", full_name: "delta_router_dev.tpcds.customer", table_type: "MANAGED", data_source_format: "DELTA", size_bytes: 47185920, row_count: 100000, storage_location: "s3://delta-router/tpcds/customer", external_engine_read_support: true, columns: [{ name: "c_customer_sk", type_text: "INT" }, { name: "c_customer_id", type_text: "STRING" }, { name: "c_first_name", type_text: "STRING" }, { name: "c_last_name", type_text: "STRING" }, { name: "c_birth_country", type_text: "STRING" }, { name: "c_email_address", type_text: "STRING" }] },
-    { name: "store_sales", full_name: "delta_router_dev.tpcds.store_sales", table_type: "MANAGED", data_source_format: "DELTA", size_bytes: 2254857830, row_count: 28000000, storage_location: "s3://delta-router/tpcds/store_sales", external_engine_read_support: true, columns: [{ name: "ss_sold_date_sk", type_text: "INT" }, { name: "ss_item_sk", type_text: "INT" }, { name: "ss_customer_sk", type_text: "INT" }, { name: "ss_net_profit", type_text: "DECIMAL(7,2)" }, { name: "ss_quantity", type_text: "INT" }] },
-    { name: "catalog_sales", full_name: "delta_router_dev.tpcds.catalog_sales", table_type: "MANAGED", data_source_format: "DELTA", size_bytes: 3650722202, row_count: 43000000, storage_location: "s3://delta-router/tpcds/catalog_sales", external_engine_read_support: true, columns: [{ name: "cs_sold_date_sk", type_text: "INT" }, { name: "cs_item_sk", type_text: "INT" }, { name: "cs_quantity", type_text: "INT" }, { name: "cs_net_profit", type_text: "DECIMAL(7,2)" }] },
-    { name: "customer_demographics", full_name: "delta_router_dev.tpcds.customer_demographics", table_type: "MANAGED", data_source_format: "DELTA", size_bytes: 12582912, row_count: 1920000, storage_location: "s3://delta-router/tpcds/customer_demographics", external_engine_read_support: true, columns: [{ name: "cd_demo_sk", type_text: "INT" }, { name: "cd_gender", type_text: "STRING" }, { name: "cd_education_status", type_text: "STRING" }, { name: "cd_credit_rating", type_text: "STRING" }] },
-    { name: "date_dim", full_name: "delta_router_dev.tpcds.date_dim", table_type: "MANAGED", data_source_format: "DELTA", size_bytes: 5242880, row_count: 73049, storage_location: "s3://delta-router/tpcds/date_dim", external_engine_read_support: true, columns: [{ name: "d_date_sk", type_text: "INT" }, { name: "d_date_id", type_text: "STRING" }, { name: "d_year", type_text: "INT" }, { name: "d_quarter_name", type_text: "STRING" }, { name: "d_month_seq", type_text: "INT" }] },
-    { name: "web_sales", full_name: "delta_router_dev.tpcds.web_sales", table_type: "EXTERNAL", data_source_format: "ICEBERG", size_bytes: 1890000000, row_count: 18000000, storage_location: "s3://delta-router/tpcds/web_sales", external_engine_read_support: true, columns: [{ name: "ws_sold_date_sk", type_text: "INT" }, { name: "ws_item_sk", type_text: "INT" }, { name: "ws_bill_customer_sk", type_text: "INT" }, { name: "ws_net_profit", type_text: "DECIMAL(7,2)" }, { name: "ws_quantity", type_text: "INT" }] },
+    { name: "customer", full_name: "delta_router_dev.tpcds.customer", table_type: "MANAGED", data_source_format: "DELTA", size_bytes: 47185920, row_count: 100000, storage_location: "abfss://tpcds@deltarouter.dfs.core.windows.net/customer", external_engine_read_support: true, columns: [{ name: "c_customer_sk", type_text: "INT" }, { name: "c_customer_id", type_text: "STRING" }, { name: "c_first_name", type_text: "STRING" }, { name: "c_last_name", type_text: "STRING" }, { name: "c_birth_country", type_text: "STRING" }, { name: "c_email_address", type_text: "STRING" }] },
+    { name: "store_sales", full_name: "delta_router_dev.tpcds.store_sales", table_type: "MANAGED", data_source_format: "DELTA", size_bytes: 2254857830, row_count: 28000000, storage_location: "abfss://tpcds@deltarouter.dfs.core.windows.net/store_sales", external_engine_read_support: true, columns: [{ name: "ss_sold_date_sk", type_text: "INT" }, { name: "ss_item_sk", type_text: "INT" }, { name: "ss_customer_sk", type_text: "INT" }, { name: "ss_net_profit", type_text: "DECIMAL(7,2)" }, { name: "ss_quantity", type_text: "INT" }] },
+    { name: "catalog_sales", full_name: "delta_router_dev.tpcds.catalog_sales", table_type: "MANAGED", data_source_format: "DELTA", size_bytes: 3650722202, row_count: 43000000, storage_location: "abfss://secure@securedatalake.dfs.core.windows.net/catalog_sales", external_engine_read_support: true, columns: [{ name: "cs_sold_date_sk", type_text: "INT" }, { name: "cs_item_sk", type_text: "INT" }, { name: "cs_quantity", type_text: "INT" }, { name: "cs_net_profit", type_text: "DECIMAL(7,2)" }] },
+    { name: "customer_demographics", full_name: "delta_router_dev.tpcds.customer_demographics", table_type: "MANAGED", data_source_format: "DELTA", size_bytes: 12582912, row_count: 1920000, storage_location: "abfss://secure@securedatalake.dfs.core.windows.net/customer_demographics", external_engine_read_support: true, columns: [{ name: "cd_demo_sk", type_text: "INT" }, { name: "cd_gender", type_text: "STRING" }, { name: "cd_education_status", type_text: "STRING" }, { name: "cd_credit_rating", type_text: "STRING" }] },
+    { name: "date_dim", full_name: "delta_router_dev.tpcds.date_dim", table_type: "MANAGED", data_source_format: "DELTA", size_bytes: 5242880, row_count: 73049, storage_location: "abfss://private@privatestore.dfs.core.windows.net/date_dim", external_engine_read_support: true, columns: [{ name: "d_date_sk", type_text: "INT" }, { name: "d_date_id", type_text: "STRING" }, { name: "d_year", type_text: "INT" }, { name: "d_quarter_name", type_text: "STRING" }, { name: "d_month_seq", type_text: "INT" }] },
+    { name: "web_sales", full_name: "delta_router_dev.tpcds.web_sales", table_type: "EXTERNAL", data_source_format: "ICEBERG", size_bytes: 1890000000, row_count: 18000000, storage_location: "abfss://private@privatestore.dfs.core.windows.net/web_sales", external_engine_read_support: true, columns: [{ name: "ws_sold_date_sk", type_text: "INT" }, { name: "ws_item_sk", type_text: "INT" }, { name: "ws_bill_customer_sk", type_text: "INT" }, { name: "ws_net_profit", type_text: "DECIMAL(7,2)" }, { name: "ws_quantity", type_text: "INT" }] },
   ],
   "delta_router_dev.analytics": [
     { name: "revenue_summary", full_name: "delta_router_dev.analytics.revenue_summary", table_type: "VIEW", data_source_format: null, size_bytes: null, row_count: null, storage_location: null, external_engine_read_support: false, read_support_reason: "View — must execute on Databricks", columns: [{ name: "year", type_text: "INT" }, { name: "quarter", type_text: "STRING" }, { name: "total_revenue", type_text: "DECIMAL(12,2)" }, { name: "total_cost", type_text: "DECIMAL(12,2)" }] },
-    { name: "customer_pii", full_name: "delta_router_dev.analytics.customer_pii", table_type: "MANAGED", data_source_format: "DELTA", size_bytes: 241172480, row_count: 1000000, storage_location: "s3://delta-router/analytics/customer_pii", external_engine_read_support: false, read_support_reason: "Has row-level security filter", columns: [{ name: "customer_id", type_text: "INT" }, { name: "ssn", type_text: "STRING" }, { name: "full_name", type_text: "STRING" }, { name: "email", type_text: "STRING" }, { name: "phone", type_text: "STRING" }] },
+    { name: "customer_pii", full_name: "delta_router_dev.analytics.customer_pii", table_type: "MANAGED", data_source_format: "DELTA", size_bytes: 241172480, row_count: 1000000, storage_location: "abfss://analytics@analyticsstore.dfs.core.windows.net/customer_pii", external_engine_read_support: false, read_support_reason: "Has row-level security filter", columns: [{ name: "customer_id", type_text: "INT" }, { name: "ssn", type_text: "STRING" }, { name: "full_name", type_text: "STRING" }, { name: "email", type_text: "STRING" }, { name: "phone", type_text: "STRING" }] },
   ],
   "delta_router_dev.external": [
     { name: "sqlserver_orders", full_name: "delta_router_dev.external.sqlserver_orders", table_type: "FOREIGN", data_source_format: "SQLSERVER", size_bytes: null, row_count: null, storage_location: null, external_engine_read_support: false, read_support_reason: "Foreign table (SQL Server) — must route via Databricks", columns: [{ name: "order_id", type_text: "INT" }, { name: "customer_id", type_text: "INT" }, { name: "order_date", type_text: "DATE" }, { name: "total_amount", type_text: "DECIMAL(10,2)" }, { name: "status", type_text: "VARCHAR(50)" }] },
@@ -751,5 +766,103 @@ export const mockApi = {
     await delay(200);
     Object.assign(routingSettings, settings);
     return { ...routingSettings };
+  },
+
+  // Azure Storage Account Authorization (ODQ-12)
+  async getAzureStorageConfig(): Promise<AzureStorageConfig> {
+    // TODO: Replace with real API call — GET /api/storage/azure-config
+    await delay(100);
+    return JSON.parse(JSON.stringify(azureStorageConfig));
+  },
+
+  async saveAzureStorageConfig(tenant_id: string, client_id: string, _client_secret: string): Promise<AzureStorageConfig> {
+    // TODO: Replace with real API call — PUT /api/storage/azure-config
+    await delay(300);
+    azureStorageConfig = { configured: true, tenant_id, client_id };
+    return JSON.parse(JSON.stringify(azureStorageConfig));
+  },
+
+  async deleteAzureStorageConfig(): Promise<void> {
+    // TODO: Replace with real API call — DELETE /api/storage/azure-config
+    await delay(200);
+    azureStorageConfig = { configured: false, tenant_id: null, client_id: null };
+    storageAccountStatuses = storageAccountStatuses.map(s => ({
+      ...s,
+      status: "untested" as const,
+      failure_reason: null,
+      failure_category: null,
+      azure_portal_link: null,
+      tested_at: null,
+    }));
+  },
+
+  async getStorageAccounts(): Promise<StorageAccountStatus[]> {
+    // TODO: Replace with real API call — GET /api/storage/accounts
+    await delay(200);
+    return JSON.parse(JSON.stringify(storageAccountStatuses));
+  },
+
+  async testStorageAccounts(storage_account?: string): Promise<StorageAccountStatus[]> {
+    // TODO: Replace with real API call — POST /api/storage/accounts/test
+    await delay(1500); // Simulate connectivity test time
+    const now = new Date().toISOString();
+    if (storage_account) {
+      // Test single account — keep its current status (simulates re-test)
+      storageAccountStatuses = storageAccountStatuses.map(s =>
+        s.storage_account === storage_account ? { ...s, tested_at: now } : s
+      );
+    } else {
+      // Test all — update tested_at timestamps
+      storageAccountStatuses = storageAccountStatuses.map(s => ({ ...s, tested_at: now }));
+    }
+    return JSON.parse(JSON.stringify(storageAccountStatuses));
+  },
+
+  async getStorageAccountDiagnostics(account: string): Promise<{
+    storage_account: string;
+    checks: { check: string; passed: boolean; detail: string }[];
+  }> {
+    // TODO: Replace with real API call — GET /api/storage/accounts/:account/diagnostics
+    await delay(400);
+    const acct = storageAccountStatuses.find(s => s.storage_account === account);
+    if (!acct) throw new Error("Storage account not found");
+
+    if (acct.status === "accessible") {
+      return {
+        storage_account: account,
+        checks: [
+          { check: "DNS resolution", passed: true, detail: `Resolved ${account} successfully` },
+          { check: "TCP connectivity", passed: true, detail: "Port 443 reachable" },
+          { check: "TLS handshake", passed: true, detail: "TLS 1.2 established" },
+          { check: "Authentication", passed: true, detail: "Service principal authenticated" },
+          { check: "Authorization", passed: true, detail: "Storage Blob Data Reader role confirmed" },
+        ],
+      };
+    }
+
+    if (acct.failure_category === "auth") {
+      return {
+        storage_account: account,
+        checks: [
+          { check: "DNS resolution", passed: true, detail: `Resolved ${account} successfully` },
+          { check: "TCP connectivity", passed: true, detail: "Port 443 reachable" },
+          { check: "TLS handshake", passed: true, detail: "TLS 1.2 established" },
+          { check: "Authentication", passed: true, detail: "Service principal authenticated" },
+          { check: "Authorization", passed: false, detail: "Missing Storage Blob Data Reader role — assign via Azure Portal > IAM" },
+        ],
+      };
+    }
+
+    // firewall
+    return {
+      storage_account: account,
+      checks: [
+        { check: "DNS resolution", passed: true, detail: `Resolved ${account} successfully` },
+        { check: "TCP connectivity", passed: false, detail: "Connection refused on port 443 — firewall is blocking access" },
+        { check: "TLS handshake", passed: false, detail: "Skipped (TCP failed)" },
+        { check: "Authentication", passed: false, detail: "Skipped (TCP failed)" },
+        { check: "Authorization", passed: false, detail: "Skipped (TCP failed)" },
+      ],
+    };
   },
 };
