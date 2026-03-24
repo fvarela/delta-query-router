@@ -1,3 +1,13 @@
+// --- Auth ---
+export interface LoginRequest {
+  username: string;
+  password: string;
+}
+
+export interface LoginResponse {
+  token: string;
+}
+
 // --- Workspace ---
 export interface Workspace {
   id: string;

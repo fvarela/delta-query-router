@@ -1,5 +1,7 @@
 import { useState } from "react";
+import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import { AppProvider } from "./contexts/AppContext";
+import { LoginPage } from "./components/LoginPage";
 import { TopBar } from "./components/TopBar/TopBar";
 import { WorkspaceManager } from "./components/RightPanel/WorkspaceManager";
 import { StorageAccountsManager } from "./components/LeftPanel/StorageAccountsManager";
@@ -40,7 +42,7 @@ const LeftPanel = () => {
   );
 };
 
-const App = () => (
+const AuthenticatedApp = () => (
   <AppProvider>
     <div className="h-screen flex flex-col overflow-hidden min-w-[1280px]">
       <TopBar />
@@ -60,6 +62,17 @@ const App = () => (
       </div>
     </div>
   </AppProvider>
+);
+
+const AppGate = () => {
+  const { isAuthenticated } = useAuth();
+  return isAuthenticated ? <AuthenticatedApp /> : <LoginPage />;
+};
+
+const App = () => (
+  <AuthProvider>
+    <AppGate />
+  </AuthProvider>
 );
 
 export default App;
