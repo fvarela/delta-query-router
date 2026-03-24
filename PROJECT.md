@@ -381,12 +381,14 @@ final_score = weighted_score                   (if stopped / starting / unknown)
 - User identity (`user_id`) is captured once at the routing-service entry point and stored alongside the `correlation_id` in `query_logs`
 - Backends (DuckDB worker, Databricks) are stateless with respect to users — they receive and log the `correlation_id` but do not manage sessions or user state
 
-**Metadata Caching Strategy**
-- Cache table metadata (size, row counts, governance rules) with time-to-live to minimize Unity Catalog API calls
+**Metadata Caching Strategy — "warm on browse, lazy on query"**
+- Cache table metadata (size, row counts, governance rules) in PostgreSQL with time-to-live to minimize Unity Catalog API calls
 - Cache-with-TTL provides fast lookups (5-10ms) for frequently-queried tables while ensuring governance metadata stays fresh
 - TTL: uniform 5 minutes for all cached fields (governance and size/format refresh together for simplicity; dual-TTL can be added later if API call volume becomes a concern)
-- Cache misses automatically fetch from Unity Catalog and update the cache
-- Provides resilience if Unity Catalog API is temporarily unavailable
+- **Warm on browse**: when a user browses the catalog in the UI (GET /api/databricks/.../tables), the endpoint already receives full TableInfo objects from `tables.list()` — cache metadata for all returned tables at that point, at no extra API cost
+- **Lazy on query**: at query time, `get_table_metadata()` checks the cache first; if the user browsed the catalog recently, it's a cache hit; otherwise, fetch on demand from the SDK and cache the result
+- No background refresh job — avoids API rate limit concerns and unnecessary fetches for tables nobody queries; if latency from cold-cache SDK calls becomes a measurable issue, parallelizing `get_tables_metadata()` with ThreadPoolExecutor is the first mitigation step
+- Provides resilience if Unity Catalog API is temporarily unavailable (stale cache entries can optionally be served past TTL as a future enhancement)
 
 ### API & Interface
 
