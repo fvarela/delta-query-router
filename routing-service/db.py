@@ -1,10 +1,12 @@
 """PostgreSQL connection pool and query helpers for routing-service."""
+
 import os
 import logging
 from contextlib import contextmanager
 import psycopg2
 from psycopg2.pool import ThreadedConnectionPool
 from psycopg2.extras import RealDictCursor
+
 logger = logging.getLogger("routing-service.db")
 # Build DATABASE_URL from individual env vars (matching K8s manifest)
 _DATABASE_URL = "postgresql://{user}:{password}@{host}:{port}/{db}".format(
@@ -17,6 +19,8 @@ _DATABASE_URL = "postgresql://{user}:{password}@{host}:{port}/{db}".format(
 _POOL_MIN = int(os.environ.get("DB_POOL_MIN", "2"))
 _POOL_MAX = int(os.environ.get("DB_POOL_MAX", "10"))
 _pool: ThreadedConnectionPool | None = None
+
+
 def init_db():
     """Initialize the connection pool. Call once at startup."""
     global _pool
@@ -26,10 +30,16 @@ def init_db():
         with get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT 1")
-        logger.info("PostgreSQL connection pool initialized (min=%d, max=%d)", _POOL_MIN, _POOL_MAX)
+        logger.info(
+            "PostgreSQL connection pool initialized (min=%d, max=%d)",
+            _POOL_MIN,
+            _POOL_MAX,
+        )
     except Exception:
         logger.exception("Failed to initialize PostgreSQL connection pool")
         raise
+
+
 def close_db():
     """Close all pool connections. Call on shutdown."""
     global _pool
@@ -37,6 +47,8 @@ def close_db():
         _pool.closeall()
         _pool = None
         logger.info("PostgreSQL connection pool closed")
+
+
 @contextmanager
 def get_conn():
     """Check out a connection from the pool. Auto-returns on exit."""
@@ -51,11 +63,15 @@ def get_conn():
         raise
     finally:
         _pool.putconn(conn)
+
+
 def execute(sql: str, params: tuple | None = None) -> None:
     """Execute INSERT/UPDATE/DELETE. No return value."""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, params)
+
+
 def fetch_one(sql: str, params: tuple | None = None) -> dict | None:
     """Execute a query and return the first row as a dict, or None."""
     with get_conn() as conn:
@@ -63,6 +79,8 @@ def fetch_one(sql: str, params: tuple | None = None) -> dict | None:
             cur.execute(sql, params)
             row = cur.fetchone()
             return dict(row) if row else None
+
+
 def fetch_all(sql: str, params: tuple | None = None) -> list[dict]:
     """Execute a query and return all rows as a list of dicts."""
     with get_conn() as conn:
