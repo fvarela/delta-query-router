@@ -28,15 +28,19 @@ CREATE TABLE IF NOT EXISTS cost_metrics (
     recorded_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE TABLE IF NOT EXISTS table_metadata_cache (
-    table_name          VARCHAR(255) PRIMARY KEY,
-    catalog             VARCHAR(255),
-    schema_name         VARCHAR(255),
-    row_count           BIGINT,
-    size_bytes          BIGINT,
-    has_rls             BOOLEAN NOT NULL DEFAULT FALSE,
-    has_column_masking  BOOLEAN NOT NULL DEFAULT FALSE,
-    cached_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    ttl_seconds         INTEGER NOT NULL DEFAULT 300
+    table_name                  VARCHAR(255) PRIMARY KEY,
+    catalog                     VARCHAR(255),
+    schema_name                 VARCHAR(255),
+    table_type                  VARCHAR(50) NOT NULL DEFAULT 'UNKNOWN',
+    data_source_format          VARCHAR(50),
+    storage_location            TEXT,
+    row_count                   BIGINT,
+    size_bytes                  BIGINT,
+    has_rls                     BOOLEAN NOT NULL DEFAULT FALSE,
+    has_column_masking          BOOLEAN NOT NULL DEFAULT FALSE,
+    external_engine_read_support BOOLEAN NOT NULL DEFAULT FALSE,
+    cached_at                   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ttl_seconds                 INTEGER NOT NULL DEFAULT 300
 );
 CREATE TABLE IF NOT EXISTS routing_defaults (
     id              INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),

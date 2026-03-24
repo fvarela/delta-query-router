@@ -384,7 +384,7 @@ final_score = weighted_score                   (if stopped / starting / unknown)
 **Metadata Caching Strategy**
 - Cache table metadata (size, row counts, governance rules) with time-to-live to minimize Unity Catalog API calls
 - Cache-with-TTL provides fast lookups (5-10ms) for frequently-queried tables while ensuring governance metadata stays fresh
-- TTL: 5 minutes for security-critical fields, 30 minutes for size statistics
+- TTL: uniform 5 minutes for all cached fields (governance and size/format refresh together for simplicity; dual-TTL can be added later if API call volume becomes a concern)
 - Cache misses automatically fetch from Unity Catalog and update the cache
 - Provides resilience if Unity Catalog API is temporarily unavailable
 
