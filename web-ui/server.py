@@ -65,51 +65,37 @@ async def health_services():
 
     return result
 
-@app.post("/api/auth/login")
-async def proxy_login(request: Request):
-    body = await request.body()
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        resp = await client.post(f"{ROUTING_SERVICE_URL}/api/auth/login", content=body, 
-                                 headers={"Content-Type": "application/json"})
-        return Response(content=resp.content, status_code=resp.status_code, media_type="application/json")
 
-@app.get("/api/settings/databricks")
-async def proxy_get_databricks(request: Request):
+@app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
+async def proxy_to_routing_service(path: str, request: Request):
+    """Forward all /api/* requests to routing-service."""
+    url = f"{ROUTING_SERVICE_URL}/api/{path}"
+    if request.query_params:
+        url += f"?{request.query_params}"
     headers = {}
-    if request.headers.get("authorization"):
+    if "authorization" in request.headers:
         headers["Authorization"] = request.headers["authorization"]
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        resp = await client.get(f"{ROUTING_SERVICE_URL}/api/settings/databricks", headers=headers)
-        return Response(content=resp.content, status_code=resp.status_code, media_type="application/json")
+    if "content-type" in request.headers:
+        headers["Content-Type"] = request.headers["content-type"]
+    body = await request.body() if request.method in ("POST", "PUT", "DELETE") else None
 
-@app.post("/api/settings/databricks")
-async def proxy_save_databricks(request: Request):
-    body = await request.body()
-    headers = {"Content-Type": "application/json"}
-    if request.headers.get("authorization"):
-        headers["Authorization"] = request.headers["authorization"]
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.post(f"{ROUTING_SERVICE_URL}/api/settings/databricks", content=body, headers=headers)
-        return Response(content=resp.content, status_code=resp.status_code, media_type="application/json")
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.request(
+                request.method, url, headers=headers, content=body
+            )
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            media_type="application/json",
+        )
+    except httpx.ConnectError:
+        return Response(
+            content=b'{"detail": "routing-service unavailable"}',
+            status_code=502,
+            media_type="application/json",
+        )
 
-@app.get("/api/databricks/warehouses")
-async def proxy_get_warehouses(request: Request):
-    headers = {}
-    if request.headers.get("authorization"):
-        headers["Authorization"] = request.headers["authorization"]
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        resp = await client.get(f"{ROUTING_SERVICE_URL}/api/databricks/warehouses", headers=headers)
-        return Response(content=resp.content, status_code=resp.status_code, media_type="application/json")
-
-@app.put("/api/settings/warehouse")
-async def proxy_save_warehouse(request: Request):
-    body = await request.body()
-    headers = {"Content-Type": "application/json"}
-    if request.headers.get("authorization"):
-        headers["Authorization"] = request.headers["authorization"]
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        resp = await client.put(f"{ROUTING_SERVICE_URL}/api/settings/warehouse", content=body, headers=headers)
-        return Response(content=resp.content, status_code=resp.status_code, media_type="application/json")
 
 # --- Static file serving (single page, no SPA fallback) ---
 if STATIC_DIR.is_dir():
