@@ -9,5 +9,11 @@ dependencies = [
     "httpx>=0.28.1",
     "kubernetes>=35.0.0",
     "psycopg2-binary>=2.9.11",
+    "sqlglot>=30.0.3",
     "uvicorn>=0.40.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
 ]
