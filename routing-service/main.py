@@ -1,9 +1,14 @@
 import os
 import secrets
+import time
+import uuid
+
 import httpx
 import psycopg2
 import db
 import catalog_service
+import query_analyzer
+import routing_engine
 from fastapi import FastAPI, Depends, HTTPException, Header
 from pydantic import BaseModel
 from databricks.sdk import WorkspaceClient
@@ -32,13 +37,16 @@ import logging
 
 logger = logging.getLogger("routing-service")
 
+
 @app.on_event("startup")
 async def load_databricks_credentials():
     global _workspace_client, _databricks_host, _databricks_username, _warehouse_id
     host = os.environ.get("DATABRICKS_HOST")
     token = os.environ.get("DATABRICKS_TOKEN")
     if not host or not token:
-        logger.info("No DATABRICKS_HOST/DATABRICKS_TOKEN in environment, skipping auto-connect")
+        logger.info(
+            "No DATABRICKS_HOST/DATABRICKS_TOKEN in environment, skipping auto-connect"
+        )
         return
     try:
         wc = WorkspaceClient(host=host, token=token)
@@ -50,15 +58,22 @@ async def load_databricks_credentials():
         logger.info(f"Databricks credentials loaded from environment: {me.user_name}")
     except Exception as e:
         logger.warning(f"Failed to load Databricks credentials from environment: {e}")
+
+
 @app.on_event("startup")
 async def init_database():
     db.init_db()
+
+
 @app.on_event("shutdown")
 async def close_database():
     db.close_db()
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str
+
 
 class DatabricksCredentials(BaseModel):
     host: str
@@ -66,12 +81,14 @@ class DatabricksCredentials(BaseModel):
     client_id: str | None = None
     client_secret: str | None = None
 
+
 def _save_to_k8s_secret(creds: DatabricksCredentials):
     from kubernetes import client as k8s_client, config as k8s_config
+
     try:
         k8s_config.load_incluster_config()
     except Exception:
-        return #Not running in cluster, skip sliently
+        return  # Not running in cluster, skip sliently
     v1 = k8s_client.CoreV1Api()
     secret_data = {"DATABRICKS_HOST": creds.host}
     if creds.token:
@@ -93,6 +110,7 @@ def _save_to_k8s_secret(creds: DatabricksCredentials):
         else:
             raise
 
+
 @app.post("/api/auth/login")
 async def login(creds: LoginRequest):
     if creds.username != ADMIN_USERNAME or creds.password != ADMIN_PASSWORD:
@@ -100,6 +118,7 @@ async def login(creds: LoginRequest):
     token = secrets.token_hex(32)
     _active_tokens[token] = creds.username
     return {"token": token}
+
 
 async def verify_token(authorization: str = Header(None)) -> str:
     if not authorization or not authorization.startswith("Bearer "):
@@ -112,15 +131,24 @@ async def verify_token(authorization: str = Header(None)) -> str:
 
 
 @app.post("/api/settings/databricks")
-async def save_databricks_settings(creds: DatabricksCredentials, username: str = Depends(verify_token)):
+async def save_databricks_settings(
+    creds: DatabricksCredentials, username: str = Depends(verify_token)
+):
     global _workspace_client, _databricks_host, _databricks_username
     try:
         if creds.token:
             wc = WorkspaceClient(host=creds.host, token=creds.token)
         elif creds.client_id and creds.client_secret:
-            wc = WorkspaceClient(host=creds.host, client_id=creds.client_id, client_secret=creds.client_secret)
+            wc = WorkspaceClient(
+                host=creds.host,
+                client_id=creds.client_id,
+                client_secret=creds.client_secret,
+            )
         else:
-            raise HTTPException(status_code=400, detail="Provide either token or client_id+client_secret")
+            raise HTTPException(
+                status_code=400,
+                detail="Provide either token or client_id+client_secret",
+            )
         me = wc.current_user.me()
     except HTTPException:
         raise
@@ -131,6 +159,7 @@ async def save_databricks_settings(creds: DatabricksCredentials, username: str =
     _databricks_username = me.user_name
     _save_to_k8s_secret(creds)
     return {"status": "connected", "host": creds.host, "username": me.user_name}
+
 
 @app.get("/api/settings/databricks")
 async def get_databricks_settings(username: str = Depends(verify_token)):
@@ -143,9 +172,11 @@ async def get_databricks_settings(username: str = Depends(verify_token)):
         "warehouse_id": _warehouse_id,
     }
 
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
 
 @app.get("/health/backends")
 async def health_backends():
@@ -176,6 +207,7 @@ async def health_backends():
             backends["databricks"] = {"status": "error", "detail": str(e)}
     return backends
 
+
 @app.get("/api/databricks/warehouses")
 async def list_warehouses(username: str = Depends(verify_token)):
     if _workspace_client is None:
@@ -186,21 +218,31 @@ async def list_warehouses(username: str = Depends(verify_token)):
             {
                 "id": wh.id,
                 "name": wh.name,
-                "state": wh.state.value if wh.state else "UNKNOWN"
+                "state": wh.state.value if wh.state else "UNKNOWN",
             }
             for wh in warehouses
         ]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list warehouses: {e}")
 
+
 class WarehouseSelection(BaseModel):
     warehouse_id: str
 
+
+class QueryExecutionRequest(BaseModel):
+    sql: str
+    routing_mode: str = "smart"  # "smart", "duckdb", or "databricks"
+
+
 @app.put("/api/settings/warehouse")
-async def save_warehouse(body: WarehouseSelection, username: str = Depends(verify_token)):
+async def save_warehouse(
+    body: WarehouseSelection, username: str = Depends(verify_token)
+):
     global _warehouse_id
     _warehouse_id = body.warehouse_id
     return {"warehouse_id": body.warehouse_id, "status": "saved"}
+
 
 @app.get("/api/databricks/catalogs")
 async def list_catalogs(username: str = Depends(verify_token)):
@@ -212,6 +254,7 @@ async def list_catalogs(username: str = Depends(verify_token)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list catalogs: {e}")
 
+
 @app.get("/api/databricks/catalogs/{catalog}/schemas")
 async def list_schemas(catalog: str, username: str = Depends(verify_token)):
     if _workspace_client is None:
@@ -222,17 +265,22 @@ async def list_schemas(catalog: str, username: str = Depends(verify_token)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list schemas: {e}")
 
+
 @app.get("/api/databricks/catalogs/{catalog}/schemas/{schema}/tables")
 async def list_tables(catalog: str, schema: str, username: str = Depends(verify_token)):
     if _workspace_client is None:
         raise HTTPException(status_code=400, detail="No Databricks workspace connected")
     try:
-        tables = _workspace_client.tables.list(catalog_name=catalog, schema_name=schema, include_manifest_capabilities=True)
+        tables = _workspace_client.tables.list(
+            catalog_name=catalog, schema_name=schema, include_manifest_capabilities=True
+        )
         result = []
         cache_entries = []
         for t in tables:
             table_type = t.table_type.value if t.table_type else "UNKNOWN"
-            data_source_format = t.data_source_format.value if t.data_source_format else None
+            data_source_format = (
+                t.data_source_format.value if t.data_source_format else None
+            )
             size_bytes = None
             row_count = None
             if t.properties:
@@ -249,46 +297,224 @@ async def list_tables(catalog: str, schema: str, username: str = Depends(verify_
                     except ValueError:
                         pass
             has_rls = t.row_filter is not None
-            has_column_masking = any(
-                col.mask is not None for col in (t.columns or [])
-            )
+            has_column_masking = any(col.mask is not None for col in (t.columns or []))
             capabilities = []
             if t.securable_kind_manifest and t.securable_kind_manifest.capabilities:
                 capabilities = t.securable_kind_manifest.capabilities
-            external_engine_read_support = "HAS_DIRECT_EXTERNAL_ENGINE_READ_SUPPORT" in capabilities
+            external_engine_read_support = (
+                "HAS_DIRECT_EXTERNAL_ENGINE_READ_SUPPORT" in capabilities
+            )
             columns = [
-                {"name": col.name, "type_text": col.type_text or col.type_name.value if col.type_name else "UNKNOWN"} for col in (t.columns or [])  
+                {
+                    "name": col.name,
+                    "type_text": col.type_text or col.type_name.value
+                    if col.type_name
+                    else "UNKNOWN",
+                }
+                for col in (t.columns or [])
             ]
-            result.append({
-                "name": t.name,
-                "full_name" : t.full_name,
-                "table_type": table_type,
-                "data_source_format": data_source_format,
-                "size_bytes": size_bytes,
-                "row_count": row_count,
-                "storage_location": t.storage_location,
-                "external_engine_read_support": external_engine_read_support,
-                "columns": columns,
-            })
+            result.append(
+                {
+                    "name": t.name,
+                    "full_name": t.full_name,
+                    "table_type": table_type,
+                    "data_source_format": data_source_format,
+                    "size_bytes": size_bytes,
+                    "row_count": row_count,
+                    "storage_location": t.storage_location,
+                    "external_engine_read_support": external_engine_read_support,
+                    "columns": columns,
+                }
+            )
 
             # Build cache entry for warm-on-browse
-            cache_entries.append(catalog_service.TableMetadata(
-                full_name=t.full_name,
-                table_type=table_type,
-                data_source_format=data_source_format or "UNKNOWN",
-                storage_location=t.storage_location,
-                size_bytes=size_bytes,
-                has_rls=has_rls,
-                has_column_masking=has_column_masking,
-                external_engine_read_support=external_engine_read_support,
-                cached=False,
-            ))
+            cache_entries.append(
+                catalog_service.TableMetadata(
+                    full_name=t.full_name,
+                    table_type=table_type,
+                    data_source_format=data_source_format or "UNKNOWN",
+                    storage_location=t.storage_location,
+                    size_bytes=size_bytes,
+                    has_rls=has_rls,
+                    has_column_masking=has_column_masking,
+                    external_engine_read_support=external_engine_read_support,
+                    cached=False,
+                )
+            )
         # Warm the metadata cache (best-effort, never breaks browse response)
         for entry in cache_entries:
             try:
                 catalog_service._write_to_cache(entry)
             except Exception:
-                logger.warning("Failed to cache metadata for %s", entry.full_name, exc_info=True)
+                logger.warning(
+                    "Failed to cache metadata for %s", entry.full_name, exc_info=True
+                )
         return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list tables: {e}")            
+        raise HTTPException(status_code=500, detail=f"Failed to list tables: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Query execution
+# ---------------------------------------------------------------------------
+
+MAX_RESULT_ROWS = 1000
+
+
+async def _execute_on_duckdb(sql: str) -> dict:
+    """Execute SQL on the DuckDB worker via HTTP."""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(f"{DUCKDB_WORKER_URL}/query", json={"sql": sql})
+        if resp.status_code != 200:
+            detail = (
+                resp.json().get("detail", resp.text)
+                if resp.headers.get("content-type", "").startswith("application/json")
+                else resp.text
+            )
+            raise HTTPException(
+                status_code=502, detail=f"DuckDB worker error: {detail}"
+            )
+        data = resp.json()
+        return {
+            "columns": data["columns"],
+            "rows": data["rows"][:MAX_RESULT_ROWS],
+            "row_count": data["row_count"],
+            "execution_time_ms": data["execution_time_ms"],
+        }
+
+
+def _execute_on_databricks(sql: str) -> dict:
+    """Execute SQL on Databricks via the SDK (synchronous)."""
+    if _workspace_client is None:
+        raise HTTPException(status_code=400, detail="No Databricks workspace connected")
+    if not _warehouse_id:
+        raise HTTPException(status_code=400, detail="No SQL warehouse selected")
+
+    from databricks.sdk.service.sql import StatementState
+
+    response = _workspace_client.statement_execution.execute_statement(
+        statement=sql,
+        warehouse_id=_warehouse_id,
+        wait_timeout="30s",
+    )
+
+    state = response.status.state if response.status else None
+    if state == StatementState.FAILED:
+        error_msg = "Unknown error"
+        if response.status.error:
+            error_msg = response.status.error.message or str(response.status.error)
+        raise HTTPException(
+            status_code=502, detail=f"Databricks execution failed: {error_msg}"
+        )
+    if state == StatementState.CANCELED:
+        raise HTTPException(
+            status_code=502, detail="Databricks execution was cancelled"
+        )
+    if state != StatementState.SUCCEEDED:
+        raise HTTPException(
+            status_code=502, detail=f"Databricks execution in unexpected state: {state}"
+        )
+
+    # Extract columns from manifest
+    columns = []
+    if (
+        response.manifest
+        and response.manifest.schema
+        and response.manifest.schema.columns
+    ):
+        columns = [col.name for col in response.manifest.schema.columns]
+
+    # Extract rows from result
+    rows = []
+    if response.result and response.result.data_array:
+        rows = response.result.data_array[:MAX_RESULT_ROWS]
+
+    row_count = len(rows)
+    if response.manifest and response.manifest.total_row_count is not None:
+        row_count = response.manifest.total_row_count
+
+    return {
+        "columns": columns,
+        "rows": rows,
+        "row_count": row_count,
+        "execution_time_ms": None,  # SDK doesn't report this; caller uses wall-clock
+    }
+
+
+@app.post("/api/query")
+async def execute_query(
+    body: QueryExecutionRequest, username: str = Depends(verify_token)
+):
+    correlation_id = str(uuid.uuid4())
+
+    # 1. Parse & analyze SQL
+    analysis = query_analyzer.analyze_query(body.sql)
+
+    if analysis.error:
+        raise HTTPException(
+            status_code=400, detail=f"SQL analysis failed: {analysis.error}"
+        )
+
+    # 2. Reject non-SELECT statements (security boundary)
+    if analysis.statement_type != "SELECT":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only SELECT statements are supported, got {analysis.statement_type}",
+        )
+
+    # 3. Fetch table metadata
+    table_metadata = catalog_service.get_tables_metadata(
+        analysis.tables, _workspace_client
+    )
+
+    # 4. Route
+    try:
+        decision = routing_engine.route_query(
+            analysis, table_metadata, body.routing_mode
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # 5. Execute on chosen engine
+    wall_start = time.monotonic()
+    try:
+        if decision.engine == "duckdb":
+            result = await _execute_on_duckdb(body.sql)
+        else:
+            result = _execute_on_databricks(body.sql)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=502, detail=f"Execution failed on {decision.engine}: {e}"
+        )
+    wall_ms = round((time.monotonic() - wall_start) * 1000, 2)
+
+    # Use engine-reported time if available, else wall-clock
+    execution_time_ms = (
+        result["execution_time_ms"]
+        if result["execution_time_ms"] is not None
+        else wall_ms
+    )
+
+    # 6. Build response (matches frontend QueryExecutionResult)
+    return {
+        "correlation_id": correlation_id,
+        "routing_decision": {
+            "engine": decision.engine,
+            "engine_display_name": "DuckDB"
+            if decision.engine == "duckdb"
+            else "Databricks",
+            "stage": decision.stage,
+            "reason": decision.reason,
+            "complexity_score": decision.complexity_score,
+        },
+        "execution": {
+            "execution_time_ms": execution_time_ms,
+            "data_scanned_bytes": 0,  # Not available yet
+            "estimated_cost_usd": 0.0,  # Not available yet
+            "cost_savings_usd": 0.0,  # Not available yet
+        },
+        "columns": result["columns"],
+        "rows": result["rows"],
+    }
