@@ -207,26 +207,6 @@ export interface StorageLatencyProbe {
   measured_at: string;
 }
 
-// --- Storage Account Authorization (ODQ-12) ---
-export type StorageAccountStatusValue = "accessible" | "inaccessible" | "untested";
-export type StorageAccountFailureCategory = "auth" | "firewall" | "vnet" | "dns" | "unknown";
-
-export interface StorageAccountStatus {
-  storage_account: string; // hostname, e.g. "myaccount.dfs.core.windows.net"
-  storage_location_prefix: string; // e.g. "abfss://container@myaccount.dfs.core.windows.net/"
-  status: StorageAccountStatusValue;
-  failure_reason: string | null;
-  failure_category: StorageAccountFailureCategory | null;
-  azure_portal_link: string | null;
-  tested_at: string | null;
-}
-
-export interface AzureStorageConfig {
-  configured: boolean;
-  tenant_id: string | null;
-  client_id: string | null;
-}
-
 // --- Unity Catalog ---
 export interface CatalogInfo {
   name: string;

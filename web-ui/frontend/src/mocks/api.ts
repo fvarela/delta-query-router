@@ -16,7 +16,7 @@
 //   - benchmarks:    benchmark lifecycle, results, storage probes
 //   - query logs:    query history with engine filtering
 //   - routing:       routing settings (weights, bonuses, cost estimation mode)
-//   - storage:       storage latency probes
+//   - probes:        storage latency probes
 //
 // All components import exclusively from this file via `mockApi`.
 // When a real endpoint is available, replace the corresponding mock function
@@ -30,7 +30,6 @@ import type {
   QueryExecutionResult, BenchmarkSummary, BenchmarkDetail,
   Model, CatalogInfo, SchemaInfo, TableInfo, LogEntry,
   RoutingLogEvent, RoutingLogLevel, StorageLatencyProbe,
-  StorageAccountStatus, AzureStorageConfig,
 } from "../types";
 
 const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -59,20 +58,6 @@ let storageLatencyProbes: StorageLatencyProbe[] = [
   { id: 2, storage_location: "s3://delta-router/tpcds/", engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", probe_time_ms: 11.8, bytes_read: 1048576, measured_at: "2026-03-14T09:00:30Z" },
   { id: 3, storage_location: "s3://delta-router/analytics/", engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", probe_time_ms: 14.1, bytes_read: 1048576, measured_at: "2026-03-15T14:30:25Z" },
   { id: 4, storage_location: "s3://delta-router/tpcds/", engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", probe_time_ms: 10.5, bytes_read: 1048576, measured_at: "2026-03-16T11:00:28Z" },
-];
-
-// ---- Azure Storage Account Authorization (ODQ-12) ----
-let azureStorageConfig: AzureStorageConfig = {
-  configured: true,
-  tenant_id: "72f988bf-86f1-41af-91ab-2d7cd011db47",
-  client_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-};
-
-let storageAccountStatuses: StorageAccountStatus[] = [
-  { storage_account: "deltarouter.dfs.core.windows.net", storage_location_prefix: "abfss://tpcds@deltarouter.dfs.core.windows.net/", status: "accessible", failure_reason: null, failure_category: null, azure_portal_link: null, tested_at: "2026-03-22T10:15:00Z" },
-  { storage_account: "analyticsstore.dfs.core.windows.net", storage_location_prefix: "abfss://analytics@analyticsstore.dfs.core.windows.net/", status: "accessible", failure_reason: null, failure_category: null, azure_portal_link: null, tested_at: "2026-03-22T10:15:02Z" },
-  { storage_account: "securedatalake.dfs.core.windows.net", storage_location_prefix: "abfss://secure@securedatalake.dfs.core.windows.net/", status: "inaccessible", failure_reason: "Service principal lacks Storage Blob Data Reader role on this storage account", failure_category: "auth", azure_portal_link: "https://portal.azure.com/#@72f988bf-86f1-41af-91ab-2d7cd011db47/resource/subscriptions/sub-1/resourceGroups/rg-data/providers/Microsoft.Storage/storageAccounts/securedatalake/iam", tested_at: "2026-03-22T10:15:04Z" },
-  { storage_account: "privatestore.dfs.core.windows.net", storage_location_prefix: "abfss://private@privatestore.dfs.core.windows.net/", status: "inaccessible", failure_reason: "Storage account firewall is blocking access — add the IP address of Delta Router to the allowlist", failure_category: "firewall", azure_portal_link: "https://portal.azure.com/#@72f988bf-86f1-41af-91ab-2d7cd011db47/resource/subscriptions/sub-1/resourceGroups/rg-data/providers/Microsoft.Storage/storageAccounts/privatestore/networking", tested_at: "2026-03-22T10:15:05Z" },
 ];
 
 let workspaces: Workspace[] = [
@@ -766,103 +751,5 @@ export const mockApi = {
     await delay(200);
     Object.assign(routingSettings, settings);
     return { ...routingSettings };
-  },
-
-  // Azure Storage Account Authorization (ODQ-12)
-  async getAzureStorageConfig(): Promise<AzureStorageConfig> {
-    // TODO: Replace with real API call — GET /api/storage/azure-config
-    await delay(100);
-    return JSON.parse(JSON.stringify(azureStorageConfig));
-  },
-
-  async saveAzureStorageConfig(tenant_id: string, client_id: string, _client_secret: string): Promise<AzureStorageConfig> {
-    // TODO: Replace with real API call — PUT /api/storage/azure-config
-    await delay(300);
-    azureStorageConfig = { configured: true, tenant_id, client_id };
-    return JSON.parse(JSON.stringify(azureStorageConfig));
-  },
-
-  async deleteAzureStorageConfig(): Promise<void> {
-    // TODO: Replace with real API call — DELETE /api/storage/azure-config
-    await delay(200);
-    azureStorageConfig = { configured: false, tenant_id: null, client_id: null };
-    storageAccountStatuses = storageAccountStatuses.map(s => ({
-      ...s,
-      status: "untested" as const,
-      failure_reason: null,
-      failure_category: null,
-      azure_portal_link: null,
-      tested_at: null,
-    }));
-  },
-
-  async getStorageAccounts(): Promise<StorageAccountStatus[]> {
-    // TODO: Replace with real API call — GET /api/storage/accounts
-    await delay(200);
-    return JSON.parse(JSON.stringify(storageAccountStatuses));
-  },
-
-  async testStorageAccounts(storage_account?: string): Promise<StorageAccountStatus[]> {
-    // TODO: Replace with real API call — POST /api/storage/accounts/test
-    await delay(1500); // Simulate connectivity test time
-    const now = new Date().toISOString();
-    if (storage_account) {
-      // Test single account — keep its current status (simulates re-test)
-      storageAccountStatuses = storageAccountStatuses.map(s =>
-        s.storage_account === storage_account ? { ...s, tested_at: now } : s
-      );
-    } else {
-      // Test all — update tested_at timestamps
-      storageAccountStatuses = storageAccountStatuses.map(s => ({ ...s, tested_at: now }));
-    }
-    return JSON.parse(JSON.stringify(storageAccountStatuses));
-  },
-
-  async getStorageAccountDiagnostics(account: string): Promise<{
-    storage_account: string;
-    checks: { check: string; passed: boolean; detail: string }[];
-  }> {
-    // TODO: Replace with real API call — GET /api/storage/accounts/:account/diagnostics
-    await delay(400);
-    const acct = storageAccountStatuses.find(s => s.storage_account === account);
-    if (!acct) throw new Error("Storage account not found");
-
-    if (acct.status === "accessible") {
-      return {
-        storage_account: account,
-        checks: [
-          { check: "DNS resolution", passed: true, detail: `Resolved ${account} successfully` },
-          { check: "TCP connectivity", passed: true, detail: "Port 443 reachable" },
-          { check: "TLS handshake", passed: true, detail: "TLS 1.2 established" },
-          { check: "Authentication", passed: true, detail: "Service principal authenticated" },
-          { check: "Authorization", passed: true, detail: "Storage Blob Data Reader role confirmed" },
-        ],
-      };
-    }
-
-    if (acct.failure_category === "auth") {
-      return {
-        storage_account: account,
-        checks: [
-          { check: "DNS resolution", passed: true, detail: `Resolved ${account} successfully` },
-          { check: "TCP connectivity", passed: true, detail: "Port 443 reachable" },
-          { check: "TLS handshake", passed: true, detail: "TLS 1.2 established" },
-          { check: "Authentication", passed: true, detail: "Service principal authenticated" },
-          { check: "Authorization", passed: false, detail: "Missing Storage Blob Data Reader role — assign via Azure Portal > IAM" },
-        ],
-      };
-    }
-
-    // firewall
-    return {
-      storage_account: account,
-      checks: [
-        { check: "DNS resolution", passed: true, detail: `Resolved ${account} successfully` },
-        { check: "TCP connectivity", passed: false, detail: "Connection refused on port 443 — firewall is blocking access" },
-        { check: "TLS handshake", passed: false, detail: "Skipped (TCP failed)" },
-        { check: "Authentication", passed: false, detail: "Skipped (TCP failed)" },
-        { check: "Authorization", passed: false, detail: "Skipped (TCP failed)" },
-      ],
-    };
   },
 };

@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from "react";
-import type { RunMode, PanelMode, QueryExecutionResult, Workspace, EngineCatalogEntry, Model, RoutingSettings, StorageLatencyProbe, StorageAccountStatus, AzureStorageConfig } from "../types";
+import type { RunMode, PanelMode, QueryExecutionResult, Workspace, EngineCatalogEntry, Model, RoutingSettings, StorageLatencyProbe } from "../types";
 import { mockApi } from "@/mocks/api";
 
 // ---- App Context ----
@@ -57,16 +57,6 @@ interface AppContextType {
   reloadStorageProbes: () => Promise<void>;
   runStorageProbes: () => Promise<void>;
   probesRunning: boolean;
-
-  // Storage account authorization (ODQ-12)
-  storageAccounts: StorageAccountStatus[];
-  azureStorageConfig: AzureStorageConfig;
-  reloadStorageAccounts: () => Promise<void>;
-  reloadAzureStorageConfig: () => Promise<void>;
-  testStorageConnectivity: (storageAccount?: string) => Promise<void>;
-  storageTestRunning: boolean;
-  openSpModal: boolean;
-  setOpenSpModal: (open: boolean) => void;
 }
 
 const AppContext = createContext<AppContextType>(null!);
@@ -185,50 +175,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [reloadStorageProbes]);
 
-  // Storage account authorization (ODQ-12)
-  const [storageAccounts, setStorageAccounts] = useState<StorageAccountStatus[]>([]);
-  const [azureStorageConfig, setAzureStorageConfig] = useState<AzureStorageConfig>({ configured: false, tenant_id: null, client_id: null });
-  const [storageTestRunning, setStorageTestRunning] = useState(false);
-  const [openSpModal, setOpenSpModal] = useState(false);
-
-  const reloadAzureStorageConfig = useCallback(async () => {
-    const cfg = await mockApi.getAzureStorageConfig();
-    setAzureStorageConfig(cfg);
-  }, []);
-
-  const reloadStorageAccounts = useCallback(async () => {
-    const accts = await mockApi.getStorageAccounts();
-    setStorageAccounts(accts);
-  }, []);
-
-  const testStorageConnectivity = useCallback(async (storageAccount?: string) => {
-    setStorageTestRunning(true);
-    try {
-      await mockApi.testStorageAccounts(storageAccount);
-      await reloadStorageAccounts();
-    } finally {
-      setStorageTestRunning(false);
-    }
-  }, [reloadStorageAccounts]);
-
-  // Reload storage accounts when workspace connection changes
-  // Storage accounts are discovered from Unity Catalog table metadata,
-  // which is only available when connected to a Databricks workspace.
-  useEffect(() => {
-    if (connectedWorkspace) {
-      reloadStorageAccounts();
-    } else {
-      setStorageAccounts([]);
-    }
-  }, [connectedWorkspace, reloadStorageAccounts]);
-
   // Initial data load
   useEffect(() => {
     reloadWorkspaces();
     reloadEngines();
     reloadModels();
     reloadStorageProbes();
-    reloadAzureStorageConfig();
     mockApi.getRoutingSettings().then(setRoutingSettings);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -246,8 +198,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       activeModelId, setActiveModelId, models, reloadModels,
       routingSettings, updateRoutingSettings,
       storageProbes, reloadStorageProbes, runStorageProbes, probesRunning,
-      storageAccounts, azureStorageConfig, reloadStorageAccounts, reloadAzureStorageConfig,
-      testStorageConnectivity, storageTestRunning, openSpModal, setOpenSpModal,
     }}>
       {children}
     </AppContext.Provider>

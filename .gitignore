@@ -55,7 +55,5 @@ screenshots/
 
 # AI tooling and workflow files
 .taskmaster/
-CLAUDE.md
-.claude/
-opencode.json
-.mcp.json
+AGENTS.md
+.agents/
