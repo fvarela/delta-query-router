@@ -9,6 +9,7 @@ import db
 import catalog_service
 import query_analyzer
 import routing_engine
+import query_logger
 from fastapi import FastAPI, Depends, HTTPException, Header
 from pydantic import BaseModel
 from databricks.sdk import WorkspaceClient
@@ -67,6 +68,7 @@ async def init_database():
 
 @app.on_event("shutdown")
 async def close_database():
+    query_logger.shutdown()
     db.close_db()
 
 
@@ -485,6 +487,17 @@ async def execute_query(
     except HTTPException:
         raise
     except Exception as e:
+        query_logger.submit_log(
+            correlation_id=correlation_id,
+            user_id=username,
+            sql=body.sql,
+            status="error",
+            engine=decision.engine,
+            reason=decision.reason,
+            complexity_score=decision.complexity_score,
+            execution_time_ms=None,
+            estimated_cost_usd=None,
+        )
         raise HTTPException(
             status_code=502, detail=f"Execution failed on {decision.engine}: {e}"
         )
@@ -497,7 +510,20 @@ async def execute_query(
         else wall_ms
     )
 
-    # 6. Build response (matches frontend QueryExecutionResult)
+    # 6. Log (fire-and-forget, never blocks the response)
+    query_logger.submit_log(
+        correlation_id=correlation_id,
+        user_id=username,
+        sql=body.sql,
+        status="success",
+        engine=decision.engine,
+        reason=decision.reason,
+        complexity_score=decision.complexity_score,
+        execution_time_ms=execution_time_ms,
+        estimated_cost_usd=0.0,
+    )
+
+    # 7. Build response (matches frontend QueryExecutionResult)
     return {
         "correlation_id": correlation_id,
         "routing_decision": {
