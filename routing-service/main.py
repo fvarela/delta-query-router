@@ -11,6 +11,7 @@ import query_analyzer
 import routing_engine
 import query_logger
 from fastapi import FastAPI, Depends, HTTPException, Header
+from fastapi.responses import Response
 from pydantic import BaseModel
 from databricks.sdk import WorkspaceClient
 
@@ -618,3 +619,105 @@ async def get_logs(engine: str | None = None, username: str = Depends(verify_tok
         }
         for r in rows
     ]
+
+# ---------------------------------------------------------------------------
+# Routing rules CRUD
+# ---------------------------------------------------------------------------
+class CreateRoutingRule(BaseModel):
+    priority: int
+    condition_type: str
+    condition_value: str
+    target_engine: str
+class UpdateRoutingRule(BaseModel):
+    priority: int | None = None
+    condition_type: str | None = None
+    condition_value: str | None = None
+    target_engine: str | None = None
+
+@app.get("/api/routing/rules")
+async def list_routing_rules(username: str = Depends(verify_token)):
+    rows = db.fetch_all("SELECT * FROM routing_rules ORDER BY priority")
+    return rows
+
+
+@app.post("/api/routing/rules", status_code=201)
+async def create_routing_rule(
+    body: CreateRoutingRule, username: str = Depends(verify_token)
+):
+    row = db.fetch_one(
+        """INSERT INTO routing_rules (priority, condition_type, condition_value, target_engine, is_system, enabled)
+           VALUES (%s, %s, %s, %s, false, true)
+           RETURNING *""",
+        (body.priority, body.condition_type, body.condition_value, body.target_engine),
+    )
+    return row
+
+
+@app.put("/api/routing/rules/{rule_id}")
+async def update_routing_rule(
+    rule_id: int, body: UpdateRoutingRule, username: str = Depends(verify_token)
+):
+    existing = db.fetch_one("SELECT * FROM routing_rules WHERE id = %s", (rule_id,))
+    if not existing:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    if existing["is_system"]:
+        raise HTTPException(status_code=403, detail="Cannot modify a system rule")
+    # Build SET clause from non-None fields only
+    fields = {}
+    if body.priority is not None:
+        fields["priority"] = body.priority
+    if body.condition_type is not None:
+        fields["condition_type"] = body.condition_type
+    if body.condition_value is not None:
+        fields["condition_value"] = body.condition_value
+    if body.target_engine is not None:
+        fields["target_engine"] = body.target_engine
+    if not fields:
+        return existing
+    set_clause = ", ".join(f"{k} = %s" for k in fields)
+    values = list(fields.values()) + [rule_id]
+    row = db.fetch_one(
+        f"UPDATE routing_rules SET {set_clause} WHERE id = %s RETURNING *",
+        tuple(values),
+    )
+    return row
+
+@app.delete("/api/routing/rules/{rule_id}", status_code=204)
+async def delete_routing_rule(rule_id: int, username: str = Depends(verify_token)):
+    existing = db.fetch_one("SELECT * FROM routing_rules WHERE id = %s", (rule_id,))
+    if not existing:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    if existing["is_system"]:
+        raise HTTPException(status_code=403, detail="Cannot delete a system rule")
+    db.execute("DELETE FROM routing_rules WHERE id = %s", (rule_id,))
+    return Response(status_code=204)
+
+
+@app.put("/api/routing/rules/{rule_id}/toggle")
+async def toggle_routing_rule(rule_id: int, username: str = Depends(verify_token)):
+    existing = db.fetch_one("SELECT * FROM routing_rules WHERE id = %s", (rule_id,))
+    if not existing:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    row = db.fetch_one(
+        "UPDATE routing_rules SET enabled = NOT enabled WHERE id = %s RETURNING *",
+        (rule_id,),
+    )
+    return row
+
+
+@app.post("/api/routing/rules/reset")
+async def reset_routing_rules(username: str = Depends(verify_token)):
+    db.execute("DELETE FROM routing_rules WHERE is_system = false")
+    db.execute(
+        """INSERT INTO routing_rules (id, priority, condition_type, condition_value, target_engine, is_system)
+           VALUES
+               (1, 1, 'table_type', 'VIEW', 'databricks', true),
+               (2, 2, 'has_governance', 'row_filter', 'databricks', true),
+               (3, 3, 'has_governance', 'column_mask', 'databricks', true),
+               (4, 4, 'table_type', 'FOREIGN', 'databricks', true),
+               (5, 5, 'external_access', 'false', 'databricks', true)
+           ON CONFLICT DO NOTHING"""
+    )
+    db.execute("UPDATE routing_rules SET enabled = true WHERE is_system = true")
+    rows = db.fetch_all("SELECT * FROM routing_rules ORDER BY priority")
+    return rows
