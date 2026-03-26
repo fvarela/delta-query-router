@@ -544,3 +544,77 @@ async def execute_query(
         "columns": result["columns"],
         "rows": result["rows"],
     }
+
+
+@app.get("/api/query/{correlation_id}")
+async def get_query(correlation_id: str, username: str = Depends(verify_token)):
+    row = db.fetch_one(
+        """SELECT q.correlation_id, q.query_text, q.status, q.submitted_at, q.completed_at,
+                    r.engine, r.reason, r.complexity_score,
+                    c.execution_time_ms, c.estimated_cost_usd
+            FROM query_logs q
+            JOIN routing_decisions r ON r.query_log_id = q.id
+            JOIN cost_metrics c ON c.query_log_id = q.id
+        WHERE q.correlation_id = %s""",
+        (correlation_id,),
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Query not found")
+    return {
+        "correlation_id": str(row["correlation_id"]),
+        "query_text": row["query_text"],
+        "status": row["status"],
+        "submitted_at": row["submitted_at"].isoformat(),
+        "completed_at": row["completed_at"].isoformat()
+        if row["completed_at"]
+        else None,
+        "routing_decision": {
+            "engine": row["engine"],
+            "engine_display_name": "DuckDB"
+            if row["engine"] == "duckdb"
+            else "Databricks",
+            "reason": row["reason"],
+            "complexity_score": row["complexity_score"],
+        },
+        "execution": {
+            "execution_time_ms": row["execution_time_ms"],
+            "estimated_cost_usd": float(row["estimated_cost_usd"])
+            if row["estimated_cost_usd"]
+            else 0.0,
+        },
+    }
+
+
+@app.get("/api/logs")
+async def get_logs(engine: str | None = None, username: str = Depends(verify_token)):
+    base_sql = """ SELECT q.correlation_id, q.query_text, q.status, q.submitted_at, 
+                        r.engine, r.reason, r.complexity_score,
+                        c.execution_time_ms, c.estimated_cost_usd
+                   FROM query_logs q
+                   JOIN routing_decisions r ON r.query_log_id = q.id
+                   JOIN cost_metrics c ON c.query_log_id = q.id
+                """
+    if engine:
+        base_sql += " WHERE r.engine = %s"
+        base_sql += " ORDER BY q.submitted_at DESC LIMIT 100"
+        rows = db.fetch_all(base_sql, (engine,))
+    else:
+        base_sql += " ORDER BY q.submitted_at DESC LIMIT 100"
+        rows = db.fetch_all(base_sql)
+    return [
+        {
+            "correlation_id": str(r["correlation_id"]),
+            "timestamp": r["submitted_at"].isoformat(),
+            "query_text": r["query_text"],
+            "engine": r["engine"],
+            "engine_display_name": "DuckDB"
+            if r["engine"] == "duckdb"
+            else "Databricks",
+            "status": r["status"],
+            "latency_ms": r["execution_time_ms"] or 0,
+            "cost_usd": float(r["estimated_cost_usd"])
+            if r["estimated_cost_usd"]
+            else 0.0,
+        }
+        for r in rows
+    ]
