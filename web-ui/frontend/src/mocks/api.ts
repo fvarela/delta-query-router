@@ -3,11 +3,10 @@
 // =============================================================================
 //
 // REAL (wired to backend):
-//   (none yet — all features use mock data)
+//   - catalog:       Unity Catalog browsing (catalogs, schemas, tables) — CatalogBrowser.tsx uses api.get() directly
 //
 // MOCKED (backend endpoints not yet implemented):
 //   - workspaces:    workspace management, PAT tokens, connect/disconnect
-//   - catalog:       Unity Catalog browsing (catalogs, schemas, tables)
 //   - query:         SQL execution, results, routing decisions, streaming logs
 //   - engines:       engine catalog, enable/disable, runtime status
 //   - rules:         system rules, if-then rules CRUD, reset

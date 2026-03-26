@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { mockApi } from "@/mocks/api";
+import { api } from "@/lib/api";
 import { useApp } from "@/contexts/AppContext";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import type { CatalogInfo, SchemaInfo, TableInfo } from "@/types";
@@ -41,17 +41,30 @@ export const CatalogBrowser: React.FC = () => {
   const [tables, setTables] = useState<Record<string, TableInfo[]>>({});
   const [loadingKeys, setLoadingKeys] = useState<Set<string>>(new Set());
   const [selectedTable, setSelectedTable] = useState<TableInfo | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!connectedWorkspace) {
       setCatalogs([]);
+      setError(null);
       return;
     }
     setLoadingKeys(new Set(["catalogs"]));
-    mockApi.getCatalogs().then(c => {
-      setCatalogs(c);
-      setLoadingKeys(prev => { const n = new Set(prev); n.delete("catalogs"); return n; });
-    });
+    setError(null);
+    api.get<CatalogInfo[]>("/api/databricks/catalogs")
+      .then(c => {
+        setCatalogs(c);
+        setLoadingKeys(prev => { const n = new Set(prev); n.delete("catalogs"); return n; });
+      })
+      .catch(err => {
+        setCatalogs([]);
+        setLoadingKeys(prev => { const n = new Set(prev); n.delete("catalogs"); return n; });
+        if (String(err).includes("400") || String(err).includes("No Databricks workspace")) {
+          setError("Connect a Databricks workspace to browse catalogs.");
+        } else {
+          setError("Failed to load catalogs.");
+        }
+      });
   }, [connectedWorkspace]);
 
   const toggleCatalog = async (catalog: string) => {
@@ -62,8 +75,12 @@ export const CatalogBrowser: React.FC = () => {
     }
     if (!schemas[catalog]) {
       setLoadingKeys(prev => new Set(prev).add(key));
-      const s = await mockApi.getSchemas(catalog);
-      setSchemas(prev => ({ ...prev, [catalog]: s }));
+      try {
+        const s = await api.get<SchemaInfo[]>(`/api/databricks/catalogs/${catalog}/schemas`);
+        setSchemas(prev => ({ ...prev, [catalog]: s }));
+      } catch {
+        // silently fail — user sees empty expansion
+      }
       setLoadingKeys(prev => { const n = new Set(prev); n.delete(key); return n; });
     }
     setExpanded(prev => ({ ...prev, [key]: true }));
@@ -77,8 +94,12 @@ export const CatalogBrowser: React.FC = () => {
     }
     if (!tables[key]) {
       setLoadingKeys(prev => new Set(prev).add(key));
-      const t = await mockApi.getTables(catalog, schema);
-      setTables(prev => ({ ...prev, [key]: t }));
+      try {
+        const t = await api.get<TableInfo[]>(`/api/databricks/catalogs/${catalog}/schemas/${schema}/tables`);
+        setTables(prev => ({ ...prev, [key]: t }));
+      } catch {
+        // silently fail — user sees empty expansion
+      }
       setLoadingKeys(prev => { const n = new Set(prev); n.delete(key); return n; });
     }
     setExpanded(prev => ({ ...prev, [key]: true }));
@@ -115,6 +136,7 @@ export const CatalogBrowser: React.FC = () => {
       </div>
       <div className="flex-1 overflow-y-auto text-[12px]">
         {loadingKeys.has("catalogs") && <div className="p-3"><LoadingSpinner /></div>}
+        {error && <div className="p-3 text-muted-foreground">{error}</div>}
         {catalogs.map(cat => (
           <div key={cat.name}>
             <button onClick={() => toggleCatalog(cat.name)} className="flex items-center gap-1 w-full px-3 py-1 hover:bg-muted text-left text-foreground">
