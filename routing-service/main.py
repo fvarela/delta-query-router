@@ -3,6 +3,7 @@ import secrets
 import httpx
 import psycopg2
 import db
+import catalog_service
 from fastapi import FastAPI, Depends, HTTPException, Header
 from pydantic import BaseModel
 from databricks.sdk import WorkspaceClient
@@ -200,3 +201,94 @@ async def save_warehouse(body: WarehouseSelection, username: str = Depends(verif
     global _warehouse_id
     _warehouse_id = body.warehouse_id
     return {"warehouse_id": body.warehouse_id, "status": "saved"}
+
+@app.get("/api/databricks/catalogs")
+async def list_catalogs(username: str = Depends(verify_token)):
+    if _workspace_client is None:
+        raise HTTPException(status_code=400, detail="No Databricks workspace connected")
+    try:
+        catalogs = _workspace_client.catalogs.list()
+        return [{"name": c.name} for c in catalogs]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list catalogs: {e}")
+
+@app.get("/api/databricks/catalogs/{catalog}/schemas")
+async def list_schemas(catalog: str, username: str = Depends(verify_token)):
+    if _workspace_client is None:
+        raise HTTPException(status_code=400, detail="No Databricks workspace connected")
+    try:
+        schemas = _workspace_client.schemas.list(catalog_name=catalog)
+        return [{"name": s.name, "catalog_name": s.catalog_name} for s in schemas]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list schemas: {e}")
+
+@app.get("/api/databricks/catalogs/{catalog}/schemas/{schema}/tables")
+async def list_tables(catalog: str, schema: str, username: str = Depends(verify_token)):
+    if _workspace_client is None:
+        raise HTTPException(status_code=400, detail="No Databricks workspace connected")
+    try:
+        tables = _workspace_client.tables.list(catalog_name=catalog, schema_name=schema, include_manifest_capabilities=True)
+        result = []
+        cache_entries = []
+        for t in tables:
+            table_type = t.table_type.value if t.table_type else "UNKNOWN"
+            data_source_format = t.data_source_format.value if t.data_source_format else None
+            size_bytes = None
+            row_count = None
+            if t.properties:
+                size_str = t.properties.get("spark.sql.statistics.totalSize")
+                if size_str is not None:
+                    try:
+                        size_bytes = int(size_str)
+                    except ValueError:
+                        pass
+                rows_str = t.properties.get("spark.sql.statistics.numRows")
+                if rows_str is not None:
+                    try:
+                        row_count = int(rows_str)
+                    except ValueError:
+                        pass
+            has_rls = t.row_filter is not None
+            has_column_masking = any(
+                col.mask is not None for col in (t.columns or [])
+            )
+            capabilities = []
+            if t.securable_kind_manifest and t.securable_kind_manifest.capabilities:
+                capabilities = t.securable_kind_manifest.capabilities
+            external_engine_read_support = "HAS_DIRECT_EXTERNAL_ENGINE_READ_SUPPORT" in capabilities
+            columns = [
+                {"name": col.name, "type_text": col.type_text or col.type_name.value if col.type_name else "UNKNOWN"} for col in (t.columns or [])  
+            ]
+            result.append({
+                "name": t.name,
+                "full_name" : t.full_name,
+                "table_type": table_type,
+                "data_source_format": data_source_format,
+                "size_bytes": size_bytes,
+                "row_count": row_count,
+                "storage_location": t.storage_location,
+                "external_engine_read_support": external_engine_read_support,
+                "columns": columns,
+            })
+
+            # Build cache entry for warm-on-browse
+            cache_entries.append(catalog_service.TableMetadata(
+                full_name=t.full_name,
+                table_type=table_type,
+                data_source_format=data_source_format or "UNKNOWN",
+                storage_location=t.storage_location,
+                size_bytes=size_bytes,
+                has_rls=has_rls,
+                has_column_masking=has_column_masking,
+                external_engine_read_support=external_engine_read_support,
+                cached=False,
+            ))
+        # Warm the metadata cache (best-effort, never breaks browse response)
+        for entry in cache_entries:
+            try:
+                catalog_service._write_to_cache(entry)
+            except Exception:
+                logger.warning("Failed to cache metadata for %s", entry.full_name, exc_info=True)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list tables: {e}")            
