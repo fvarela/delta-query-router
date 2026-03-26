@@ -1,9 +1,10 @@
 import React, { useState, useCallback, useEffect, useRef } from "react";
 import { useApp } from "@/contexts/AppContext";
 import { mockApi } from "@/mocks/api";
+import { api } from "@/lib/api";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { StatusBadge } from "@/components/shared/StatusBadge";
-import type { QueryExecutionResult, RoutingLogEvent, LogEntry } from "@/types";
+import type { QueryExecutionResult, LogEntry } from "@/types";
 import { Play, Clock, Terminal, Info, X, FolderPlus } from "lucide-react";
 
 /* ── colour helpers ── */
@@ -35,9 +36,7 @@ export const CenterPanel: React.FC = () => {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [logFilter, setLogFilter] = useState("all");
   const [modalEntry, setModalEntry] = useState<LogEntry | null>(null);
-  // Track live routing events for the currently executing query
-  const [liveEvents, setLiveEvents] = useState<RoutingLogEvent[]>([]);
-  const [liveCorrelationId, setLiveCorrelationId] = useState<string | null>(null);
+  const [modalLoading, setModalLoading] = useState(false);
 
   const isModified = collectionContext && editorSql !== collectionContext.originalSql;
 
@@ -60,54 +59,78 @@ export const CenterPanel: React.FC = () => {
 
   /* load query history */
   const loadLogs = useCallback(async () => {
-    const l = await mockApi.getQueryLogs(logFilter === "all" ? undefined : logFilter);
-    setLogs(l);
+    try {
+      const params = logFilter !== "all" ? { engine: logFilter } : undefined;
+      const l = await api.get<LogEntry[]>("/api/logs", params);
+      setLogs(l);
+    } catch {
+      // silently fail — user sees stale or empty history
+    }
   }, [logFilter]);
 
   // Load history on mount and when filter changes
   useEffect(() => { loadLogs(); }, [loadLogs]);
 
-  const handleLogEvent = useCallback((event: RoutingLogEvent) => {
-    setLiveEvents(prev => [...prev, event]);
-  }, []);
-
   const handleRun = async () => {
     if (!editorSql.trim()) return;
     setExecuting(true);
-    setLiveEvents([]);
     setModalEntry(null);
     try {
-      let routingMode = "smart";
+      let routing_mode = "smart";
       if (runMode === "single" && singleEngineId !== null) {
         const engine = engines.find(e => e.id === singleEngineId);
-        if (engine) routingMode = engine.engine_type === "duckdb" ? "duckdb" : "databricks";
+        if (engine) routing_mode = engine.engine_type === "duckdb" ? "duckdb" : "databricks";
       }
 
-      const resultPromise = mockApi.executeQuery(editorSql, routingMode, handleLogEvent);
-      // Small delay then refresh to pick up the "running" entry
-      setTimeout(() => loadLogs(), 50);
-
-      const result = await resultPromise;
+      const result = await api.post<QueryExecutionResult>("/api/query", { sql: editorSql, routing_mode });
       setQueryResult(result);
-      setLiveCorrelationId(result.correlation_id);
     } catch {
-      // ignore
+      // ignore — user sees no result update
     } finally {
       setExecuting(false);
       loadLogs();
     }
   };
 
-  // Poll logs while executing to show live status updates
-  useEffect(() => {
-    if (!executing) return;
-    const interval = setInterval(() => loadLogs(), 300);
-    return () => clearInterval(interval);
-  }, [executing, loadLogs]);
-
-  const handleRowClick = (entry: LogEntry) => {
+  const handleRowClick = async (entry: LogEntry) => {
     if (entry.status === "running") return;
-    setModalEntry(entry);
+    setModalLoading(true);
+    try {
+      const detail = await api.get<{
+        correlation_id: string;
+        query_text: string;
+        status: string;
+        submitted_at: string;
+        completed_at: string | null;
+        routing_decision: {
+          engine: string;
+          engine_display_name: string;
+          reason: string;
+          complexity_score: number;
+        };
+        execution: {
+          execution_time_ms: number;
+          estimated_cost_usd: number;
+        };
+      }>(`/api/query/${entry.correlation_id}`);
+      // Merge backend detail into the LogEntry shape for the modal
+      const enriched: LogEntry = {
+        ...entry,
+        routing_decision: {
+          engine: detail.routing_decision.engine,
+          engine_display_name: detail.routing_decision.engine_display_name,
+          stage: "fallback", // backend doesn't persist stage yet
+          reason: detail.routing_decision.reason,
+          complexity_score: detail.routing_decision.complexity_score,
+        },
+      };
+      setModalEntry(enriched);
+    } catch {
+      // Fallback: show modal with whatever we have from the log entry
+      setModalEntry(entry);
+    } finally {
+      setModalLoading(false);
+    }
   };
 
   return (
@@ -245,7 +268,6 @@ export const CenterPanel: React.FC = () => {
       {modalEntry && (
         <QueryDetailModal
           entry={modalEntry}
-          liveEvents={modalEntry.correlation_id === liveCorrelationId ? liveEvents : undefined}
           onClose={() => setModalEntry(null)}
         />
       )}
@@ -298,11 +320,10 @@ const ResultsView: React.FC<{ result: QueryExecutionResult }> = ({ result }) => 
 
 const QueryDetailModal: React.FC<{
   entry: LogEntry;
-  liveEvents?: RoutingLogEvent[];
   onClose: () => void;
-}> = ({ entry, liveEvents, onClose }) => {
+}> = ({ entry, onClose }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const events = liveEvents || entry.routing_events || [];
+  const events = entry.routing_events || [];
   const decision = entry.routing_decision;
 
   useEffect(() => {

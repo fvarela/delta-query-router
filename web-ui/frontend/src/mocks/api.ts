@@ -4,16 +4,17 @@
 //
 // REAL (wired to backend):
 //   - catalog:       Unity Catalog browsing (catalogs, schemas, tables) — CatalogBrowser.tsx uses api.get() directly
+//   - query:         SQL execution via POST /api/query — CenterPanel.tsx uses api.post() directly
+//   - query logs:    query history via GET /api/logs — CenterPanel.tsx uses api.get() directly
+//   - query detail:  GET /api/query/{id} — CenterPanel.tsx uses api.get() directly
 //
 // MOCKED (backend endpoints not yet implemented):
 //   - workspaces:    workspace management, PAT tokens, connect/disconnect
-//   - query:         SQL execution, results, routing decisions, streaming logs
 //   - engines:       engine catalog, enable/disable, runtime status
 //   - rules:         system rules, if-then rules CRUD, reset
 //   - models:        ML model listing, activation, training wizard
 //   - collections:   CRUD operations, query management, Add to Collection
 //   - benchmarks:    benchmark lifecycle, results, storage probes
-//   - query logs:    query history with engine filtering
 //   - routing:       routing settings (weights, bonuses, cost estimation mode)
 //   - probes:        storage latency probes
 //
