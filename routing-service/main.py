@@ -721,3 +721,95 @@ async def reset_routing_rules(username: str = Depends(verify_token)):
     db.execute("UPDATE routing_rules SET enabled = true WHERE is_system = true")
     rows = db.fetch_all("SELECT * FROM routing_rules ORDER BY priority")
     return rows
+
+# ---------------------------------------------------------------------------
+# Routing settings
+# ---------------------------------------------------------------------------
+class UpdateRoutingSettings(BaseModel):
+    latency_weight: float | None = None
+    cost_weight: float | None = None
+    cost_estimation_mode: str | None = None
+    running_bonus_duckdb: float | None = None
+    running_bonus_databricks: float | None = None
+@app.get("/api/routing/settings")
+async def get_routing_settings(username: str = Depends(verify_token)):
+    row = db.fetch_one("SELECT * FROM routing_settings WHERE id = 1")
+    if not row:
+        raise HTTPException(status_code=500, detail="Routing settings not initialized")
+    return {
+        "latency_weight": row["latency_weight"],
+        "cost_weight": row["cost_weight"],
+        "cost_estimation_mode": row["cost_estimation_mode"],
+        "running_bonus_duckdb": row["running_bonus_duckdb"],
+        "running_bonus_databricks": row["running_bonus_databricks"],
+    }
+@app.put("/api/routing/settings")
+async def update_routing_settings(
+    body: UpdateRoutingSettings, username: str = Depends(verify_token)
+):
+    # Validate cost_estimation_mode
+    if body.cost_estimation_mode is not None and body.cost_estimation_mode not in (
+        "formula",
+        "model",
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="cost_estimation_mode must be 'formula' or 'model'",
+        )
+    # Validate bonus values are non-negative
+    if body.running_bonus_duckdb is not None and body.running_bonus_duckdb < 0:
+        raise HTTPException(
+            status_code=400, detail="running_bonus_duckdb must be non-negative"
+        )
+    if body.running_bonus_databricks is not None and body.running_bonus_databricks < 0:
+        raise HTTPException(
+            status_code=400, detail="running_bonus_databricks must be non-negative"
+        )
+    # Weight auto-complement logic
+    latency_w = body.latency_weight
+    cost_w = body.cost_weight
+    if latency_w is not None and cost_w is not None:
+        if abs((latency_w + cost_w) - 1.0) > 1e-9:
+            raise HTTPException(
+                status_code=400,
+                detail="latency_weight and cost_weight must sum to 1.0",
+            )
+    elif latency_w is not None:
+        cost_w = round(1.0 - latency_w, 10)
+    elif cost_w is not None:
+        latency_w = round(1.0 - cost_w, 10)
+    # Build SET clause from non-None fields
+    fields = {}
+    if latency_w is not None:
+        fields["latency_weight"] = latency_w
+    if cost_w is not None:
+        fields["cost_weight"] = cost_w
+    if body.cost_estimation_mode is not None:
+        fields["cost_estimation_mode"] = body.cost_estimation_mode
+    if body.running_bonus_duckdb is not None:
+        fields["running_bonus_duckdb"] = body.running_bonus_duckdb
+    if body.running_bonus_databricks is not None:
+        fields["running_bonus_databricks"] = body.running_bonus_databricks
+    if not fields:
+        # Nothing to update, return current settings
+        return await get_routing_settings(username)
+    fields["updated_at"] = "NOW()"
+    set_parts = []
+    values = []
+    for k, v in fields.items():
+        if v == "NOW()":
+            set_parts.append(f"{k} = NOW()")
+        else:
+            set_parts.append(f"{k} = %s")
+            values.append(v)
+    row = db.fetch_one(
+        f"UPDATE routing_settings SET {', '.join(set_parts)} WHERE id = 1 RETURNING *",
+        tuple(values) if values else None,
+    )
+    return {
+        "latency_weight": row["latency_weight"],
+        "cost_weight": row["cost_weight"],
+        "cost_estimation_mode": row["cost_estimation_mode"],
+        "running_bonus_duckdb": row["running_bonus_duckdb"],
+        "running_bonus_databricks": row["running_bonus_databricks"],
+    }
