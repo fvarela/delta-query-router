@@ -97,6 +97,120 @@ interface NodeMeta {
 }
 
 /* ════════════════════════════════════════════════════════════════
+   If-Then Rules Modal (top-level to avoid focus loss)
+   ════════════════════════════════════════════════════════════════ */
+
+interface IfThenRulesModalProps {
+  customRules: RoutingRule[];
+  onClose: () => void;
+  onDelete: (id: number) => void;
+  onMoveUp: (idx: number) => void;
+  onMoveDown: (idx: number) => void;
+  onRulesChanged: () => Promise<void>;
+}
+
+const IfThenRulesModal: React.FC<IfThenRulesModalProps> = ({
+  customRules, onClose, onDelete, onMoveUp, onMoveDown, onRulesChanged,
+}) => {
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newCondition, setNewCondition] = useState("table_name_pattern");
+  const [newComparator, setNewComparator] = useState("equals");
+  const [newValue, setNewValue] = useState("");
+  const [newTarget, setNewTarget] = useState("duckdb");
+
+  const handleAddRule = async () => {
+    if (!newValue.trim()) return;
+    const maxPriority = Math.max(0, ...customRules.map(r => r.priority));
+    try {
+      await api.post<RoutingRule>("/api/routing/rules", {
+        priority: maxPriority + 1, condition_type: newCondition,
+        condition_value: newComparator === "equals" ? newValue : `${newComparator}:${newValue}`,
+        target_engine: newTarget,
+      });
+      await onRulesChanged(); setShowAddForm(false); setNewValue("");
+    } catch (e: any) {
+      console.error("Failed to create rule:", e?.message);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+      <div className="bg-background border border-border rounded-lg shadow-lg w-[500px] max-h-[80vh] flex flex-col text-[12px]">
+        <div className="px-4 py-3 border-b border-border flex items-center justify-between shrink-0">
+          <span className="font-semibold text-foreground text-[14px]">If-Then Rules ({customRules.length})</span>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X size={16} /></button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4">
+          {customRules.length === 0 && !showAddForm ? (
+            <div className="text-[11px] text-muted-foreground py-4 text-center">No rules defined. Click "Add Rule" to create one.</div>
+          ) : (
+            <table className="w-full text-[11px]">
+              <thead>
+                <tr className="bg-muted">
+                  <th className="text-left px-2 py-1.5 border-b border-border">Condition</th>
+                  <th className="text-left px-2 py-1.5 border-b border-border">Comparator</th>
+                  <th className="text-left px-2 py-1.5 border-b border-border">Value</th>
+                  <th className="text-left px-2 py-1.5 border-b border-border">Target</th>
+                  <th className="w-16 px-1 py-1.5 border-b border-border"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {customRules.map((r, idx) => {
+                  const { condLabel, comparator, value, targetLabel } = parseRule(r);
+                  return (
+                    <tr key={r.id} className="even:bg-card hover:bg-muted/50">
+                      <td className="px-2 py-1.5 border-b border-border text-foreground">{condLabel}</td>
+                      <td className="px-2 py-1.5 border-b border-border text-foreground">{comparator}</td>
+                      <td className="px-2 py-1.5 border-b border-border text-foreground">{value}</td>
+                      <td className="px-2 py-1.5 border-b border-border text-foreground">{targetLabel}</td>
+                      <td className="px-1 py-1.5 border-b border-border">
+                        <div className="flex items-center gap-0.5">
+                          <button disabled={idx === 0} onClick={() => onMoveUp(idx)} className="text-muted-foreground hover:text-foreground disabled:opacity-30" title="Move up"><ArrowUp size={11} /></button>
+                          <button disabled={idx === customRules.length - 1} onClick={() => onMoveDown(idx)} className="text-muted-foreground hover:text-foreground disabled:opacity-30" title="Move down"><ArrowDownIcon size={11} /></button>
+                          <button onClick={() => onDelete(r.id)} className="text-muted-foreground hover:text-status-error" title="Delete"><Trash2 size={11} /></button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+          {showAddForm && (
+            <div className="mt-3 p-3 border border-border rounded space-y-2 bg-muted/20">
+              <div className="flex gap-2">
+                <select value={newCondition} onChange={e => setNewCondition(e.target.value)} className="flex-1 px-2 py-1 border border-border rounded text-[11px] bg-background text-foreground">
+                  {conditionOptions.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                </select>
+                <select value={newComparator} onChange={e => setNewComparator(e.target.value)} className="flex-1 px-2 py-1 border border-border rounded text-[11px] bg-background text-foreground">
+                  {comparatorOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+              <div className="flex gap-2">
+                <input placeholder="Value" value={newValue} onChange={e => setNewValue(e.target.value)} className="flex-1 px-2 py-1 border border-border rounded text-[11px] bg-background text-foreground" />
+                <select value={newTarget} onChange={e => setNewTarget(e.target.value)} className="px-2 py-1 border border-border rounded text-[11px] bg-background text-foreground">
+                  {targetOptions.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                </select>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={handleAddRule} className="px-3 py-1 bg-primary text-primary-foreground rounded text-[11px]">Add Rule</button>
+                <button onClick={() => setShowAddForm(false)} className="px-3 py-1 border border-border rounded text-[11px] text-foreground">Cancel</button>
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="px-4 py-3 border-t border-border flex justify-between shrink-0">
+          <button onClick={() => setShowAddForm(!showAddForm)} className="flex items-center gap-1 px-3 py-1.5 bg-primary text-primary-foreground rounded text-[11px] font-medium">
+            <Plus size={12} /> Add Rule
+          </button>
+          <button onClick={onClose} className="px-3 py-1.5 border border-border rounded text-[11px] text-foreground">Close</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/* ════════════════════════════════════════════════════════════════
    Main component
    ════════════════════════════════════════════════════════════════ */
 
@@ -117,14 +231,9 @@ export const RoutingPipeline: React.FC = () => {
   const systemRules = allRules.filter(r => r.is_system);
   const customRules = allRules.filter(r => !r.is_system).sort((a, b) => a.priority - b.priority);
 
-  // If-Then Rules modal / form state
+  // If-Then Rules modal state
   const [showRulesModal, setShowRulesModal] = useState(false);
-  const [showAddForm, setShowAddForm] = useState(false);
   const [deleteRuleId, setDeleteRuleId] = useState<number | null>(null);
-  const [newCondition, setNewCondition] = useState("table_name_pattern");
-  const [newComparator, setNewComparator] = useState("equals");
-  const [newValue, setNewValue] = useState("");
-  const [newTarget, setNewTarget] = useState("duckdb");
 
   const loadRules = async () => { setAllRules(await api.get<RoutingRule[]>("/api/routing/rules")); };
   const handleDeleteRule = async () => {
@@ -136,20 +245,6 @@ export const RoutingPipeline: React.FC = () => {
       console.error("Failed to delete rule:", e?.message);
     }
     setDeleteRuleId(null);
-  };
-  const handleAddRule = async () => {
-    if (!newValue.trim()) return;
-    const maxPriority = Math.max(0, ...customRules.map(r => r.priority));
-    try {
-      await api.post<RoutingRule>("/api/routing/rules", {
-        priority: maxPriority + 1, condition_type: newCondition,
-        condition_value: newComparator === "equals" ? newValue : `${newComparator}:${newValue}`,
-        target_engine: newTarget,
-      });
-      await loadRules(); setShowAddForm(false); setNewValue("");
-    } catch (e: any) {
-      console.error("Failed to create rule:", e?.message);
-    }
   };
   const handleMoveUp = async (idx: number) => {
     if (idx === 0) return;
@@ -403,7 +498,16 @@ export const RoutingPipeline: React.FC = () => {
       </div>
 
       {/* ── Modals ── */}
-      {showRulesModal && <IfThenRulesModal />}
+      {showRulesModal && (
+        <IfThenRulesModal
+          customRules={customRules}
+          onClose={() => setShowRulesModal(false)}
+          onDelete={setDeleteRuleId}
+          onMoveUp={handleMoveUp}
+          onMoveDown={handleMoveDown}
+          onRulesChanged={loadRules}
+        />
+      )}
       {detailModel && <MLModelDetailModal />}
       <ConfirmDialog
         open={deleteRuleId !== null}
@@ -763,84 +867,6 @@ export const RoutingPipeline: React.FC = () => {
   /* ══════════════════════════════════════════════════════════════
      Modals
      ══════════════════════════════════════════════════════════════ */
-
-  function IfThenRulesModal() {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-        <div className="bg-background border border-border rounded-lg shadow-lg w-[500px] max-h-[80vh] flex flex-col text-[12px]">
-          <div className="px-4 py-3 border-b border-border flex items-center justify-between shrink-0">
-            <span className="font-semibold text-foreground text-[14px]">If-Then Rules ({customRules.length})</span>
-            <button onClick={() => setShowRulesModal(false)} className="text-muted-foreground hover:text-foreground"><X size={16} /></button>
-          </div>
-          <div className="flex-1 overflow-y-auto p-4">
-            {customRules.length === 0 && !showAddForm ? (
-              <div className="text-[11px] text-muted-foreground py-4 text-center">No rules defined. Click "Add Rule" to create one.</div>
-            ) : (
-              <table className="w-full text-[11px]">
-                <thead>
-                  <tr className="bg-muted">
-                    <th className="text-left px-2 py-1.5 border-b border-border">Condition</th>
-                    <th className="text-left px-2 py-1.5 border-b border-border">Comparator</th>
-                    <th className="text-left px-2 py-1.5 border-b border-border">Value</th>
-                    <th className="text-left px-2 py-1.5 border-b border-border">Target</th>
-                    <th className="w-16 px-1 py-1.5 border-b border-border"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {customRules.map((r, idx) => {
-                    const { condLabel, comparator, value, targetLabel } = parseRule(r);
-                    return (
-                      <tr key={r.id} className="even:bg-card hover:bg-muted/50">
-                        <td className="px-2 py-1.5 border-b border-border text-foreground">{condLabel}</td>
-                        <td className="px-2 py-1.5 border-b border-border text-foreground">{comparator}</td>
-                        <td className="px-2 py-1.5 border-b border-border text-foreground">{value}</td>
-                        <td className="px-2 py-1.5 border-b border-border text-foreground">{targetLabel}</td>
-                        <td className="px-1 py-1.5 border-b border-border">
-                          <div className="flex items-center gap-0.5">
-                            <button disabled={idx === 0} onClick={() => handleMoveUp(idx)} className="text-muted-foreground hover:text-foreground disabled:opacity-30" title="Move up"><ArrowUp size={11} /></button>
-                            <button disabled={idx === customRules.length - 1} onClick={() => handleMoveDown(idx)} className="text-muted-foreground hover:text-foreground disabled:opacity-30" title="Move down"><ArrowDownIcon size={11} /></button>
-                            <button onClick={() => setDeleteRuleId(r.id)} className="text-muted-foreground hover:text-status-error" title="Delete"><Trash2 size={11} /></button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            )}
-            {showAddForm && (
-              <div className="mt-3 p-3 border border-border rounded space-y-2 bg-muted/20">
-                <div className="flex gap-2">
-                  <select value={newCondition} onChange={e => setNewCondition(e.target.value)} className="flex-1 px-2 py-1 border border-border rounded text-[11px] bg-background text-foreground">
-                    {conditionOptions.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
-                  </select>
-                  <select value={newComparator} onChange={e => setNewComparator(e.target.value)} className="flex-1 px-2 py-1 border border-border rounded text-[11px] bg-background text-foreground">
-                    {comparatorOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                  </select>
-                </div>
-                <div className="flex gap-2">
-                  <input placeholder="Value" value={newValue} onChange={e => setNewValue(e.target.value)} className="flex-1 px-2 py-1 border border-border rounded text-[11px] bg-background text-foreground" />
-                  <select value={newTarget} onChange={e => setNewTarget(e.target.value)} className="px-2 py-1 border border-border rounded text-[11px] bg-background text-foreground">
-                    {targetOptions.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-                  </select>
-                </div>
-                <div className="flex gap-2">
-                  <button onClick={handleAddRule} className="px-3 py-1 bg-primary text-primary-foreground rounded text-[11px]">Add Rule</button>
-                  <button onClick={() => setShowAddForm(false)} className="px-3 py-1 border border-border rounded text-[11px] text-foreground">Cancel</button>
-                </div>
-              </div>
-            )}
-          </div>
-          <div className="px-4 py-3 border-t border-border flex justify-between shrink-0">
-            <button onClick={() => setShowAddForm(!showAddForm)} className="flex items-center gap-1 px-3 py-1.5 bg-primary text-primary-foreground rounded text-[11px] font-medium">
-              <Plus size={12} /> Add Rule
-            </button>
-            <button onClick={() => setShowRulesModal(false)} className="px-3 py-1.5 border border-border rounded text-[11px] text-foreground">Close</button>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   function MLModelDetailModal() {
     if (!detailModel) return null;
