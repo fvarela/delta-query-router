@@ -1,5 +1,5 @@
 -- Delta Router Schema
--- Tables for query logging, routing decisions, cost tracking, and metadata caching
+-- Tables for query logging, routing decisions, and metadata caching
 CREATE TABLE IF NOT EXISTS query_logs (
     id              SERIAL PRIMARY KEY,
     correlation_id  UUID UNIQUE NOT NULL,
@@ -18,14 +18,6 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
     estimated_data_bytes        BIGINT,
     has_governance_constraints   BOOLEAN NOT NULL DEFAULT FALSE,
     decided_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE TABLE IF NOT EXISTS cost_metrics (
-    id                  SERIAL PRIMARY KEY,
-    query_log_id        INTEGER NOT NULL REFERENCES query_logs(id),
-    engine              VARCHAR(20) NOT NULL,
-    execution_time_ms   INTEGER,
-    estimated_cost_usd  NUMERIC(10, 6),
-    recorded_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE TABLE IF NOT EXISTS table_metadata_cache (
     table_name                  VARCHAR(255) PRIMARY KEY,
@@ -87,7 +79,6 @@ CREATE TABLE IF NOT EXISTS routing_settings (
     id                       INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
     latency_weight           FLOAT NOT NULL DEFAULT 0.5,
     cost_weight              FLOAT NOT NULL DEFAULT 0.5,
-    cost_estimation_mode     TEXT NOT NULL DEFAULT 'formula',
     running_bonus_duckdb     FLOAT NOT NULL DEFAULT 0.05,
     running_bonus_databricks FLOAT NOT NULL DEFAULT 0.15,
     updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -99,5 +90,4 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_key_prefix ON api_keys(key_prefix);
 -- Indexes for common query patterns
 CREATE INDEX IF NOT EXISTS idx_query_logs_submitted_at ON query_logs(submitted_at);
 CREATE INDEX IF NOT EXISTS idx_routing_decisions_query_log_id ON routing_decisions(query_log_id);
-CREATE INDEX IF NOT EXISTS idx_cost_metrics_query_log_id ON cost_metrics(query_log_id);
 CREATE INDEX IF NOT EXISTS idx_query_logs_correlation_id ON query_logs(correlation_id);

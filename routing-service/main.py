@@ -497,7 +497,6 @@ async def execute_query(
             reason=decision.reason,
             complexity_score=decision.complexity_score,
             execution_time_ms=None,
-            estimated_cost_usd=None,
         )
         raise HTTPException(
             status_code=502, detail=f"Execution failed on {decision.engine}: {e}"
@@ -521,7 +520,6 @@ async def execute_query(
         reason=decision.reason,
         complexity_score=decision.complexity_score,
         execution_time_ms=execution_time_ms,
-        estimated_cost_usd=0.0,
     )
 
     # 7. Build response (matches frontend QueryExecutionResult)
@@ -539,8 +537,6 @@ async def execute_query(
         "execution": {
             "execution_time_ms": execution_time_ms,
             "data_scanned_bytes": 0,  # Not available yet
-            "estimated_cost_usd": 0.0,  # Not available yet
-            "cost_savings_usd": 0.0,  # Not available yet
         },
         "columns": result["columns"],
         "rows": result["rows"],
@@ -551,11 +547,9 @@ async def execute_query(
 async def get_query(correlation_id: str, username: str = Depends(verify_token)):
     row = db.fetch_one(
         """SELECT q.correlation_id, q.query_text, q.status, q.submitted_at, q.completed_at,
-                    r.engine, r.reason, r.complexity_score,
-                    c.execution_time_ms, c.estimated_cost_usd
+                    r.engine, r.reason, r.complexity_score
             FROM query_logs q
             JOIN routing_decisions r ON r.query_log_id = q.id
-            JOIN cost_metrics c ON c.query_log_id = q.id
         WHERE q.correlation_id = %s""",
         (correlation_id,),
     )
@@ -577,23 +571,15 @@ async def get_query(correlation_id: str, username: str = Depends(verify_token)):
             "reason": row["reason"],
             "complexity_score": row["complexity_score"],
         },
-        "execution": {
-            "execution_time_ms": row["execution_time_ms"],
-            "estimated_cost_usd": float(row["estimated_cost_usd"])
-            if row["estimated_cost_usd"]
-            else 0.0,
-        },
     }
 
 
 @app.get("/api/logs")
 async def get_logs(engine: str | None = None, username: str = Depends(verify_token)):
     base_sql = """ SELECT q.correlation_id, q.query_text, q.status, q.submitted_at, 
-                        r.engine, r.reason, r.complexity_score,
-                        c.execution_time_ms, c.estimated_cost_usd
+                        r.engine, r.reason, r.complexity_score
                    FROM query_logs q
                    JOIN routing_decisions r ON r.query_log_id = q.id
-                   JOIN cost_metrics c ON c.query_log_id = q.id
                 """
     if engine:
         base_sql += " WHERE r.engine = %s"
@@ -612,13 +598,11 @@ async def get_logs(engine: str | None = None, username: str = Depends(verify_tok
             if r["engine"] == "duckdb"
             else "Databricks",
             "status": r["status"],
-            "latency_ms": r["execution_time_ms"] or 0,
-            "cost_usd": float(r["estimated_cost_usd"])
-            if r["estimated_cost_usd"]
-            else 0.0,
+            "latency_ms": 0,
         }
         for r in rows
     ]
+
 
 # ---------------------------------------------------------------------------
 # Routing rules CRUD
@@ -628,11 +612,14 @@ class CreateRoutingRule(BaseModel):
     condition_type: str
     condition_value: str
     target_engine: str
+
+
 class UpdateRoutingRule(BaseModel):
     priority: int | None = None
     condition_type: str | None = None
     condition_value: str | None = None
     target_engine: str | None = None
+
 
 @app.get("/api/routing/rules")
 async def list_routing_rules(username: str = Depends(verify_token)):
@@ -682,6 +669,7 @@ async def update_routing_rule(
     )
     return row
 
+
 @app.delete("/api/routing/rules/{rule_id}", status_code=204)
 async def delete_routing_rule(rule_id: int, username: str = Depends(verify_token)):
     existing = db.fetch_one("SELECT * FROM routing_rules WHERE id = %s", (rule_id,))
@@ -722,15 +710,17 @@ async def reset_routing_rules(username: str = Depends(verify_token)):
     rows = db.fetch_all("SELECT * FROM routing_rules ORDER BY priority")
     return rows
 
+
 # ---------------------------------------------------------------------------
 # Routing settings
 # ---------------------------------------------------------------------------
 class UpdateRoutingSettings(BaseModel):
     latency_weight: float | None = None
     cost_weight: float | None = None
-    cost_estimation_mode: str | None = None
     running_bonus_duckdb: float | None = None
     running_bonus_databricks: float | None = None
+
+
 @app.get("/api/routing/settings")
 async def get_routing_settings(username: str = Depends(verify_token)):
     row = db.fetch_one("SELECT * FROM routing_settings WHERE id = 1")
@@ -739,23 +729,15 @@ async def get_routing_settings(username: str = Depends(verify_token)):
     return {
         "latency_weight": row["latency_weight"],
         "cost_weight": row["cost_weight"],
-        "cost_estimation_mode": row["cost_estimation_mode"],
         "running_bonus_duckdb": row["running_bonus_duckdb"],
         "running_bonus_databricks": row["running_bonus_databricks"],
     }
+
+
 @app.put("/api/routing/settings")
 async def update_routing_settings(
     body: UpdateRoutingSettings, username: str = Depends(verify_token)
 ):
-    # Validate cost_estimation_mode
-    if body.cost_estimation_mode is not None and body.cost_estimation_mode not in (
-        "formula",
-        "model",
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail="cost_estimation_mode must be 'formula' or 'model'",
-        )
     # Validate bonus values are non-negative
     if body.running_bonus_duckdb is not None and body.running_bonus_duckdb < 0:
         raise HTTPException(
@@ -784,8 +766,6 @@ async def update_routing_settings(
         fields["latency_weight"] = latency_w
     if cost_w is not None:
         fields["cost_weight"] = cost_w
-    if body.cost_estimation_mode is not None:
-        fields["cost_estimation_mode"] = body.cost_estimation_mode
     if body.running_bonus_duckdb is not None:
         fields["running_bonus_duckdb"] = body.running_bonus_duckdb
     if body.running_bonus_databricks is not None:
@@ -809,7 +789,6 @@ async def update_routing_settings(
     return {
         "latency_weight": row["latency_weight"],
         "cost_weight": row["cost_weight"],
-        "cost_estimation_mode": row["cost_estimation_mode"],
         "running_bonus_duckdb": row["running_bonus_duckdb"],
         "running_bonus_databricks": row["running_bonus_databricks"],
     }

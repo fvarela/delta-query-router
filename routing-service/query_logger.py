@@ -1,10 +1,13 @@
-"""Background query logging — writes to query_logs, routing_decisions, cost_metrics."""
+"""Background query logging — writes to query_logs and routing_decisions."""
+
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import db
+
 logger = logging.getLogger("routing-service.query_logger")
 _executor = ThreadPoolExecutor(max_workers=2)
+
 
 def log_query_execution(
     correlation_id: str,
@@ -15,9 +18,8 @@ def log_query_execution(
     reason: str,
     complexity_score: float,
     execution_time_ms: float | None,
-    estimated_cost_usd: float | None,
 ) -> None:
-    """Insert one row into each of query_logs, routing_decisions, cost_metrics.
+    """Insert one row into each of query_logs and routing_decisions.
     Runs inside a single transaction via db.get_conn().
     """
     try:
@@ -37,18 +39,14 @@ def log_query_execution(
                        VALUES (%s, %s, %s, %s)""",
                     (query_log_id, engine, reason, complexity_score),
                 )
-                cur.execute(
-                    """INSERT INTO cost_metrics
-                           (query_log_id, engine, execution_time_ms, estimated_cost_usd)
-                       VALUES (%s, %s, %s, %s)""",
-                    (query_log_id, engine, execution_time_ms, estimated_cost_usd),
-                )
     except Exception:
         logger.exception("Failed to log query execution %s", correlation_id)
+
 
 def submit_log(**kwargs) -> None:
     """Fire-and-forget: submit log_query_execution to the background executor."""
     _executor.submit(log_query_execution, **kwargs)
+
 
 def shutdown() -> None:
     """Gracefully shut down the executor. Call from app shutdown."""

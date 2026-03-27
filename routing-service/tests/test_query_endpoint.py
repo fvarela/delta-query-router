@@ -405,8 +405,6 @@ class TestResponseStructure:
         ex = data["execution"]
         assert "execution_time_ms" in ex
         assert "data_scanned_bytes" in ex
-        assert "estimated_cost_usd" in ex
-        assert "cost_savings_usd" in ex
 
 
 # ---------------------------------------------------------------------------

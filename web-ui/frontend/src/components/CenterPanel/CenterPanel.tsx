@@ -108,10 +108,6 @@ export const CenterPanel: React.FC = () => {
           reason: string;
           complexity_score: number;
         };
-        execution: {
-          execution_time_ms: number;
-          estimated_cost_usd: number;
-        };
       }>(`/api/query/${entry.correlation_id}`);
       // Merge backend detail into the LogEntry shape for the modal
       const enriched: LogEntry = {
@@ -214,7 +210,6 @@ export const CenterPanel: React.FC = () => {
                 <th className="text-left px-2 py-1 border-b border-border">Engine</th>
                 <th className="text-center px-2 py-1 border-b border-border">Status</th>
                 <th className="text-right px-2 py-1 border-b border-border">Latency</th>
-                <th className="text-right px-2 py-1 border-b border-border">Cost</th>
               </tr>
             </thead>
             <tbody>
@@ -247,14 +242,11 @@ export const CenterPanel: React.FC = () => {
                   <td className={`px-2 py-1 border-b border-border text-right ${l.status === "running" ? "text-muted-foreground" : latencyColor(l.latency_ms)}`}>
                     {l.status === "running" ? "—" : `${l.latency_ms}ms`}
                   </td>
-                  <td className="px-2 py-1 border-b border-border text-right text-foreground">
-                    {l.status === "running" ? "—" : `$${l.cost_usd.toFixed(4)}`}
-                  </td>
                 </tr>
               ))}
               {logs.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-3 py-4 text-center text-muted-foreground text-[12px]">
+                  <td colSpan={5} className="px-3 py-4 text-center text-muted-foreground text-[12px]">
                     No queries yet. Run a query to see history here.
                   </td>
                 </tr>
@@ -283,10 +275,6 @@ const ResultsView: React.FC<{ result: QueryExecutionResult }> = ({ result }) => 
     <div className="flex gap-4 text-[12px]">
       <span className={latencyColor(result.execution.execution_time_ms)}>Time: {result.execution.execution_time_ms}ms</span>
       <span className="text-foreground">Scanned: {(result.execution.data_scanned_bytes / 1024 / 1024).toFixed(1)} MB</span>
-      <span className="text-foreground">Cost: ${result.execution.estimated_cost_usd.toFixed(4)}</span>
-      {result.execution.cost_savings_usd > 0 && (
-        <span className="text-status-success">Saved: ${result.execution.cost_savings_usd.toFixed(4)}</span>
-      )}
     </div>
 
     {/* Results Table (max 10 rows, no scroll) */}
@@ -367,7 +355,6 @@ const QueryDetailModal: React.FC<{
             {entry.status === "success" ? "Success" : "Error"}
           </StatusBadge>
           <span className={latencyColor(entry.latency_ms)}>{entry.latency_ms}ms</span>
-          <span className="text-foreground">${entry.cost_usd.toFixed(4)}</span>
         </div>
 
         {/* Scrollable content */}
@@ -401,18 +388,12 @@ const QueryDetailModal: React.FC<{
                     </span>
                   </>
                 )}
-                {decision.estimated_cost_usd != null && (
-                  <>
-                    <span className="text-muted-foreground">Est. Cost</span>
-                    <span className="text-foreground font-mono">${decision.estimated_cost_usd.toFixed(4)}</span>
-                  </>
-                )}
                 {decision.weighted_score != null && (
                   <>
                     <span className="text-muted-foreground">Scoring</span>
                     <span className="text-foreground font-mono text-[10px]">
                       Latency: {decision.latency_score?.toFixed(2) ?? "—"}
-                      {" · "}Cost: {decision.cost_score?.toFixed(2) ?? "—"}
+                      {" · "}Cost Tier: {decision.cost_score?.toFixed(2) ?? "—"}
                       {" · "}<span className="font-semibold">Weighted: {decision.weighted_score.toFixed(2)}</span>
                     </span>
                   </>

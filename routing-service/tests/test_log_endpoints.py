@@ -1,11 +1,9 @@
 """Tests for GET /api/query/{correlation_id} and GET /api/logs (task 8)."""
 
 from datetime import datetime, timezone
-from decimal import Decimal
 from unittest.mock import patch
 from uuid import UUID
 
-import pytest
 from fastapi.testclient import TestClient
 
 import main
@@ -34,8 +32,6 @@ def _make_row(
     engine="duckdb",
     reason="Low complexity",
     complexity_score=1.5,
-    execution_time_ms=12,
-    estimated_cost_usd=Decimal("0.000000"),
     submitted_at=_UNSET,
     completed_at=_UNSET,
 ):
@@ -55,8 +51,6 @@ def _make_row(
         "engine": engine,
         "reason": reason,
         "complexity_score": complexity_score,
-        "execution_time_ms": execution_time_ms,
-        "estimated_cost_usd": estimated_cost_usd,
     }
 
 
@@ -87,8 +81,6 @@ class TestGetQuery:
             engine="databricks",
             reason="Default to Databricks",
             complexity_score=3.0,
-            execution_time_ms=250,
-            estimated_cost_usd=Decimal("0.001234"),
         )
 
         resp = client.get(f"/api/query/{SAMPLE_UUID}", headers=_auth_header())
@@ -107,10 +99,6 @@ class TestGetQuery:
         assert rd["reason"] == "Default to Databricks"
         assert rd["complexity_score"] == 3.0
 
-        ex = data["execution"]
-        assert ex["execution_time_ms"] == 250
-        assert ex["estimated_cost_usd"] == pytest.approx(0.001234)
-
     @patch("main.db.fetch_one")
     def test_duckdb_display_name(self, mock_fetch):
         mock_fetch.return_value = _make_row(engine="duckdb")
@@ -122,12 +110,6 @@ class TestGetQuery:
         mock_fetch.return_value = _make_row(completed_at=None)
         resp = client.get(f"/api/query/{SAMPLE_UUID}", headers=_auth_header())
         assert resp.json()["completed_at"] is None
-
-    @patch("main.db.fetch_one")
-    def test_null_cost_defaults_to_zero(self, mock_fetch):
-        mock_fetch.return_value = _make_row(estimated_cost_usd=None)
-        resp = client.get(f"/api/query/{SAMPLE_UUID}", headers=_auth_header())
-        assert resp.json()["execution"]["estimated_cost_usd"] == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -149,9 +131,7 @@ class TestGetLogs:
     @patch("main.db.fetch_all")
     def test_returns_log_entries(self, mock_fetch):
         mock_fetch.return_value = [
-            _make_row(
-                correlation_id=UUID(SAMPLE_UUID), engine="duckdb", execution_time_ms=10
-            ),
+            _make_row(correlation_id=UUID(SAMPLE_UUID), engine="duckdb"),
         ]
 
         resp = client.get("/api/logs", headers=_auth_header())
@@ -164,11 +144,10 @@ class TestGetLogs:
         assert entry["correlation_id"] == SAMPLE_UUID
         assert entry["engine"] == "duckdb"
         assert entry["engine_display_name"] == "DuckDB"
-        assert entry["latency_ms"] == 10
         assert entry["status"] == "success"
         assert "timestamp" in entry
         assert "query_text" in entry
-        assert "cost_usd" in entry
+        assert "latency_ms" in entry
 
     @patch("main.db.fetch_all")
     def test_engine_filter_passed_to_query(self, mock_fetch):
@@ -192,17 +171,10 @@ class TestGetLogs:
         assert "WHERE" not in call_args[0][0]
 
     @patch("main.db.fetch_all")
-    def test_null_execution_time_defaults_to_zero(self, mock_fetch):
+    def test_latency_ms_is_zero(self, mock_fetch):
+        """latency_ms is hardcoded to 0 (execution_time_ms no longer in query)."""
         mock_fetch.return_value = [
-            _make_row(execution_time_ms=None),
+            _make_row(),
         ]
         resp = client.get("/api/logs", headers=_auth_header())
         assert resp.json()[0]["latency_ms"] == 0
-
-    @patch("main.db.fetch_all")
-    def test_null_cost_defaults_to_zero(self, mock_fetch):
-        mock_fetch.return_value = [
-            _make_row(estimated_cost_usd=None),
-        ]
-        resp = client.get("/api/logs", headers=_auth_header())
-        assert resp.json()[0]["cost_usd"] == 0.0

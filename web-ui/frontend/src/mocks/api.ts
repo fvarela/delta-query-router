@@ -15,7 +15,7 @@
 //   - models:        ML model listing, activation, training wizard
 //   - collections:   CRUD operations, query management, Add to Collection
 //   - benchmarks:    benchmark lifecycle, results, storage probes
-//   - routing:       routing settings (weights, bonuses, cost estimation mode)
+//   - routing:       routing settings (weights, bonuses)
 //   - probes:        storage latency probes
 //
 // All components import exclusively from this file via `mockApi`.
@@ -81,7 +81,7 @@ let routingRules: RoutingRule[] = [
   { id: 3, priority: 10, condition_type: "table_name", condition_value: "store_sales", target_engine: "duckdb", is_system: false, enabled: true },
 ];
 
-let routingSettings: RoutingSettings = { latency_weight: 0.5, cost_weight: 0.5, cost_estimation_mode: "formula", running_bonus_duckdb: 0.05, running_bonus_databricks: 0.15 };
+let routingSettings: RoutingSettings = { latency_weight: 0.5, cost_weight: 0.5, running_bonus_duckdb: 0.05, running_bonus_databricks: 0.15 };
 
 let models: Model[] = [
   {
@@ -121,16 +121,16 @@ let collections: CollectionWithQueries[] = [
 ];
 
 let queryLogs: LogEntry[] = [
-  { correlation_id: "log-1", timestamp: "2026-03-15 10:45:12", query_text: "SELECT c_customer_sk, c_first_name, c_last_name FROM delta_router_dev.tpcds.customer WHERE c_birth_country = 'UNITED STATES' LIMIT 100", engine: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", status: "success", latency_ms: 45, cost_usd: 0.0003 },
-  { correlation_id: "log-2", timestamp: "2026-03-15 10:44:30", query_text: "SELECT ss_sold_date_sk, SUM(ss_net_profit) AS total_profit FROM delta_router_dev.tpcds.store_sales GROUP BY ss_sold_date_sk ORDER BY total_profit DESC LIMIT 20", engine: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", status: "success", latency_ms: 890, cost_usd: 0.0025 },
-  { correlation_id: "log-3", timestamp: "2026-03-15 10:43:15", query_text: "SELECT * FROM delta_router_dev.analytics.revenue_summary LIMIT 50", engine: "databricks:serverless-2xs", engine_display_name: "Databricks 2X-Small", status: "success", latency_ms: 340, cost_usd: 0.015 },
-  { correlation_id: "log-4", timestamp: "2026-03-15 10:42:00", query_text: "SELECT cd_gender, cd_education_status, COUNT(*) AS cnt FROM delta_router_dev.tpcds.customer_demographics GROUP BY cd_gender, cd_education_status", engine: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", status: "success", latency_ms: 65, cost_usd: 0.0004 },
-  { correlation_id: "log-5", timestamp: "2026-03-15 10:40:45", query_text: "SELECT * FROM delta_router_dev.tpcds.customer_pii LIMIT 100", engine: "databricks:serverless-2xs", engine_display_name: "Databricks 2X-Small", status: "success", latency_ms: 280, cost_usd: 0.0095 },
-  { correlation_id: "log-6", timestamp: "2026-03-15 10:39:30", query_text: "SELECT d_date_sk, d_year FROM delta_router_dev.tpcds.date_dim WHERE d_year = 2024", engine: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", status: "success", latency_ms: 30, cost_usd: 0.0002 },
-  { correlation_id: "log-7", timestamp: "2026-03-15 10:38:00", query_text: "SELECT cs_sold_date_sk, cs_item_sk, cs_quantity FROM delta_router_dev.tpcds.catalog_sales WHERE cs_quantity > 50 LIMIT 100", engine: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", status: "success", latency_ms: 620, cost_usd: 0.0018 },
-  { correlation_id: "log-8", timestamp: "2026-03-15 10:36:45", query_text: "INSERT INTO delta_router_dev.tpcds.customer VALUES (...)", engine: "databricks:serverless-2xs", engine_display_name: "Databricks 2X-Small", status: "error", latency_ms: 150, cost_usd: 0 },
-  { correlation_id: "log-9", timestamp: "2026-03-15 10:35:30", query_text: "SELECT COUNT(*) FROM delta_router_dev.tpcds.store_sales", engine: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", status: "success", latency_ms: 22, cost_usd: 0.0001 },
-  { correlation_id: "log-10", timestamp: "2026-03-15 10:34:00", query_text: "SELECT * FROM delta_router_dev.tpcds.customer WHERE c_customer_sk = 1", engine: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", status: "success", latency_ms: 55, cost_usd: 0.0003 },
+  { correlation_id: "log-1", timestamp: "2026-03-15 10:45:12", query_text: "SELECT c_customer_sk, c_first_name, c_last_name FROM delta_router_dev.tpcds.customer WHERE c_birth_country = 'UNITED STATES' LIMIT 100", engine: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", status: "success", latency_ms: 45 },
+  { correlation_id: "log-2", timestamp: "2026-03-15 10:44:30", query_text: "SELECT ss_sold_date_sk, SUM(ss_net_profit) AS total_profit FROM delta_router_dev.tpcds.store_sales GROUP BY ss_sold_date_sk ORDER BY total_profit DESC LIMIT 20", engine: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", status: "success", latency_ms: 890 },
+  { correlation_id: "log-3", timestamp: "2026-03-15 10:43:15", query_text: "SELECT * FROM delta_router_dev.analytics.revenue_summary LIMIT 50", engine: "databricks:serverless-2xs", engine_display_name: "Databricks 2X-Small", status: "success", latency_ms: 340 },
+  { correlation_id: "log-4", timestamp: "2026-03-15 10:42:00", query_text: "SELECT cd_gender, cd_education_status, COUNT(*) AS cnt FROM delta_router_dev.tpcds.customer_demographics GROUP BY cd_gender, cd_education_status", engine: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", status: "success", latency_ms: 65 },
+  { correlation_id: "log-5", timestamp: "2026-03-15 10:40:45", query_text: "SELECT * FROM delta_router_dev.tpcds.customer_pii LIMIT 100", engine: "databricks:serverless-2xs", engine_display_name: "Databricks 2X-Small", status: "success", latency_ms: 280 },
+  { correlation_id: "log-6", timestamp: "2026-03-15 10:39:30", query_text: "SELECT d_date_sk, d_year FROM delta_router_dev.tpcds.date_dim WHERE d_year = 2024", engine: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", status: "success", latency_ms: 30 },
+  { correlation_id: "log-7", timestamp: "2026-03-15 10:38:00", query_text: "SELECT cs_sold_date_sk, cs_item_sk, cs_quantity FROM delta_router_dev.tpcds.catalog_sales WHERE cs_quantity > 50 LIMIT 100", engine: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", status: "success", latency_ms: 620 },
+  { correlation_id: "log-8", timestamp: "2026-03-15 10:36:45", query_text: "INSERT INTO delta_router_dev.tpcds.customer VALUES (...)", engine: "databricks:serverless-2xs", engine_display_name: "Databricks 2X-Small", status: "error", latency_ms: 150 },
+  { correlation_id: "log-9", timestamp: "2026-03-15 10:35:30", query_text: "SELECT COUNT(*) FROM delta_router_dev.tpcds.store_sales", engine: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", status: "success", latency_ms: 22 },
+  { correlation_id: "log-10", timestamp: "2026-03-15 10:34:00", query_text: "SELECT * FROM delta_router_dev.tpcds.customer WHERE c_customer_sk = 1", engine: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", status: "success", latency_ms: 55 },
 ];
 
 let benchmarks: BenchmarkDetail[] = [
@@ -381,7 +381,6 @@ export const mockApi = {
       engine_display_name: "",
       status: "running",
       latency_ms: 0,
-      cost_usd: 0,
       routing_events: collectedEvents, // live reference — grows as events stream
     };
     queryLogs.unshift(runningEntry);
@@ -402,7 +401,7 @@ export const mockApi = {
     await emit("info", "parse", `Statement type: ${stmtType}`, 40);
 
     // --- Phase 2: Routing rules ---
-    let engine: string, engineName: string, stage: "mandatory_rule" | "user_rule" | "ml_prediction" | "fallback", reason: string, execTime: number, cost: number, savings: number, complexity: number;
+    let engine: string, engineName: string, stage: "mandatory_rule" | "user_rule" | "ml_prediction" | "fallback", reason: string, execTime: number, complexity: number;
 
     await emit("info", "rules", `Evaluating routing rules...`, 100 + Math.random() * 80);
 
@@ -410,21 +409,21 @@ export const mockApi = {
       const foreignSource = sqlLower.includes("sqlserver_orders") ? "SQL Server" : "Snowflake";
       await emit("rule", "rules", `Rule #SYS-0 [mandatory]: table is a foreign/federated table (${foreignSource}) → must execute on Databricks`);
       await emit("decision", "rules", `Mandatory rule matched — skipping remaining rules`);
-      engine = "databricks:serverless-2xs"; engineName = "Databricks Serverless 2X-Small"; stage = "mandatory_rule"; reason = `Foreign table (${foreignSource}) — must route via Databricks`; execTime = 450; cost = 0.018; savings = 0; complexity = 10;
+      engine = "databricks:serverless-2xs"; engineName = "Databricks Serverless 2X-Small"; stage = "mandatory_rule"; reason = `Foreign table (${foreignSource}) — must route via Databricks`; execTime = 450; complexity = 10;
     } else if (sqlLower.includes("revenue_summary")) {
       await emit("rule", "rules", `Rule #SYS-1 [mandatory]: table=revenue_summary is a VIEW → must execute on Databricks`);
       await emit("decision", "rules", `Mandatory rule matched — skipping remaining rules`);
-      engine = "databricks:serverless-2xs"; engineName = "Databricks Serverless 2X-Small"; stage = "mandatory_rule"; reason = "VIEW — must execute on Databricks"; execTime = 340; cost = 0.015; savings = 0; complexity = 25;
+      engine = "databricks:serverless-2xs"; engineName = "Databricks Serverless 2X-Small"; stage = "mandatory_rule"; reason = "VIEW — must execute on Databricks"; execTime = 340; complexity = 25;
     } else if (sqlLower.includes("customer_pii")) {
       await emit("rule", "rules", `Rule #SYS-2 [mandatory]: table=customer_pii has row-level security → must execute on Databricks`);
       await emit("decision", "rules", `Mandatory rule matched — skipping remaining rules`);
-      engine = "databricks:serverless-2xs"; engineName = "Databricks Serverless 2X-Small"; stage = "mandatory_rule"; reason = "Has row-level security filter — must execute on Databricks"; execTime = 280; cost = 0.0095; savings = 0; complexity = 18;
+      engine = "databricks:serverless-2xs"; engineName = "Databricks Serverless 2X-Small"; stage = "mandatory_rule"; reason = "Has row-level security filter — must execute on Databricks"; execTime = 280; complexity = 18;
     } else if (sqlLower.includes("store_sales")) {
       await emit("info", "rules", `Rule #SYS-1 [mandatory]: no match (not a VIEW)`);
       await emit("info", "rules", `Rule #SYS-2 [mandatory]: no match (no RLS filter)`);
       await emit("rule", "rules", `Rule #USR-1 [user]: table_name contains "store_sales" → route to DuckDB`);
       await emit("decision", "rules", `User rule matched — skipping ML model evaluation`);
-      engine = "duckdb:2gb-2cpu"; engineName = "DuckDB 2GB/2CPU"; stage = "user_rule"; reason = "User rule: table_name = store_sales → DuckDB"; execTime = 120; cost = 0.0008; savings = 0.012; complexity = 15;
+      engine = "duckdb:2gb-2cpu"; engineName = "DuckDB 2GB/2CPU"; stage = "user_rule"; reason = "User rule: table_name = store_sales → DuckDB"; execTime = 120; complexity = 15;
     } else {
       await emit("info", "rules", `Rule #SYS-1 [mandatory]: no match`);
       await emit("info", "rules", `Rule #SYS-2 [mandatory]: no match`);
@@ -432,11 +431,11 @@ export const mockApi = {
       await emit("info", "rules", `No rules matched — proceeding to ML model`);
 
       if (routingMode === "duckdb") {
-        engine = "duckdb:2gb-2cpu"; engineName = "DuckDB 2GB/2CPU"; stage = "fallback"; reason = "Routing mode forced to DuckDB"; execTime = 85; cost = 0.0003; savings = 0.0045; complexity = 12;
+        engine = "duckdb:2gb-2cpu"; engineName = "DuckDB 2GB/2CPU"; stage = "fallback"; reason = "Routing mode forced to DuckDB"; execTime = 85; complexity = 12;
       } else if (routingMode === "databricks") {
-        engine = "databricks:serverless-2xs"; engineName = "Databricks Serverless 2X-Small"; stage = "fallback"; reason = "Routing mode forced to Databricks"; execTime = 250; cost = 0.012; savings = 0; complexity = 12;
+        engine = "databricks:serverless-2xs"; engineName = "Databricks Serverless 2X-Small"; stage = "fallback"; reason = "Routing mode forced to Databricks"; execTime = 250; complexity = 12;
       } else {
-        engine = "duckdb:2gb-2cpu"; engineName = "DuckDB 2GB/2CPU"; stage = "fallback"; reason = "Query complexity low, no governance constraints, estimated 45ms on DuckDB vs 230ms on Databricks"; execTime = 85; cost = 0.0003; savings = 0.0045; complexity = 12;
+        engine = "duckdb:2gb-2cpu"; engineName = "DuckDB 2GB/2CPU"; stage = "fallback"; reason = "Query complexity low, no governance constraints, estimated 45ms on DuckDB vs 230ms on Databricks"; execTime = 85; complexity = 12;
       }
 
       // --- Phase 3: ML Model ---
@@ -446,7 +445,6 @@ export const mockApi = {
         await emit("warn", "ml_model", `Routing mode forced to "${routingMode}" — ML prediction overridden`);
       } else {
         await emit("info", "ml_model", `Predicted latency: DuckDB=${execTime}ms, Databricks=230ms`);
-        await emit("info", "ml_model", `Predicted cost: DuckDB=$${cost.toFixed(4)}, Databricks=$0.0120`);
       }
     }
 
@@ -491,10 +489,6 @@ export const mockApi = {
     }
 
     await emit("info", "complete", `Query executed in ${execTime}ms, ${rows.length} rows returned`, 40);
-    await emit("info", "complete", `Cost: $${cost.toFixed(4)}${savings > 0 ? `, savings: $${savings.toFixed(4)}` : ""}`, 30);
-    if (savings > 0) {
-      await emit("info", "complete", `Estimated savings by routing to ${engineName} instead of Databricks`, 20);
-    }
 
     const ioLatency = engine.startsWith("duckdb") ? 8 + Math.random() * 15 : undefined;
     const coldStart = 0; // engines assumed warm during normal execution
@@ -506,7 +500,6 @@ export const mockApi = {
       io_latency_ms: ioLatency != null ? Math.round(ioLatency) : undefined,
       cold_start_ms: coldStart,
       total_latency_ms: execTime,
-      estimated_cost_usd: cost,
     };
 
     // Update the running entry with final results
@@ -514,14 +507,13 @@ export const mockApi = {
     runningEntry.engine_display_name = engineName;
     runningEntry.status = "success";
     runningEntry.latency_ms = execTime;
-    runningEntry.cost_usd = cost;
     runningEntry.routing_decision = routingDecision;
     runningEntry.routing_events = [...collectedEvents]; // snapshot
 
     return {
       correlation_id: correlationId,
       routing_decision: routingDecision,
-      execution: { execution_time_ms: execTime, data_scanned_bytes: 1200000, estimated_cost_usd: cost, cost_savings_usd: savings },
+      execution: { execution_time_ms: execTime, data_scanned_bytes: 1200000 },
       columns, rows,
     };
   },

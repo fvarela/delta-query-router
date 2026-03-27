@@ -34,7 +34,6 @@ SAMPLE_KWARGS = dict(
     reason="Low complexity",
     complexity_score=1.5,
     execution_time_ms=12.3,
-    estimated_cost_usd=0.0,
 )
 
 
@@ -45,15 +44,15 @@ SAMPLE_KWARGS = dict(
 
 class TestLogQueryExecution:
     @patch("query_logger.db.get_conn")
-    def test_inserts_three_rows(self, mock_get_conn):
-        """Should execute 3 INSERTs: query_logs, routing_decisions, cost_metrics."""
+    def test_inserts_two_rows(self, mock_get_conn):
+        """Should execute 2 INSERTs: query_logs, routing_decisions."""
         mock_conn, mock_cursor = _mock_conn_and_cursor()
         mock_get_conn.return_value.__enter__ = MagicMock(return_value=mock_conn)
         mock_get_conn.return_value.__exit__ = MagicMock(return_value=False)
 
         query_logger.log_query_execution(**SAMPLE_KWARGS)
 
-        assert mock_cursor.execute.call_count == 3
+        assert mock_cursor.execute.call_count == 2
 
     @patch("query_logger.db.get_conn")
     def test_first_insert_is_query_logs(self, mock_get_conn):
@@ -82,20 +81,6 @@ class TestLogQueryExecution:
         assert second_call_params[0] == 42
 
     @patch("query_logger.db.get_conn")
-    def test_third_insert_is_cost_metrics(self, mock_get_conn):
-        mock_conn, mock_cursor = _mock_conn_and_cursor()
-        mock_get_conn.return_value.__enter__ = MagicMock(return_value=mock_conn)
-        mock_get_conn.return_value.__exit__ = MagicMock(return_value=False)
-
-        query_logger.log_query_execution(**SAMPLE_KWARGS)
-
-        third_call_sql = mock_cursor.execute.call_args_list[2][0][0]
-        assert "cost_metrics" in third_call_sql
-        third_call_params = mock_cursor.execute.call_args_list[2][0][1]
-        assert third_call_params[0] == 42  # query_log_id
-        assert third_call_params[2] == 12.3  # execution_time_ms
-
-    @patch("query_logger.db.get_conn")
     def test_db_error_does_not_raise(self, mock_get_conn):
         """Logging failures should be swallowed, not propagated."""
         mock_get_conn.return_value.__enter__ = MagicMock(
@@ -116,7 +101,7 @@ class TestLogQueryExecution:
         kwargs = {**SAMPLE_KWARGS, "execution_time_ms": None, "status": "error"}
         query_logger.log_query_execution(**kwargs)
 
-        assert mock_cursor.execute.call_count == 3
+        assert mock_cursor.execute.call_count == 2
 
 
 # ---------------------------------------------------------------------------

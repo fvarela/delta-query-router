@@ -99,7 +99,6 @@ export interface RoutingRule {
 export interface RoutingSettings {
   latency_weight: number;
   cost_weight: number;
-  cost_estimation_mode: "formula" | "model";
   running_bonus_duckdb: number;
   running_bonus_databricks: number;
 }
@@ -129,8 +128,7 @@ export interface QueryExecutionResult {
     io_latency_ms?: number;
     cold_start_ms?: number;
     total_latency_ms?: number;
-    // Cost and scoring (ODQ-10)
-    estimated_cost_usd?: number;
+    // Scoring (ODQ-10)
     latency_score?: number;
     cost_score?: number;
     weighted_score?: number;
@@ -138,8 +136,6 @@ export interface QueryExecutionResult {
   execution: {
     execution_time_ms: number;
     data_scanned_bytes: number;
-    estimated_cost_usd: number;
-    cost_savings_usd: number;
   };
   columns: string[];
   rows: any[][];
@@ -255,7 +251,6 @@ export interface LogEntry {
   engine_display_name: string;
   status: "running" | "success" | "error";
   latency_ms: number;
-  cost_usd: number;
   // Per-query detail data (populated after execution)
   routing_decision?: QueryExecutionResult["routing_decision"];
   routing_events?: RoutingLogEvent[];
