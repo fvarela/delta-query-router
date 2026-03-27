@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from "react";
 import type { RunMode, PanelMode, QueryExecutionResult, Workspace, EngineCatalogEntry, Model, RoutingSettings, StorageLatencyProbe } from "../types";
 import { mockApi } from "@/mocks/api";
+import { api } from "@/lib/api";
 
 // ---- App Context ----
 interface AppContextType {
@@ -152,7 +153,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [routingSettings, setRoutingSettings] = useState<RoutingSettings>({ latency_weight: 0.5, cost_weight: 0.5, running_bonus_duckdb: 0.05, running_bonus_databricks: 0.15 });
 
   const updateRoutingSettings = useCallback(async (settings: Partial<RoutingSettings>) => {
-    const updated = await mockApi.updateRoutingSettings(settings);
+    const updated = await api.put<RoutingSettings>("/api/routing/settings", settings);
     setRoutingSettings(updated);
   }, []);
 
@@ -181,7 +182,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     reloadEngines();
     reloadModels();
     reloadStorageProbes();
-    mockApi.getRoutingSettings().then(setRoutingSettings);
+    api.get<RoutingSettings>("/api/routing/settings").then(setRoutingSettings).catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
