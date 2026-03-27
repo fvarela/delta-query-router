@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useApp } from "@/contexts/AppContext";
 import { mockApi } from "@/mocks/api";
+import { api } from "@/lib/api";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 import type { RoutingRule } from "@/types";
@@ -37,13 +38,16 @@ const CONDITION_LABELS: Record<string, string> = {
   table_type: "Table type",
   has_governance: "Governance",
   data_source_format: "Format",
+  external_access: "External access",
 };
 
 // If-Then rules
 const conditionOptions = [
-  { value: "table_name", label: "Table Name" },
-  { value: "table_size", label: "Data Size" },
-  { value: "query_complexity", label: "Query Complexity" },
+  { value: "table_name_pattern", label: "Table Name Pattern" },
+  { value: "complexity_gt", label: "Complexity >" },
+  { value: "table_type", label: "Table Type" },
+  { value: "has_governance", label: "Has Governance" },
+  { value: "external_access", label: "External Access" },
 ];
 const comparatorOptions = [
   { value: "greater_than", label: "Greater Than" },
@@ -109,7 +113,7 @@ export const RoutingPipeline: React.FC = () => {
 
   // Rule data (loaded once)
   const [allRules, setAllRules] = useState<RoutingRule[]>([]);
-  useEffect(() => { mockApi.getRoutingRules().then(setAllRules); }, []);
+  useEffect(() => { api.get<RoutingRule[]>("/api/routing/rules").then(setAllRules).catch(() => {}); }, []);
   const systemRules = allRules.filter(r => r.is_system);
   const customRules = allRules.filter(r => !r.is_system).sort((a, b) => a.priority - b.priority);
 
@@ -117,39 +121,57 @@ export const RoutingPipeline: React.FC = () => {
   const [showRulesModal, setShowRulesModal] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
   const [deleteRuleId, setDeleteRuleId] = useState<number | null>(null);
-  const [newCondition, setNewCondition] = useState("table_name");
+  const [newCondition, setNewCondition] = useState("table_name_pattern");
   const [newComparator, setNewComparator] = useState("equals");
   const [newValue, setNewValue] = useState("");
   const [newTarget, setNewTarget] = useState("duckdb");
 
-  const loadRules = async () => { setAllRules(await mockApi.getRoutingRules()); };
+  const loadRules = async () => { setAllRules(await api.get<RoutingRule[]>("/api/routing/rules")); };
   const handleDeleteRule = async () => {
     if (deleteRuleId === null) return;
-    await mockApi.deleteRoutingRule(deleteRuleId); await loadRules(); setDeleteRuleId(null);
+    try {
+      await api.del(`/api/routing/rules/${deleteRuleId}`);
+      await loadRules();
+    } catch (e: any) {
+      console.error("Failed to delete rule:", e?.message);
+    }
+    setDeleteRuleId(null);
   };
   const handleAddRule = async () => {
     if (!newValue.trim()) return;
     const maxPriority = Math.max(0, ...customRules.map(r => r.priority));
-    await mockApi.createRoutingRule({
-      priority: maxPriority + 1, condition_type: newCondition,
-      condition_value: newComparator === "equals" ? newValue : `${newComparator}:${newValue}`,
-      target_engine: newTarget, is_system: false, enabled: true,
-    });
-    await loadRules(); setShowAddForm(false); setNewValue("");
+    try {
+      await api.post<RoutingRule>("/api/routing/rules", {
+        priority: maxPriority + 1, condition_type: newCondition,
+        condition_value: newComparator === "equals" ? newValue : `${newComparator}:${newValue}`,
+        target_engine: newTarget,
+      });
+      await loadRules(); setShowAddForm(false); setNewValue("");
+    } catch (e: any) {
+      console.error("Failed to create rule:", e?.message);
+    }
   };
   const handleMoveUp = async (idx: number) => {
     if (idx === 0) return;
     const cur = customRules[idx], above = customRules[idx - 1];
-    await mockApi.updateRoutingRule(cur.id, { priority: above.priority });
-    await mockApi.updateRoutingRule(above.id, { priority: cur.priority });
-    await loadRules();
+    try {
+      await api.put<RoutingRule>(`/api/routing/rules/${cur.id}`, { priority: above.priority });
+      await api.put<RoutingRule>(`/api/routing/rules/${above.id}`, { priority: cur.priority });
+      await loadRules();
+    } catch (e: any) {
+      console.error("Failed to reorder rules:", e?.message);
+    }
   };
   const handleMoveDown = async (idx: number) => {
     if (idx === customRules.length - 1) return;
     const cur = customRules[idx], below = customRules[idx + 1];
-    await mockApi.updateRoutingRule(cur.id, { priority: below.priority });
-    await mockApi.updateRoutingRule(below.id, { priority: cur.priority });
-    await loadRules();
+    try {
+      await api.put<RoutingRule>(`/api/routing/rules/${cur.id}`, { priority: below.priority });
+      await api.put<RoutingRule>(`/api/routing/rules/${below.id}`, { priority: cur.priority });
+      await loadRules();
+    } catch (e: any) {
+      console.error("Failed to reorder rules:", e?.message);
+    }
   };
 
   // ML Models state
