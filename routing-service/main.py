@@ -472,9 +472,10 @@ async def execute_query(
 
     # 4. Route
     try:
-        decision = routing_engine.route_query(
+        routing_result = routing_engine.route_query(
             analysis, table_metadata, body.routing_mode
         )
+        decision = routing_result.decision
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -488,6 +489,16 @@ async def execute_query(
     except HTTPException:
         raise
     except Exception as e:
+        # Serialize routing events collected so far for the error log
+        error_events = [
+            {
+                "timestamp": ev.timestamp,
+                "level": ev.level,
+                "stage": ev.stage,
+                "message": ev.message,
+            }
+            for ev in routing_result.events
+        ]
         query_logger.submit_log(
             correlation_id=correlation_id,
             user_id=username,
@@ -497,6 +508,7 @@ async def execute_query(
             reason=decision.reason,
             complexity_score=decision.complexity_score,
             execution_time_ms=None,
+            routing_log_events=error_events,
         )
         raise HTTPException(
             status_code=502, detail=f"Execution failed on {decision.engine}: {e}"
@@ -510,6 +522,34 @@ async def execute_query(
         else wall_ms
     )
 
+    # Add execution-phase events (after we know execution_time_ms)
+    routing_result.events.append(
+        routing_engine.RoutingLogEvent(
+            routing_engine._ts(),
+            "info",
+            "execute",
+            f"Submitting query to {decision.engine}",
+        )
+    )
+    routing_result.events.append(
+        routing_engine.RoutingLogEvent(
+            routing_engine._ts(),
+            "info",
+            "complete",
+            f"Query executed in {execution_time_ms}ms",
+        )
+    )
+
+    events_dicts = [
+        {
+            "timestamp": e.timestamp,
+            "level": e.level,
+            "stage": e.stage,
+            "message": e.message,
+        }
+        for e in routing_result.events
+    ]
+
     # 6. Log (fire-and-forget, never blocks the response)
     query_logger.submit_log(
         correlation_id=correlation_id,
@@ -520,6 +560,7 @@ async def execute_query(
         reason=decision.reason,
         complexity_score=decision.complexity_score,
         execution_time_ms=execution_time_ms,
+        routing_log_events=events_dicts,
     )
 
     # 7. Build response (matches frontend QueryExecutionResult)
@@ -540,6 +581,7 @@ async def execute_query(
         },
         "columns": result["columns"],
         "rows": result["rows"],
+        "routing_log_events": events_dicts,
     }
 
 
@@ -547,6 +589,7 @@ async def execute_query(
 async def get_query(correlation_id: str, username: str = Depends(verify_token)):
     row = db.fetch_one(
         """SELECT q.correlation_id, q.query_text, q.status, q.submitted_at, q.completed_at,
+                    q.routing_log_events,
                     r.engine, r.reason, r.complexity_score
             FROM query_logs q
             JOIN routing_decisions r ON r.query_log_id = q.id
@@ -571,6 +614,7 @@ async def get_query(correlation_id: str, username: str = Depends(verify_token)):
             "reason": row["reason"],
             "complexity_score": row["complexity_score"],
         },
+        "routing_log_events": row["routing_log_events"],
     }
 
 

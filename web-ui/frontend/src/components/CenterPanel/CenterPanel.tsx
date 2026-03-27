@@ -4,7 +4,7 @@ import { mockApi } from "@/mocks/api";
 import { api } from "@/lib/api";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { StatusBadge } from "@/components/shared/StatusBadge";
-import type { QueryExecutionResult, LogEntry } from "@/types";
+import type { QueryExecutionResult, LogEntry, RoutingLogEvent } from "@/types";
 import { Play, Clock, Terminal, Info, X, FolderPlus } from "lucide-react";
 
 /* ── colour helpers ── */
@@ -108,6 +108,7 @@ export const CenterPanel: React.FC = () => {
           reason: string;
           complexity_score: number;
         };
+        routing_log_events?: RoutingLogEvent[];
       }>(`/api/query/${entry.correlation_id}`);
       // Merge backend detail into the LogEntry shape for the modal
       const enriched: LogEntry = {
@@ -119,6 +120,7 @@ export const CenterPanel: React.FC = () => {
           reason: detail.routing_decision.reason,
           complexity_score: detail.routing_decision.complexity_score,
         },
+        routing_events: detail.routing_log_events,
       };
       setModalEntry(enriched);
     } catch {

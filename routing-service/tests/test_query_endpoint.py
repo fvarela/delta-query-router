@@ -465,3 +465,62 @@ class TestRoutingIntegration:
         # Simple DELTA table, low complexity → DuckDB via FALLBACK
         assert data["routing_decision"]["engine"] == "duckdb"
         assert data["routing_decision"]["stage"] == "FALLBACK"
+
+
+# ---------------------------------------------------------------------------
+# Routing log events in response
+# ---------------------------------------------------------------------------
+
+
+class TestRoutingLogEvents:
+    """Verify POST /api/query includes routing_log_events."""
+
+    @patch("main.catalog_service.get_tables_metadata", return_value={})
+    @patch("routing_engine._load_rules", side_effect=_mock_routing_rules_empty)
+    @patch("main.httpx.AsyncClient")
+    def test_response_includes_routing_log_events(self, mock_client_cls, _rules, _meta):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {"content-type": "application/json"}
+        mock_response.json.return_value = {
+            "columns": ["1"],
+            "rows": [[1]],
+            "row_count": 1,
+            "execution_time_ms": 0.5,
+        }
+
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_response
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+
+        resp = client.post(
+            "/api/query",
+            json={"sql": "SELECT 1", "routing_mode": "smart"},
+            headers=_auth_header(),
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "routing_log_events" in data
+        events = data["routing_log_events"]
+        assert isinstance(events, list)
+        assert len(events) > 0
+
+        # Each event has the expected shape
+        for event in events:
+            assert "timestamp" in event
+            assert "level" in event
+            assert "stage" in event
+            assert "message" in event
+
+        # Should have parse, execute, and complete stages
+        stages = {e["stage"] for e in events}
+        assert "parse" in stages
+        assert "execute" in stages
+        assert "complete" in stages
+
+        # Last event should be the completion message
+        assert events[-1]["stage"] == "complete"
+        assert "executed" in events[-1]["message"].lower()

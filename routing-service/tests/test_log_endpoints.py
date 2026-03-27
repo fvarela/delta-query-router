@@ -34,6 +34,7 @@ def _make_row(
     complexity_score=1.5,
     submitted_at=_UNSET,
     completed_at=_UNSET,
+    routing_log_events=None,
 ):
     """Build a dict matching the JOIN result shape from the DB."""
     if submitted_at is _UNSET:
@@ -51,6 +52,7 @@ def _make_row(
         "engine": engine,
         "reason": reason,
         "complexity_score": complexity_score,
+        "routing_log_events": routing_log_events,
     }
 
 
@@ -110,6 +112,43 @@ class TestGetQuery:
         mock_fetch.return_value = _make_row(completed_at=None)
         resp = client.get(f"/api/query/{SAMPLE_UUID}", headers=_auth_header())
         assert resp.json()["completed_at"] is None
+
+    @patch("main.db.fetch_one")
+    def test_returns_routing_log_events(self, mock_fetch):
+        """GET /api/query/{id} includes routing_log_events from DB."""
+        sample_events = [
+            {
+                "timestamp": "12:00:00.001",
+                "level": "info",
+                "stage": "parse",
+                "message": "Received query",
+            },
+            {
+                "timestamp": "12:00:00.002",
+                "level": "decision",
+                "stage": "engine",
+                "message": "Selected engine: duckdb",
+            },
+        ]
+        mock_fetch.return_value = _make_row(
+            correlation_id=UUID(SAMPLE_UUID),
+            routing_log_events=sample_events,
+        )
+        resp = client.get(f"/api/query/{SAMPLE_UUID}", headers=_auth_header())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["routing_log_events"] == sample_events
+
+    @patch("main.db.fetch_one")
+    def test_null_routing_log_events(self, mock_fetch):
+        """GET /api/query/{id} returns null when no events stored (old rows)."""
+        mock_fetch.return_value = _make_row(
+            correlation_id=UUID(SAMPLE_UUID),
+            routing_log_events=None,
+        )
+        resp = client.get(f"/api/query/{SAMPLE_UUID}", headers=_auth_header())
+        assert resp.status_code == 200
+        assert resp.json()["routing_log_events"] is None
 
 
 # ---------------------------------------------------------------------------
