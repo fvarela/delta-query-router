@@ -121,14 +121,23 @@ class DatabricksCredentials(BaseModel):
     client_secret: str | None = None
 
 
-def _save_to_k8s_secret(creds: DatabricksCredentials):
+def _get_k8s_core_api():
+    """Return a K8s CoreV1Api client, or None if not running in-cluster."""
     from kubernetes import client as k8s_client, config as k8s_config
 
     try:
         k8s_config.load_incluster_config()
     except Exception:
-        return  # Not running in cluster, skip sliently
-    v1 = k8s_client.CoreV1Api()
+        return None
+    return k8s_client.CoreV1Api()
+
+
+def _save_to_k8s_secret(creds: DatabricksCredentials):
+    from kubernetes import client as k8s_client
+
+    v1 = _get_k8s_core_api()
+    if v1 is None:
+        return  # Not running in cluster, skip silently
     secret_data = {"DATABRICKS_HOST": creds.host}
     if creds.token:
         secret_data["DATABRICKS_TOKEN"] = creds.token
@@ -136,6 +145,9 @@ def _save_to_k8s_secret(creds: DatabricksCredentials):
         secret_data["DATABRICKS_CLIENT_ID"] = creds.client_id
     if creds.client_secret:
         secret_data["DATABRICKS_CLIENT_SECRET"] = creds.client_secret
+    # Preserve warehouse_id so replace doesn't wipe it
+    if _warehouse_id:
+        secret_data["SQL_WAREHOUSE_ID"] = _warehouse_id
     secret = k8s_client.V1Secret(
         metadata=k8s_client.V1ObjectMeta(name="databricks-credentials"),
         string_data=secret_data,
@@ -145,6 +157,30 @@ def _save_to_k8s_secret(creds: DatabricksCredentials):
         v1.replace_namespaced_secret("databricks-credentials", "default", secret)
     except k8s_client.exceptions.ApiException as e:
         if e.status == 404:
+            v1.create_namespaced_secret("default", secret)
+        else:
+            raise
+
+
+def _patch_k8s_secret(key: str, value: str):
+    """Patch a single key into the databricks-credentials K8s Secret."""
+    import base64
+    from kubernetes import client as k8s_client
+
+    v1 = _get_k8s_core_api()
+    if v1 is None:
+        return  # Not running in cluster, skip silently
+    encoded = base64.b64encode(value.encode()).decode()
+    body = {"data": {key: encoded}}
+    try:
+        v1.patch_namespaced_secret("databricks-credentials", "default", body)
+    except k8s_client.exceptions.ApiException as e:
+        if e.status == 404:
+            # Secret doesn't exist yet — create it with just this key
+            secret = k8s_client.V1Secret(
+                metadata=k8s_client.V1ObjectMeta(name="databricks-credentials"),
+                string_data={key: value},
+            )
             v1.create_namespaced_secret("default", secret)
         else:
             raise
@@ -401,6 +437,11 @@ async def save_warehouse(
 ):
     global _warehouse_id
     _warehouse_id = body.warehouse_id
+    try:
+        _patch_k8s_secret("SQL_WAREHOUSE_ID", body.warehouse_id)
+        logger.info(f"Warehouse ID persisted to K8s Secret: {body.warehouse_id}")
+    except Exception as e:
+        logger.warning(f"Failed to persist warehouse ID to K8s Secret: {e}")
     return {"warehouse_id": body.warehouse_id, "status": "saved"}
 
 
