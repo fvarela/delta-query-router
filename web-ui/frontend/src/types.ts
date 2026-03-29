@@ -13,11 +13,12 @@ export interface Workspace {
   id: string;
   name: string;
   url: string;
-  token: string | null; // PAT — null means not yet entered
+  token: string | null; // PAT — transient only, never persisted to localStorage
   connected: boolean;
+  username: string | null; // Databricks username, populated on connect
 }
 
-// --- Databricks settings (kept for mock API compat) ---
+// --- Databricks settings (from GET /api/settings/databricks) ---
 export interface DatabricksSettings {
   configured: boolean;
   host?: string;

@@ -1,14 +1,22 @@
 import React, { useState, useRef, useEffect } from "react";
 import { useApp } from "@/contexts/AppContext";
-import { mockApi } from "@/mocks/api";
+import { api } from "@/lib/api";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 import { Plug, Unplug, Trash2, Plus, Eye, EyeOff, Key, ChevronDown } from "lucide-react";
 
+const WORKSPACES_KEY = "delta_router_workspaces";
+
+/** Save workspace metadata (id, name, url) to localStorage — never tokens */
+const saveWorkspacesToStorage = (ws: Array<{ id: string; name: string; url: string }>) => {
+  localStorage.setItem(WORKSPACES_KEY, JSON.stringify(ws.map(w => ({ id: w.id, name: w.name, url: w.url }))));
+};
+
 export const WorkspaceManager: React.FC = () => {
-  const { workspaces, reloadWorkspaces, connectedWorkspace } = useApp();
+  const { workspaces, setWorkspaces, reloadWorkspaces, connectedWorkspace } = useApp();
   const [open, setOpen] = useState(false);
   const [connecting, setConnecting] = useState<string | null>(null);
+  const [connectError, setConnectError] = useState<string | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [newName, setNewName] = useState("");
@@ -34,44 +42,92 @@ export const WorkspaceManager: React.FC = () => {
     setTokenModalId(id);
     setTokenInput("");
     setShowTokenText(false);
+    setConnectError(null);
   };
 
-  const handleSetToken = async () => {
+  /**
+   * Set PAT token and immediately connect to the workspace.
+   * Token goes directly to the backend (POST /api/settings/databricks) — never stored client-side.
+   */
+  const handleSetTokenAndConnect = async () => {
     if (!tokenModalId || !tokenInput.trim()) return;
-    await mockApi.setWorkspaceToken(tokenModalId, tokenInput.trim());
-    setTokenModalId(null);
-    setTokenInput("");
-    await reloadWorkspaces();
-  };
+    const ws = workspaces.find(w => w.id === tokenModalId);
+    if (!ws) return;
 
-  const handleConnect = async (id: string) => {
-    setConnecting(id);
+    setConnecting(tokenModalId);
+    setConnectError(null);
     try {
-      await mockApi.connectWorkspace(id);
-      await reloadWorkspaces();
-    } catch {
-      // token missing
+      const resp = await api.post<{ status: string; host: string; username: string }>(
+        "/api/settings/databricks",
+        { host: ws.url, token: tokenInput.trim() }
+      );
+      // Close modal on success
+      setTokenModalId(null);
+      setTokenInput("");
+      // Update workspace state: mark this one connected with username, all others disconnected
+      const updated = workspaces.map(w => ({
+        ...w,
+        connected: w.id === tokenModalId,
+        username: w.id === tokenModalId ? resp.username : null,
+        token: null, // never keep tokens in state
+      }));
+      setWorkspaces(updated);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Connection failed";
+      // Try to extract detail from JSON error response
+      try {
+        const parsed = JSON.parse(msg);
+        setConnectError(parsed.detail || msg);
+      } catch {
+        setConnectError(msg);
+      }
     } finally {
       setConnecting(null);
     }
   };
 
-  const handleDisconnect = async (id: string) => {
-    await mockApi.disconnectWorkspace(id);
-    await reloadWorkspaces();
+  /**
+   * Connect to a workspace that the backend already has credentials for.
+   * This happens when the user disconnects client-side and wants to reconnect
+   * without re-entering the PAT (backend still has it in memory).
+   */
+  const handleConnect = async (id: string) => {
+    // If backend already has credentials for this host, just reload to reconcile
+    const ws = workspaces.find(w => w.id === id);
+    if (!ws) return;
+
+    // We don't have the token client-side — open the PAT modal
+    openTokenModal(id);
+  };
+
+  const handleDisconnect = async (_id: string) => {
+    // Client-side only — mark disconnected. Backend still has credentials in memory
+    // until pod restart, which is acceptable for single-workspace scope.
+    const updated = workspaces.map(w => ({ ...w, connected: false, username: null }));
+    setWorkspaces(updated);
   };
 
   const handleDelete = async () => {
     if (!deleteId) return;
-    await mockApi.deleteWorkspace(deleteId);
-    await reloadWorkspaces();
+    const updated = workspaces.filter(w => w.id !== deleteId);
+    saveWorkspacesToStorage(updated);
+    setWorkspaces(updated);
     setDeleteId(null);
   };
 
   const handleAdd = async () => {
     if (!newName.trim() || !newUrl.trim()) return;
-    await mockApi.addWorkspace(newName.trim(), newUrl.trim());
-    await reloadWorkspaces();
+    const newWs = {
+      id: crypto.randomUUID(),
+      name: newName.trim(),
+      url: newUrl.trim(),
+      token: null,
+      connected: false,
+      username: null,
+    };
+    const updated = [...workspaces, newWs];
+    saveWorkspacesToStorage(updated);
+    setWorkspaces(updated);
     setNewName("");
     setNewUrl("");
     setShowAdd(false);
@@ -130,7 +186,7 @@ export const WorkspaceManager: React.FC = () => {
                       <button
                         onClick={() => openTokenModal(ws.id)}
                         className="px-1.5 py-0.5 text-[10px] border border-border rounded hover:bg-muted text-muted-foreground hover:text-foreground"
-                        title="Set PAT token"
+                        title="Connect with PAT token"
                       >
                         <Key size={11} />
                       </button>
@@ -142,9 +198,9 @@ export const WorkspaceManager: React.FC = () => {
                     ) : (
                       <button
                         onClick={() => handleConnect(ws.id)}
-                        disabled={!ws.token || connecting === ws.id}
+                        disabled={connecting === ws.id}
                         className="px-1.5 py-0.5 text-[10px] border border-border rounded hover:bg-muted disabled:opacity-40 text-foreground"
-                        title={ws.token ? "Connect" : "Set PAT token first"}
+                        title="Connect"
                       >
                         {connecting === ws.id ? <LoadingSpinner size={12} /> : <Plug size={12} />}
                       </button>
@@ -156,10 +212,8 @@ export const WorkspaceManager: React.FC = () => {
                 </div>
                 <div className="text-[10px] mt-0.5">
                   {ws.connected
-                    ? <span className="text-status-success">Connected</span>
-                    : ws.token
-                      ? <span className="text-muted-foreground">Ready to connect</span>
-                      : <span className="text-status-warning">No token</span>}
+                    ? <span className="text-status-success">Connected{ws.username ? ` as ${ws.username}` : ""}</span>
+                    : <span className="text-muted-foreground">Not connected</span>}
                 </div>
               </div>
             ))}
@@ -167,19 +221,21 @@ export const WorkspaceManager: React.FC = () => {
         </div>
       )}
 
-      {/* PAT Token Modal */}
+      {/* PAT Token Modal — entering token immediately connects */}
       {tokenModalId && tokenModalWs && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/60" onClick={() => setTokenModalId(null)} />
+          <div className="absolute inset-0 bg-black/60" onClick={() => { setTokenModalId(null); setConnectError(null); }} />
           <div className="relative bg-background border border-border rounded-lg shadow-lg p-4 w-[340px] space-y-3 z-10">
-            <h3 className="text-[13px] font-semibold text-foreground">Set PAT Token</h3>
+            <h3 className="text-[13px] font-semibold text-foreground">Connect to Workspace</h3>
             <p className="text-[11px] text-muted-foreground">{tokenModalWs.name}</p>
+            <p className="text-[10px] text-muted-foreground truncate">{tokenModalWs.url}</p>
             <div className="relative">
               <input
                 type={showTokenText ? "text" : "password"}
                 placeholder="Enter Personal Access Token"
                 value={tokenInput}
                 onChange={e => setTokenInput(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter" && tokenInput.trim()) handleSetTokenAndConnect(); }}
                 className="w-full px-2 py-1.5 pr-8 border border-border rounded text-[12px] bg-background text-foreground"
                 autoFocus
               />
@@ -190,17 +246,17 @@ export const WorkspaceManager: React.FC = () => {
                 {showTokenText ? <EyeOff size={12} /> : <Eye size={12} />}
               </button>
             </div>
-            {tokenModalWs.token && (
-              <p className="text-[10px] text-muted-foreground">A token is already set. Saving will overwrite it.</p>
+            {connectError && (
+              <p className="text-[10px] text-status-error">{connectError}</p>
             )}
             <div className="flex justify-end gap-2">
-              <button onClick={() => setTokenModalId(null)} className="px-3 py-1 border border-border rounded text-[11px] text-foreground">Cancel</button>
+              <button onClick={() => { setTokenModalId(null); setConnectError(null); }} className="px-3 py-1 border border-border rounded text-[11px] text-foreground">Cancel</button>
               <button
-                onClick={handleSetToken}
-                disabled={!tokenInput.trim()}
+                onClick={handleSetTokenAndConnect}
+                disabled={!tokenInput.trim() || connecting === tokenModalId}
                 className="px-3 py-1 bg-primary text-primary-foreground rounded text-[11px] disabled:opacity-40"
               >
-                Save
+                {connecting === tokenModalId ? "Connecting..." : "Connect"}
               </button>
             </div>
           </div>

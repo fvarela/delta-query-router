@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from "react";
-import type { RunMode, PanelMode, QueryExecutionResult, Workspace, EngineCatalogEntry, Model, RoutingSettings, StorageLatencyProbe } from "../types";
+import type { RunMode, PanelMode, QueryExecutionResult, Workspace, DatabricksSettings, EngineCatalogEntry, Model, RoutingSettings, StorageLatencyProbe } from "../types";
 import { mockApi } from "@/mocks/api";
 import { api } from "@/lib/api";
 
@@ -71,13 +71,61 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const triggerRefreshCollections = useCallback(() => setRefresh(p => p + 1), []);
   const [activeCollectionId, setActiveCollectionId] = useState<number | null>(null);
 
-  // Workspaces
+  // Workspaces — metadata (id, name, url) in localStorage; PAT tokens never stored client-side
+  const WORKSPACES_KEY = "delta_router_workspaces";
+
+  const loadWorkspacesFromStorage = (): Workspace[] => {
+    try {
+      const raw = localStorage.getItem(WORKSPACES_KEY);
+      if (!raw) return [];
+      const stored = JSON.parse(raw) as Array<{ id: string; name: string; url: string }>;
+      return stored.map(s => ({ id: s.id, name: s.name, url: s.url, token: null, connected: false, username: null }));
+    } catch {
+      return [];
+    }
+  };
+
+  const saveWorkspacesToStorage = (ws: Workspace[]) => {
+    // Only persist non-sensitive metadata — never tokens
+    const toStore = ws.map(w => ({ id: w.id, name: w.name, url: w.url }));
+    localStorage.setItem(WORKSPACES_KEY, JSON.stringify(toStore));
+  };
+
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const connectedWorkspace = workspaces.find(w => w.connected) ?? null;
 
   const reloadWorkspaces = useCallback(async () => {
-    const ws = await mockApi.getWorkspaces();
-    setWorkspaces(ws);
+    // 1. Load workspace list from localStorage (name + URL only, no tokens)
+    const stored = loadWorkspacesFromStorage();
+
+    // 2. Check backend for active connection
+    try {
+      const settings = await api.get<DatabricksSettings>("/api/settings/databricks");
+      if (settings.configured && settings.host) {
+        // Find workspace matching the connected host
+        const matchIdx = stored.findIndex(w => w.url === settings.host);
+        if (matchIdx >= 0) {
+          stored[matchIdx].connected = true;
+          stored[matchIdx].username = settings.username ?? null;
+        } else {
+          // Backend is configured but no matching workspace in localStorage — create synthetic entry
+          stored.push({
+            id: crypto.randomUUID(),
+            name: settings.host.replace(/^https?:\/\//, "").split(".")[0],
+            url: settings.host,
+            token: null,
+            connected: true,
+            username: settings.username ?? null,
+          });
+          // Persist the new entry
+          saveWorkspacesToStorage(stored);
+        }
+      }
+    } catch {
+      // Backend unreachable or user not logged in — just show stored workspaces as disconnected
+    }
+
+    setWorkspaces(stored);
   }, []);
 
   // Engines
