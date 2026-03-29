@@ -14,7 +14,6 @@ from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.responses import Response
 from pydantic import BaseModel
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.service import catalog as catalog_models
 
 app = FastAPI()
 
@@ -349,29 +348,22 @@ async def list_schemas(catalog: str, username: str = Depends(verify_token)):
         raise HTTPException(status_code=500, detail=f"Failed to list schemas: {e}")
 
     # Check EXTERNAL_USE_SCHEMA grant for each schema
+    # NOTE: SDK grants.get(securable_type=SecurableType.SCHEMA) sends uppercase
+    # "SCHEMA" in the URL path, but the API requires lowercase "schema".
+    # Use raw api_client.do() as a workaround.
     result = []
     for s in schemas:
         external_use_schema = False
         full_name = f"{s.catalog_name}.{s.name}"
         try:
-            grants = _workspace_client.grants.get_effective(
-                securable_type=catalog_models.SecurableType.SCHEMA,
-                full_name=full_name,
+            resp = _workspace_client.api_client.do(
+                "GET",
+                f"/api/2.1/unity-catalog/permissions/schema/{full_name}",
             )
-            if grants.privilege_assignments:
-                for assignment in grants.privilege_assignments:
-                    if assignment.privileges:
-                        for priv in assignment.privileges:
-                            if priv.privilege and (
-                                priv.privilege
-                                == catalog_models.Privilege.EXTERNAL_USE_SCHEMA
-                                or getattr(priv.privilege, "value", None)
-                                == "EXTERNAL_USE_SCHEMA"
-                            ):
-                                external_use_schema = True
-                                break
-                    if external_use_schema:
-                        break
+            for assignment in resp.get("privilege_assignments", []):
+                if "EXTERNAL_USE_SCHEMA" in (assignment.get("privileges") or []):
+                    external_use_schema = True
+                    break
         except Exception as e:
             logger.debug("Could not check grants for schema %s: %s", full_name, e)
         result.append(
