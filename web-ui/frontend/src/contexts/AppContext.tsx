@@ -44,6 +44,10 @@ interface AppContextType {
   singleEngineId: number | null;
   setSingleEngineId: (id: number | null) => void;
 
+  /** Scale a DuckDB engine (start/stop) */
+  scaleEngine: (engineId: number, replicas: number) => Promise<void>;
+  scalingEngineIds: Set<number>;
+
   // Run mode (derived from engine selection count — not settable directly)
   runMode: RunMode;
 
@@ -189,6 +193,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [engines, setEngines] = useState<EngineCatalogEntry[]>([]);
   const [enabledEngineIds, setEnabledEngineIds] = useState<Set<number>>(new Set());
   const [singleEngineId, setSingleEngineId] = useState<number | null>(null);
+  const [scalingEngineIds, setScalingEngineIds] = useState<Set<number>>(new Set());
 
   const reloadEngines = useCallback(async () => {
     // Fetch engines from real backend API (DuckDB worker health + Databricks warehouses)
@@ -204,6 +209,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // Fallback: keep whatever engines we have
     }
   }, [singleEngineId]);
+
+  const scaleEngine = useCallback(async (engineId: number, replicas: number) => {
+    setScalingEngineIds(prev => new Set(prev).add(engineId));
+    try {
+      await api.post(`/api/engines/${engineId}/scale`, { replicas });
+      // Wait a moment for K8s to react, then reload engine status
+      await new Promise(r => setTimeout(r, 2000));
+      await reloadEngines();
+    } finally {
+      setScalingEngineIds(prev => {
+        const next = new Set(prev);
+        next.delete(engineId);
+        return next;
+      });
+    }
+  }, [reloadEngines]);
 
   const toggleEngineEnabled = useCallback((id: number) => {
     setEnabledEngineIds(prev => {
@@ -319,6 +340,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       warehouses, selectedWarehouseId, warehousesLoading, reloadWarehouses, selectWarehouse, clearWarehouses,
       engines, reloadEngines, enabledEngineIds, toggleEngineEnabled, setAllEnginesEnabled,
       singleEngineId: derivedSingleEngineId, setSingleEngineId,
+      scaleEngine, scalingEngineIds,
       runMode,
       panelMode, setPanelMode,
       activeModelId, setActiveModelId, models, reloadModels,

@@ -1,18 +1,20 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: duckdb-worker
+  name: duckdb-worker-small
   labels:
-    app: duckdb-worker
+    app: duckdb-worker-small
+    duckdb-tier: small
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: duckdb-worker
+      app: duckdb-worker-small
   template:
     metadata:
       labels:
-        app: duckdb-worker
+        app: duckdb-worker-small
+        duckdb-tier: small
     spec:
       containers:
       - name: duckdb-worker

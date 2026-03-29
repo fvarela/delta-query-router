@@ -22,8 +22,9 @@ deploy-webui: build-webui
 deploy-duckdb: build-duckdb
 	minikube ssh 'docker rmi -f duckdb-worker:latest' || true
 	minikube image load duckdb-worker:latest
-	kubectl rollout restart deployment/duckdb-worker
-	kubectl rollout status deployment/duckdb-worker --timeout=60s
+	kubectl rollout restart deployment/duckdb-worker-small
+	kubectl rollout status deployment/duckdb-worker-small --timeout=60s
+	@echo "Note: medium/large tiers start with replicas=0 (stopped). Use the UI to start them."
 deploy-all: deploy-routing deploy-webui deploy-duckdb
 # --- Schema ---
 schema-update:
@@ -36,7 +37,7 @@ logs-routing:
 logs-webui:
 	kubectl logs -l app=web-ui --tail=50 -f
 logs-duckdb:
-	kubectl logs -l app=duckdb-worker --tail=50 -f
+	kubectl logs -l duckdb-tier --tail=50 -f
 logs-postgres:
 	kubectl logs -l app=postgresql --tail=50 -f
 # --- Debug ---

@@ -76,6 +76,7 @@ export interface EngineCatalogEntry {
   is_default: boolean;
   enabled: boolean;
   runtime_state: EngineRuntimeState;
+  scalable?: boolean;
   created_at?: string;
   updated_at?: string;
 }

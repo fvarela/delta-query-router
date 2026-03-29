@@ -23,9 +23,38 @@ POSTGRES_PORT = os.environ.get("POSTGRES_PORT", "5432")
 POSTGRES_DB = os.environ.get("POSTGRES_DB", "deltarouter")
 POSTGRES_USER = os.environ.get("POSTGRES_USER", "delta")
 POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "")
-DUCKDB_WORKER_URL = os.environ.get("DUCKDB_WORKER_URL", "http://localhost:8002")
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
+
+# Multi-tier DuckDB worker definitions
+# Stable IDs: small=1, medium=2, large=3
+DUCKDB_TIERS = [
+    {
+        "id": 1,
+        "name": "DuckDB Small",
+        "deployment": "duckdb-worker-small",
+        "url": "http://duckdb-worker-small:8002",
+        "memory_gb": 2,
+        "cpu_count": 1,
+    },
+    {
+        "id": 2,
+        "name": "DuckDB Medium",
+        "deployment": "duckdb-worker-medium",
+        "url": "http://duckdb-worker-medium:8002",
+        "memory_gb": 8,
+        "cpu_count": 2,
+    },
+    {
+        "id": 3,
+        "name": "DuckDB Large",
+        "deployment": "duckdb-worker-large",
+        "url": "http://duckdb-worker-large:8002",
+        "memory_gb": 16,
+        "cpu_count": 4,
+    },
+]
+DUCKDB_TIER_BY_ID = {t["id"]: t for t in DUCKDB_TIERS}
 
 # In-memory token store: {token_hex: username}
 _active_tokens: dict[str, str] = {}
@@ -199,14 +228,15 @@ async def health_backends():
     except Exception as e:
         backends["postgresql"] = {"status": "error", "detail": str(e)}
 
-    # Check DuckDB Worker
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.get(f"{DUCKDB_WORKER_URL}/health")
-            resp.raise_for_status()
-            backends["duckdb_worker"] = {"status": "connected"}
-    except Exception as e:
-        backends["duckdb_worker"] = {"status": "error", "detail": str(e)}
+    # Check DuckDB Workers (all tiers)
+    async with httpx.AsyncClient(timeout=3.0) as client:
+        for tier in DUCKDB_TIERS:
+            try:
+                resp = await client.get(f"{tier['url']}/health")
+                resp.raise_for_status()
+                backends[tier["deployment"]] = {"status": "connected"}
+            except Exception as e:
+                backends[tier["deployment"]] = {"status": "error", "detail": str(e)}
     if _workspace_client is None:
         backends["databricks"] = {"status": "not_configured"}
     else:
@@ -248,32 +278,37 @@ class WarehouseSelection(BaseModel):
 async def list_engines(username: str = Depends(verify_token)):
     """Return all available execution engines with live status.
 
-    DuckDB workers: derived from actual health probe to duckdb-worker service.
+    DuckDB workers: probe each tier's health endpoint for live status.
     Databricks warehouses: from SDK warehouse list (only when connected).
     """
     engines = []
 
-    # DuckDB worker — probe health endpoint for live status
-    duckdb_status: str = "stopped"
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.get(f"{DUCKDB_WORKER_URL}/health")
-            resp.raise_for_status()
-            duckdb_status = "running"
-    except Exception:
-        duckdb_status = "stopped"
+    # DuckDB workers — probe each tier's health endpoint
+    async with httpx.AsyncClient(timeout=3.0) as client:
+        for tier in DUCKDB_TIERS:
+            status: str = "stopped"
+            try:
+                resp = await client.get(f"{tier['url']}/health")
+                resp.raise_for_status()
+                status = "running"
+            except Exception:
+                status = "stopped"
 
-    engines.append(
-        {
-            "id": 1,
-            "engine_type": "duckdb",
-            "display_name": "DuckDB Worker",
-            "config": {"memory_gb": 2, "cpu_count": 1},
-            "is_default": True,
-            "enabled": True,
-            "runtime_state": duckdb_status,
-        }
-    )
+            engines.append(
+                {
+                    "id": tier["id"],
+                    "engine_type": "duckdb",
+                    "display_name": tier["name"],
+                    "config": {
+                        "memory_gb": tier["memory_gb"],
+                        "cpu_count": tier["cpu_count"],
+                    },
+                    "is_default": tier["id"] == 1,
+                    "enabled": True,
+                    "runtime_state": status,
+                    "scalable": True,
+                }
+            )
 
     # Databricks warehouses (only when workspace is connected)
     if _workspace_client:
@@ -316,6 +351,48 @@ async def list_engines(username: str = Depends(verify_token)):
 class QueryExecutionRequest(BaseModel):
     sql: str
     routing_mode: str = "smart"  # "smart", "duckdb", or "databricks"
+
+
+class ScaleRequest(BaseModel):
+    replicas: int  # 0 = stop, 1 = start
+
+
+@app.post("/api/engines/{engine_id}/scale")
+async def scale_engine(
+    engine_id: int, body: ScaleRequest, username: str = Depends(verify_token)
+):
+    """Scale a DuckDB worker tier up (replicas=1) or down (replicas=0)."""
+    tier = DUCKDB_TIER_BY_ID.get(engine_id)
+    if not tier:
+        raise HTTPException(status_code=404, detail="Engine not found")
+    if body.replicas not in (0, 1):
+        raise HTTPException(status_code=400, detail="replicas must be 0 or 1")
+
+    from kubernetes import client as k8s_client, config as k8s_config
+
+    try:
+        k8s_config.load_incluster_config()
+    except Exception:
+        raise HTTPException(
+            status_code=500, detail="Not running in a Kubernetes cluster"
+        )
+
+    apps_v1 = k8s_client.AppsV1Api()
+    deployment_name = tier["deployment"]
+    try:
+        apps_v1.patch_namespaced_deployment_scale(
+            name=deployment_name,
+            namespace="default",
+            body={"spec": {"replicas": body.replicas}},
+        )
+    except k8s_client.exceptions.ApiException as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to scale {deployment_name}: {e.reason}",
+        )
+
+    action = "started" if body.replicas == 1 else "stopped"
+    return {"engine_id": engine_id, "deployment": deployment_name, "status": action}
 
 
 @app.put("/api/settings/warehouse")
@@ -472,11 +549,30 @@ MAX_RESULT_ROWS = 1000
 
 
 async def _execute_on_duckdb(sql: str, tables: list[str] | None = None) -> dict:
-    """Execute SQL on the DuckDB worker via HTTP.
+    """Execute SQL on the first running DuckDB worker via HTTP.
 
-    If tables are provided and Databricks credentials are available,
-    passes them to the worker for credential vending (Delta table loading).
+    Probes all tiers in order (small → medium → large) and uses the first
+    that responds to a health check.  If tables are provided and Databricks
+    credentials are available, passes them to the worker for credential vending.
     """
+    # Find the first running DuckDB worker
+    worker_url: str | None = None
+    async with httpx.AsyncClient(timeout=3.0) as probe_client:
+        for tier in DUCKDB_TIERS:
+            try:
+                resp = await probe_client.get(f"{tier['url']}/health")
+                resp.raise_for_status()
+                worker_url = tier["url"]
+                break
+            except Exception:
+                continue
+
+    if worker_url is None:
+        raise HTTPException(
+            status_code=503,
+            detail="No DuckDB worker is currently running. Start one from the Engines panel.",
+        )
+
     payload: dict = {"sql": sql}
 
     # Pass Databricks credentials + table names for credential vending
@@ -486,7 +582,7 @@ async def _execute_on_duckdb(sql: str, tables: list[str] | None = None) -> dict:
         payload["databricks_token"] = _databricks_token
 
     async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(f"{DUCKDB_WORKER_URL}/query", json=payload)
+        resp = await client.post(f"{worker_url}/query", json=payload)
         if resp.status_code != 200:
             detail = (
                 resp.json().get("detail", resp.text)

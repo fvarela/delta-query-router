@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: duckdb-worker-medium
+  labels:
+    app: duckdb-worker-medium
+    duckdb-tier: medium
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: duckdb-worker-medium
+  template:
+    metadata:
+      labels:
+        app: duckdb-worker-medium
+        duckdb-tier: medium
+    spec:
+      containers:
+      - name: duckdb-worker
+        image: duckdb-worker:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8002
+          name: http
+        resources:
+          requests:
+            cpu: 500m
+            memory: 2Gi
+          limits:
+            cpu: 2000m
+            memory: 8Gi
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8002
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8002
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          timeoutSeconds: 10
+          failureThreshold: 5
