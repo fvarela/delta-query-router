@@ -151,14 +151,16 @@ class TestListSchemas:
             _make_schema("default", "prod"),
             _make_schema("analytics", "prod"),
         ]
+        # Mock the raw API call for EXTERNAL_USE_SCHEMA grant check
+        self.wc.api_client.do.return_value = {"privilege_assignments": []}
         resp = client.get(
             "/api/databricks/catalogs/prod/schemas", headers=_auth_header()
         )
         assert resp.status_code == 200
         data = resp.json()
         assert data == [
-            {"name": "default", "catalog_name": "prod"},
-            {"name": "analytics", "catalog_name": "prod"},
+            {"name": "default", "catalog_name": "prod", "external_use_schema": False},
+            {"name": "analytics", "catalog_name": "prod", "external_use_schema": False},
         ]
         self.wc.schemas.list.assert_called_once_with(catalog_name="prod")
 

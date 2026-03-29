@@ -288,7 +288,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, []);
 
   // Routing settings (ODQ-10)
-  const [routingSettings, setRoutingSettings] = useState<RoutingSettings>({ latency_weight: 0.5, cost_weight: 0.5, running_bonus_duckdb: 0.05, running_bonus_databricks: 0.15 });
+  const [routingSettings, setRoutingSettings] = useState<RoutingSettings>({ fit_weight: 0.5, cost_weight: 0.5, running_bonus_duckdb: 0.05, running_bonus_databricks: 0.15 });
 
   const updateRoutingSettings = useCallback(async (settings: Partial<RoutingSettings>) => {
     const updated = await api.put<RoutingSettings>("/api/routing/settings", settings);

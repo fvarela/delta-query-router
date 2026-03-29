@@ -101,7 +101,7 @@ export interface RoutingRule {
 
 // --- Routing settings ---
 export interface RoutingSettings {
-  latency_weight: number;
+  fit_weight: number;
   cost_weight: number;
   running_bonus_duckdb: number;
   running_bonus_databricks: number;

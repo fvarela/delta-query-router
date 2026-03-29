@@ -73,7 +73,7 @@ let routingRules: RoutingRule[] = [
   { id: 3, priority: 10, condition_type: "table_name", condition_value: "store_sales", target_engine: "duckdb", is_system: false, enabled: true },
 ];
 
-let routingSettings: RoutingSettings = { latency_weight: 0.5, cost_weight: 0.5, running_bonus_duckdb: 0.05, running_bonus_databricks: 0.15 };
+let routingSettings: RoutingSettings = { fit_weight: 0.5, cost_weight: 0.5, running_bonus_duckdb: 0.05, running_bonus_databricks: 0.15 };
 
 let models: Model[] = [
   {

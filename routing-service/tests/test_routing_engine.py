@@ -6,7 +6,16 @@ import pytest
 
 from catalog_service import TableMetadata
 from query_analyzer import QueryAnalysis
-from routing_engine import RoutingDecision, RoutingResult, _match_rule, route_query
+from routing_engine import (
+    EngineStates,
+    RoutingDecision,
+    RoutingResult,
+    RoutingSettings,
+    _is_duckdb_compatible,
+    _match_rule,
+    _score_engines,
+    route_query,
+)
 import routing_engine
 
 
@@ -260,8 +269,8 @@ class TestUserRules:
             result = route_query(
                 _analysis(tables=["cat.sch.t"], complexity_score=3.0), meta
             )
-            # Should fall through to fallback, not match user rule
-            assert result.decision.stage == "FALLBACK"
+            # Should fall through to scoring, not match user rule
+            assert result.decision.stage == "SCORING"
 
     def test_table_name_pattern_matches(self):
         rules = SYSTEM_RULES + [
@@ -295,57 +304,83 @@ class TestUserRules:
         with _mock_db_with_rules(rules):
             meta = {"dev.test.tbl": _metadata(full_name="dev.test.tbl")}
             result = route_query(_analysis(tables=["dev.test.tbl"]), meta)
-            assert result.decision.stage == "FALLBACK"
+            assert result.decision.stage == "SCORING"
 
 
-# --- Fallback ---
+# --- Scoring ---
 
 
-class TestFallback:
-    """Fallback heuristic when no rules match."""
+class TestScoring:
+    """Scoring heuristic when no rules match — replaces old fallback."""
 
-    def test_simple_delta_routes_to_duckdb(self, mock_db):
+    def test_simple_delta_fast_priority_routes_to_duckdb(self, mock_db):
+        """Low complexity + fit priority → DuckDB wins."""
         meta = {"cat.sch.t": _metadata()}
+        settings = RoutingSettings(fit_weight=0.8, cost_weight=0.2)
+        states = EngineStates(duckdb_running=True, databricks_running=True)
         result = route_query(
-            _analysis(tables=["cat.sch.t"], complexity_score=2.0), meta
+            _analysis(tables=["cat.sch.t"], complexity_score=0.0),
+            meta,
+            settings=settings,
+            engine_states=states,
         )
         assert result.decision.engine == "duckdb"
-        assert result.decision.stage == "FALLBACK"
-        assert "DuckDB-compatible" in result.decision.reason
+        assert result.decision.stage == "SCORING"
 
-    def test_complex_query_routes_to_databricks(self, mock_db):
+    def test_simple_delta_cost_priority_routes_to_duckdb(self, mock_db):
+        """Low complexity + cost priority → DuckDB wins (cheaper, no per-query cost)."""
         meta = {"cat.sch.t": _metadata()}
+        settings = RoutingSettings(fit_weight=0.2, cost_weight=0.8)
+        states = EngineStates(duckdb_running=True, databricks_running=True)
         result = route_query(
-            _analysis(tables=["cat.sch.t"], complexity_score=10.0), meta
+            _analysis(tables=["cat.sch.t"], complexity_score=0.0),
+            meta,
+            settings=settings,
+            engine_states=states,
         )
-        assert result.decision.engine == "databricks"
-        assert result.decision.stage == "FALLBACK"
+        assert result.decision.engine == "duckdb"
+        assert result.decision.stage == "SCORING"
 
     def test_iceberg_routes_to_databricks(self, mock_db):
-        """Iceberg tables route to Databricks until duckdb-worker has the extension."""
+        """Iceberg tables are not DuckDB-compatible → Databricks always."""
         meta = {"cat.sch.t": _metadata(data_source_format="ICEBERG")}
+        settings = RoutingSettings(fit_weight=0.8, cost_weight=0.2)
+        states = EngineStates(duckdb_running=True, databricks_running=True)
         result = route_query(
-            _analysis(tables=["cat.sch.t"], complexity_score=1.0), meta
+            _analysis(tables=["cat.sch.t"], complexity_score=1.0),
+            meta,
+            settings=settings,
+            engine_states=states,
         )
         assert result.decision.engine == "databricks"
-        assert result.decision.stage == "FALLBACK"
 
-    def test_parquet_routes_to_duckdb(self, mock_db):
+    def test_parquet_fast_priority_routes_to_duckdb(self, mock_db):
+        """Parquet is DuckDB-compatible; fit priority → DuckDB."""
         meta = {"cat.sch.t": _metadata(data_source_format="PARQUET")}
+        settings = RoutingSettings(fit_weight=0.8, cost_weight=0.2)
+        states = EngineStates(duckdb_running=True, databricks_running=False)
         result = route_query(
-            _analysis(tables=["cat.sch.t"], complexity_score=1.0), meta
+            _analysis(tables=["cat.sch.t"], complexity_score=1.0),
+            meta,
+            settings=settings,
+            engine_states=states,
         )
         assert result.decision.engine == "duckdb"
-        assert result.decision.stage == "FALLBACK"
+        assert result.decision.stage == "SCORING"
 
     def test_no_tables_low_complexity_routes_to_duckdb(self, mock_db):
         """SELECT 1 with no table metadata — all() on empty is True."""
-        result = route_query(_analysis(complexity_score=0.0), {})
+        settings = RoutingSettings(fit_weight=0.8, cost_weight=0.2)
+        result = route_query(
+            _analysis(complexity_score=0.0),
+            {},
+            settings=settings,
+        )
         assert result.decision.engine == "duckdb"
-        assert result.decision.stage == "FALLBACK"
+        assert result.decision.stage == "SCORING"
 
     def test_mixed_tables_one_bad_routes_to_databricks(self, mock_db):
-        """If any table is not DuckDB-compatible, route to Databricks."""
+        """If any table is not DuckDB-compatible, DuckDB scores 0."""
         meta = {
             "cat.sch.good": _metadata(full_name="cat.sch.good"),
             "cat.sch.bad": _metadata(
@@ -357,7 +392,190 @@ class TestFallback:
             meta,
         )
         assert result.decision.engine == "databricks"
-        assert result.decision.stage == "FALLBACK"
+
+    def test_running_bonus_tips_close_decision(self, mock_db):
+        """Running bonus can tip the balance when scores are close."""
+        meta = {"cat.sch.t": _metadata()}
+        # At complexity=5 with balanced weights:
+        #   DuckDB:     0.5*0.6 + 0.5*0.7 = 0.65
+        #   Databricks: 0.5*0.7125 + 0.5*0.2 + 0.2 bonus = 0.656
+        # Bonus tips Databricks slightly ahead
+        settings = RoutingSettings(
+            fit_weight=0.5,
+            cost_weight=0.5,
+            running_bonus_duckdb=0.0,
+            running_bonus_databricks=0.2,
+        )
+        states = EngineStates(duckdb_running=True, databricks_running=True)
+        result = route_query(
+            _analysis(tables=["cat.sch.t"], complexity_score=5.0),
+            meta,
+            settings=settings,
+            engine_states=states,
+        )
+        # Databricks gets +0.2 bonus, DuckDB gets +0.0 → Databricks should win
+        assert result.decision.engine == "databricks"
+
+    def test_running_bonus_not_applied_when_stopped(self, mock_db):
+        """Running bonus is not applied to a stopped engine."""
+        meta = {"cat.sch.t": _metadata()}
+        settings = RoutingSettings(
+            fit_weight=0.8,
+            cost_weight=0.2,
+            running_bonus_duckdb=0.1,
+            running_bonus_databricks=0.5,
+        )
+        states = EngineStates(duckdb_running=True, databricks_running=False)
+        result = route_query(
+            _analysis(tables=["cat.sch.t"], complexity_score=0.0),
+            meta,
+            settings=settings,
+            engine_states=states,
+        )
+        # DuckDB gets bonus, Databricks doesn't → DuckDB wins
+        assert result.decision.engine == "duckdb"
+
+    def test_default_settings_balanced_query_routes_to_duckdb(self, mock_db):
+        """With default balanced settings (50/50) and low complexity, DuckDB cost advantage wins."""
+        meta = {"cat.sch.t": _metadata()}
+        result = route_query(
+            _analysis(tables=["cat.sch.t"], complexity_score=2.0), meta
+        )
+        assert result.decision.engine == "duckdb"
+        assert result.decision.stage == "SCORING"
+
+    def test_scoring_events_in_log(self, mock_db):
+        """Scoring stage emits detailed log events."""
+        meta = {"cat.sch.t": _metadata()}
+        settings = RoutingSettings(fit_weight=0.8, cost_weight=0.2)
+        states = EngineStates(duckdb_running=True, databricks_running=True)
+        result = route_query(
+            _analysis(tables=["cat.sch.t"], complexity_score=0.0),
+            meta,
+            settings=settings,
+            engine_states=states,
+        )
+        scoring_events = [e for e in result.events if e.stage == "scoring"]
+        assert (
+            len(scoring_events) >= 4
+        )  # weights, compatible, duckdb line, databricks line, winner
+        # Check weights are logged
+        weights_event = [e for e in scoring_events if "Weights:" in e.message]
+        assert len(weights_event) == 1
+        assert "80%" in weights_event[0].message
+        # Check winner is logged
+        winner_event = [e for e in scoring_events if "Winner:" in e.message]
+        assert len(winner_event) == 1
+
+
+class TestScoreEngines:
+    """Unit tests for _score_engines (pure scoring function)."""
+
+    def test_duckdb_incompatible_scores_zero(self):
+        """DuckDB gets 0 for incompatible tables."""
+        meta = {"t": _metadata(data_source_format="SQLSERVER")}
+        settings = RoutingSettings(fit_weight=0.8, cost_weight=0.2)
+        states = EngineStates(duckdb_running=True, databricks_running=True)
+        events = []
+        scores = _score_engines(0.0, meta, settings, states, events)
+        assert scores["duckdb"] == 0.0
+        assert scores["databricks"] > 0.0
+
+    def test_higher_complexity_increases_databricks_fit_score(self):
+        """As complexity increases, Databricks fit score rises."""
+        meta = {"t": _metadata()}
+        settings = RoutingSettings(fit_weight=1.0, cost_weight=0.0)
+        states = EngineStates()
+        events_low = []
+        events_high = []
+        scores_low = _score_engines(0.0, meta, settings, states, events_low)
+        scores_high = _score_engines(10.0, meta, settings, states, events_high)
+        assert scores_high["databricks"] > scores_low["databricks"]
+
+    def test_higher_complexity_decreases_duckdb_fit_score(self):
+        """As complexity increases, DuckDB fit score drops."""
+        meta = {"t": _metadata()}
+        settings = RoutingSettings(fit_weight=1.0, cost_weight=0.0)
+        states = EngineStates()
+        events_low = []
+        events_high = []
+        scores_low = _score_engines(0.0, meta, settings, states, events_low)
+        scores_high = _score_engines(10.0, meta, settings, states, events_high)
+        assert scores_high["duckdb"] < scores_low["duckdb"]
+
+    def test_cost_only_favors_duckdb(self):
+        """With cost_weight=1.0, DuckDB always wins (no per-query cost)."""
+        meta = {"t": _metadata()}
+        settings = RoutingSettings(fit_weight=0.0, cost_weight=1.0)
+        states = EngineStates()
+        events = []
+        scores = _score_engines(0.0, meta, settings, states, events)
+        assert scores["duckdb"] > scores["databricks"]
+
+    def test_fit_only_simple_favors_duckdb(self):
+        """With fit_weight=1.0 and low complexity, DuckDB wins."""
+        meta = {"t": _metadata()}
+        settings = RoutingSettings(fit_weight=1.0, cost_weight=0.0)
+        states = EngineStates()
+        events = []
+        scores = _score_engines(0.0, meta, settings, states, events)
+        assert scores["duckdb"] > scores["databricks"]
+
+    def test_running_bonus_applied_only_when_running(self):
+        """Running bonus only applies to engines that are running."""
+        meta = {"t": _metadata()}
+        settings = RoutingSettings(
+            fit_weight=0.5,
+            cost_weight=0.5,
+            running_bonus_duckdb=0.1,
+            running_bonus_databricks=0.15,
+        )
+        events_running = []
+        events_stopped = []
+        scores_running = _score_engines(
+            0.0,
+            meta,
+            settings,
+            EngineStates(duckdb_running=True, databricks_running=True),
+            events_running,
+        )
+        scores_stopped = _score_engines(
+            0.0,
+            meta,
+            settings,
+            EngineStates(duckdb_running=False, databricks_running=False),
+            events_stopped,
+        )
+        assert scores_running["duckdb"] == scores_stopped["duckdb"] + 0.1
+        assert scores_running["databricks"] == scores_stopped["databricks"] + 0.15
+
+
+class TestIsDuckdbCompatible:
+    """Unit tests for _is_duckdb_compatible helper."""
+
+    def test_delta_is_compatible(self):
+        meta = {"t": _metadata(data_source_format="DELTA")}
+        assert _is_duckdb_compatible(meta) is True
+
+    def test_parquet_is_compatible(self):
+        meta = {"t": _metadata(data_source_format="PARQUET")}
+        assert _is_duckdb_compatible(meta) is True
+
+    def test_iceberg_is_not_compatible(self):
+        meta = {"t": _metadata(data_source_format="ICEBERG")}
+        assert _is_duckdb_compatible(meta) is False
+
+    def test_no_external_access_is_not_compatible(self):
+        meta = {"t": _metadata(external_engine_read_support=False)}
+        assert _is_duckdb_compatible(meta) is False
+
+    def test_view_is_not_compatible(self):
+        meta = {"t": _metadata(table_type="VIEW")}
+        assert _is_duckdb_compatible(meta) is False
+
+    def test_empty_metadata_is_compatible(self):
+        """No tables = all() on empty → True."""
+        assert _is_duckdb_compatible({}) is True
 
 
 # --- Rule matching unit tests ---

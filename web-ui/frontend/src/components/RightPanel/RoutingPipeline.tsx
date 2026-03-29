@@ -71,11 +71,11 @@ const parseRule = (r: RoutingRule) => {
   return { condLabel, comparator, value, targetLabel };
 };
 
-// Cost vs Latency Priority
+// Cost vs Fit Priority
 const PRESETS = [
-  { label: "Low Cost", latency_weight: 0.2, description: "Prefer cheaper engines" },
-  { label: "Balanced", latency_weight: 0.5, description: "Equal weight" },
-  { label: "Fast", latency_weight: 0.8, description: "Prefer faster engines" },
+  { label: "Low Cost", fit_weight: 0.2, description: "Prefer cheaper engines" },
+  { label: "Balanced", fit_weight: 0.5, description: "Equal weight" },
+  { label: "High Fit", fit_weight: 0.8, description: "Prefer best-fit engines" },
 ] as const;
 
 // Running Engine Bonus
@@ -301,10 +301,10 @@ export const RoutingPipeline: React.FC = () => {
   };
   const detailModel = detailModelId != null ? models.find(m => m.id === detailModelId) : null;
 
-  // Cost vs Latency Priority
-  const handleSelectPreset = (lw: number) => updateRoutingSettings({ latency_weight: lw, cost_weight: 1 - lw });
+  // Cost vs Fit Priority
+  const handleSelectPreset = (fw: number) => updateRoutingSettings({ fit_weight: fw, cost_weight: 1 - fw });
   const activePresetIdx = PRESETS.reduce((best, p, i) => {
-    return Math.abs(p.latency_weight - routingSettings.latency_weight) < Math.abs(PRESETS[best].latency_weight - routingSettings.latency_weight) ? i : best;
+    return Math.abs(p.fit_weight - routingSettings.fit_weight) < Math.abs(PRESETS[best].fit_weight - routingSettings.fit_weight) ? i : best;
   }, 0);
   const priorityLabel = PRESETS[activePresetIdx].label;
 
@@ -347,15 +347,15 @@ export const RoutingPipeline: React.FC = () => {
     },
     {
       id: "scoring", label: "Scoring & Select",
-      status: activeIsCompatible ? priorityLabel : "Rules only",
-      color: activeIsCompatible ? "green" : "gray",
+      status: priorityLabel,
+      color: "green",
       icon: <Calculator size={ICON_SZ} />,
     },
   ];
 
   // Sub-nodes within Scoring
   const scoringSubNodes: { id: ScoringSubId; label: string; status: string; color: NodeColor }[] = [
-    { id: "priority", label: "Priority", status: priorityLabel, color: activeIsCompatible ? "green" : "gray" },
+    { id: "priority", label: "Priority", status: priorityLabel, color: "green" as NodeColor },
     { id: "bonus", label: "Bonus", status: `${duckdbBonus}/${databricksBonus}`, color: duckdbBonus === 0 && databricksBonus === 0 ? "gray" : "green" },
     { id: "storage" as ScoringSubId, label: "Storage", status: uniqueLocations > 0 ? `${uniqueLocations} loc` : "none", color: (uniqueLocations > 0 ? "green" : "amber") as NodeColor },
   ];
@@ -530,7 +530,7 @@ export const RoutingPipeline: React.FC = () => {
       case "rules": return "If-Then Rules";
       case "ml": return "ML Models";
       case "scoring": return "Scoring & Engine Selection";
-      case "priority": return "Cost vs Latency Priority";
+      case "priority": return "Cost vs Fit Priority";
       case "bonus": return "Running Engine Bonus";
       case "storage": return "Storage Latency";
     }
@@ -571,7 +571,7 @@ export const RoutingPipeline: React.FC = () => {
           </div>
           <div className="flex items-start gap-2">
             <span className={`mt-0.5 w-2 h-2 rounded-full shrink-0 ${hasModel ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
-            <span><span className="text-foreground font-medium">Scoring</span> — {hasModel ? `Weighted scoring (${priorityLabel}) with running-engine bonus and I/O latency adjustment.` : "Inactive without an ML model. Activate a model to enable weighted scoring."}</span>
+            <span><span className="text-foreground font-medium">Scoring</span> — {hasModel ? `Weighted scoring (${priorityLabel}) with ML predictions, running-engine bonus, and I/O latency adjustment.` : `Heuristic scoring (${priorityLabel}) based on query complexity and cost model. Activate an ML model for prediction-based scoring.`}</span>
           </div>
         </div>
         <p className="text-[10px] italic">Click any pipeline stage above to view details and settings.</p>
@@ -707,13 +707,14 @@ export const RoutingPipeline: React.FC = () => {
     return (
       <div className="space-y-2 text-muted-foreground">
         <p className="text-[10px]">
-          When an ML model is active, each engine receives a weighted score combining
-          predicted latency and estimated cost. The engine with the lowest score is selected.
+          Each engine receives a weighted score combining an architectural fit heuristic and
+          cost efficiency. When an ML model is active, it replaces the heuristic with
+          learned predictions. The engine with the highest score is selected.
         </p>
         <div className="space-y-1 text-[10px]">
           <div className="flex items-center gap-2">
             <span className="text-foreground font-medium w-[60px] shrink-0">Priority</span>
-            <span>{priorityLabel} ({(routingSettings.latency_weight * 100).toFixed(0)}% latency / {(routingSettings.cost_weight * 100).toFixed(0)}% cost)</span>
+            <span>{priorityLabel} ({(routingSettings.fit_weight * 100).toFixed(0)}% fit / {(routingSettings.cost_weight * 100).toFixed(0)}% cost)</span>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-foreground font-medium w-[60px] shrink-0">Bonus</span>
@@ -726,7 +727,7 @@ export const RoutingPipeline: React.FC = () => {
         </div>
         {!activeIsCompatible && (
           <p className="text-[10px] italic">
-            Scoring is inactive — activate an ML model to enable weighted engine selection.
+            No ML model active — scoring uses a complexity-based heuristic. Activate a model for learned predictions.
           </p>
         )}
         <p className="text-[10px] italic">
@@ -736,19 +737,19 @@ export const RoutingPipeline: React.FC = () => {
     );
   }
 
-  /* ── Cost vs Latency Priority detail ── */
+  /* ── Cost vs Fit Priority detail ── */
   function PriorityDetail() {
     return (
       <div className="space-y-2">
         <p className="text-muted-foreground text-[10px]">
-          Controls the trade-off between speed and cost in the scoring formula.
-          Higher latency weight favors faster engines; lower weight favors cheaper ones.
+          Controls the trade-off between architectural fit and cost in the scoring formula.
+          Higher fit weight favors best-fit engines for the query type; lower weight favors cheaper ones.
         </p>
         <div className="flex gap-1">
           {PRESETS.map((preset, idx) => {
             const isActive = idx === activePresetIdx;
             return (
-              <button key={preset.label} onClick={() => handleSelectPreset(preset.latency_weight)}
+              <button key={preset.label} onClick={() => handleSelectPreset(preset.fit_weight)}
                 title={preset.description}
                 className={`flex-1 px-1.5 py-1.5 rounded text-[10px] font-medium border text-center transition-colors ${
                   isActive ? "bg-primary/10 text-primary border-primary" : "bg-muted/30 text-muted-foreground border-border hover:bg-muted/60"
@@ -760,7 +761,7 @@ export const RoutingPipeline: React.FC = () => {
         </div>
         {activeModelId == null && (
           <p className="text-[10px] text-muted-foreground italic">
-            No ML model active — priority weighting has no effect until a model is selected.
+            No ML model active — scoring uses a complexity-based heuristic.
           </p>
         )}
       </div>

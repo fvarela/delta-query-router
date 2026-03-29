@@ -32,14 +32,15 @@ class TestHealthBackends:
     @patch("main._workspace_client", None)
     @patch("main.db.fetch_one", return_value={"?column?": 1})
     def test_all_healthy_except_databricks_not_configured(self, mock_fetch):
-        """PostgreSQL + DuckDB connected, Databricks not configured."""
+        """PostgreSQL + DuckDB tiers connected, Databricks not configured."""
         mock_client = _mock_httpx_ok()
         with patch("main.httpx.AsyncClient", return_value=mock_client):
             resp = client.get("/health/backends")
         assert resp.status_code == 200
         data = resp.json()
         assert data["postgresql"]["status"] == "connected"
-        assert data["duckdb_worker"]["status"] == "connected"
+        # Multi-tier DuckDB: each tier is reported as its deployment name
+        assert data["duckdb-worker-small"]["status"] == "connected"
         assert data["databricks"]["status"] == "not_configured"
 
     @patch("main._workspace_client", None)
@@ -64,8 +65,9 @@ class TestHealthBackends:
         assert resp.status_code == 200
         data = resp.json()
         assert data["postgresql"]["status"] == "connected"
-        assert data["duckdb_worker"]["status"] == "error"
-        assert "Connection refused" in data["duckdb_worker"]["detail"]
+        # All tiers report error when unreachable
+        assert data["duckdb-worker-small"]["status"] == "error"
+        assert "Connection refused" in data["duckdb-worker-small"]["detail"]
 
     @patch("main.db.fetch_one", return_value={"?column?": 1})
     def test_databricks_connected(self, mock_fetch):

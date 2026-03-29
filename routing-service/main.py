@@ -732,16 +732,61 @@ async def execute_query(
         analysis.tables, _workspace_client
     )
 
-    # 4. Route
+    # 4. Load routing settings and probe engine states for scoring
+    settings_row = db.fetch_one("SELECT * FROM routing_settings WHERE id = 1")
+    r_settings = (
+        routing_engine.RoutingSettings(
+            fit_weight=settings_row["fit_weight"],
+            cost_weight=settings_row["cost_weight"],
+            running_bonus_duckdb=settings_row["running_bonus_duckdb"],
+            running_bonus_databricks=settings_row["running_bonus_databricks"],
+        )
+        if settings_row
+        else routing_engine.RoutingSettings()
+    )
+
+    # Probe DuckDB: any tier responding to health?
+    duckdb_running = False
+    async with httpx.AsyncClient(timeout=2.0) as probe:
+        for tier in DUCKDB_TIERS:
+            try:
+                resp = await probe.get(f"{tier['url']}/health")
+                resp.raise_for_status()
+                duckdb_running = True
+                break
+            except Exception:
+                continue
+
+    # Databricks warehouse state: check if selected warehouse is RUNNING
+    databricks_running = False
+    if _workspace_client and _warehouse_id:
+        try:
+            wh = _workspace_client.warehouses.get(_warehouse_id)
+            databricks_running = (
+                wh.state is not None and wh.state.value.upper() == "RUNNING"
+            )
+        except Exception:
+            pass  # Can't determine state, assume not running
+
+    e_states = routing_engine.EngineStates(
+        duckdb_running=duckdb_running,
+        databricks_running=databricks_running,
+    )
+
+    # 5. Route
     try:
         routing_result = routing_engine.route_query(
-            analysis, table_metadata, body.routing_mode
+            analysis,
+            table_metadata,
+            body.routing_mode,
+            settings=r_settings,
+            engine_states=e_states,
         )
         decision = routing_result.decision
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # 5. Execute on chosen engine
+    # 6. Execute on chosen engine
     wall_start = time.monotonic()
     exec_error: Exception | None = None
     result = None
@@ -1031,7 +1076,7 @@ async def reset_routing_rules(username: str = Depends(verify_token)):
 # Routing settings
 # ---------------------------------------------------------------------------
 class UpdateRoutingSettings(BaseModel):
-    latency_weight: float | None = None
+    fit_weight: float | None = None
     cost_weight: float | None = None
     running_bonus_duckdb: float | None = None
     running_bonus_databricks: float | None = None
@@ -1043,7 +1088,7 @@ async def get_routing_settings(username: str = Depends(verify_token)):
     if not row:
         raise HTTPException(status_code=500, detail="Routing settings not initialized")
     return {
-        "latency_weight": row["latency_weight"],
+        "fit_weight": row["fit_weight"],
         "cost_weight": row["cost_weight"],
         "running_bonus_duckdb": row["running_bonus_duckdb"],
         "running_bonus_databricks": row["running_bonus_databricks"],
@@ -1064,22 +1109,22 @@ async def update_routing_settings(
             status_code=400, detail="running_bonus_databricks must be non-negative"
         )
     # Weight auto-complement logic
-    latency_w = body.latency_weight
+    fit_w = body.fit_weight
     cost_w = body.cost_weight
-    if latency_w is not None and cost_w is not None:
-        if abs((latency_w + cost_w) - 1.0) > 1e-9:
+    if fit_w is not None and cost_w is not None:
+        if abs((fit_w + cost_w) - 1.0) > 1e-9:
             raise HTTPException(
                 status_code=400,
-                detail="latency_weight and cost_weight must sum to 1.0",
+                detail="fit_weight and cost_weight must sum to 1.0",
             )
-    elif latency_w is not None:
-        cost_w = round(1.0 - latency_w, 10)
+    elif fit_w is not None:
+        cost_w = round(1.0 - fit_w, 10)
     elif cost_w is not None:
-        latency_w = round(1.0 - cost_w, 10)
+        fit_w = round(1.0 - cost_w, 10)
     # Build SET clause from non-None fields
     fields = {}
-    if latency_w is not None:
-        fields["latency_weight"] = latency_w
+    if fit_w is not None:
+        fields["fit_weight"] = fit_w
     if cost_w is not None:
         fields["cost_weight"] = cost_w
     if body.running_bonus_duckdb is not None:
@@ -1103,7 +1148,7 @@ async def update_routing_settings(
         tuple(values) if values else None,
     )
     return {
-        "latency_weight": row["latency_weight"],
+        "fit_weight": row["fit_weight"],
         "cost_weight": row["cost_weight"],
         "running_bonus_duckdb": row["running_bonus_duckdb"],
         "running_bonus_databricks": row["running_bonus_databricks"],
