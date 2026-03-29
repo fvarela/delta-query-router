@@ -377,6 +377,13 @@ async def _execute_on_duckdb(sql: str) -> dict:
                 if resp.headers.get("content-type", "").startswith("application/json")
                 else resp.text
             )
+            # Enhance cryptic "Catalog does not exist" with actionable guidance
+            if "does not exist" in detail and "Catalog" in detail:
+                detail = (
+                    f"{detail} — DuckDB cannot access Databricks Unity Catalog "
+                    "tables without credential vending (not yet configured). "
+                    "Use Smart Routing or select Databricks as the engine."
+                )
             raise HTTPException(
                 status_code=502, detail=f"DuckDB worker error: {detail}"
             )
@@ -484,14 +491,18 @@ async def execute_query(
 
     # 5. Execute on chosen engine
     wall_start = time.monotonic()
+    exec_error: Exception | None = None
+    result = None
     try:
         if decision.engine == "duckdb":
             result = await _execute_on_duckdb(body.sql)
         else:
             result = _execute_on_databricks(body.sql)
-    except HTTPException:
-        raise
     except Exception as e:
+        exec_error = e
+    wall_ms = round((time.monotonic() - wall_start) * 1000, 2)
+
+    if exec_error is not None:
         # Serialize routing events collected so far for the error log
         error_events = [
             {
@@ -510,13 +521,15 @@ async def execute_query(
             engine=decision.engine,
             reason=decision.reason,
             complexity_score=decision.complexity_score,
-            execution_time_ms=None,
+            execution_time_ms=wall_ms,
             routing_log_events=error_events,
         )
+        if isinstance(exec_error, HTTPException):
+            raise exec_error
         raise HTTPException(
-            status_code=502, detail=f"Execution failed on {decision.engine}: {e}"
+            status_code=502,
+            detail=f"Execution failed on {decision.engine}: {exec_error}",
         )
-    wall_ms = round((time.monotonic() - wall_start) * 1000, 2)
 
     # Use engine-reported time if available, else wall-clock
     execution_time_ms = (
@@ -592,7 +605,7 @@ async def execute_query(
 async def get_query(correlation_id: str, username: str = Depends(verify_token)):
     row = db.fetch_one(
         """SELECT q.correlation_id, q.query_text, q.status, q.submitted_at, q.completed_at,
-                    q.routing_log_events,
+                    q.execution_time_ms, q.routing_log_events,
                     r.engine, r.reason, r.complexity_score
             FROM query_logs q
             JOIN routing_decisions r ON r.query_log_id = q.id
@@ -609,6 +622,7 @@ async def get_query(correlation_id: str, username: str = Depends(verify_token)):
         "completed_at": row["completed_at"].isoformat()
         if row["completed_at"]
         else None,
+        "execution_time_ms": row["execution_time_ms"],
         "routing_decision": {
             "engine": row["engine"],
             "engine_display_name": "DuckDB"
@@ -623,7 +637,8 @@ async def get_query(correlation_id: str, username: str = Depends(verify_token)):
 
 @app.get("/api/logs")
 async def get_logs(engine: str | None = None, username: str = Depends(verify_token)):
-    base_sql = """ SELECT q.correlation_id, q.query_text, q.status, q.submitted_at, 
+    base_sql = """ SELECT q.correlation_id, q.query_text, q.status, q.submitted_at,
+                        q.execution_time_ms,
                         r.engine, r.reason, r.complexity_score
                    FROM query_logs q
                    JOIN routing_decisions r ON r.query_log_id = q.id
@@ -645,7 +660,9 @@ async def get_logs(engine: str | None = None, username: str = Depends(verify_tok
             if r["engine"] == "duckdb"
             else "Databricks",
             "status": r["status"],
-            "latency_ms": 0,
+            "latency_ms": round(r["execution_time_ms"])
+            if r["execution_time_ms"]
+            else 0,
         }
         for r in rows
     ]

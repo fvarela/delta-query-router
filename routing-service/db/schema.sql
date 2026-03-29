@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS query_logs (
     submitted_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     completed_at    TIMESTAMPTZ,
     status          VARCHAR(20) NOT NULL DEFAULT 'pending',
+    execution_time_ms FLOAT,
     routing_log_events JSONB
 );
 CREATE TABLE IF NOT EXISTS routing_decisions (
