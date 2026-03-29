@@ -80,7 +80,7 @@ async def proxy_to_routing_service(path: str, request: Request):
     body = await request.body() if request.method in ("POST", "PUT", "DELETE") else None
 
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.request(
                 request.method, url, headers=headers, content=body
             )

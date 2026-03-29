@@ -34,9 +34,12 @@ spec:
             port: 8002
           initialDelaySeconds: 5
           periodSeconds: 10
+          timeoutSeconds: 5
         livenessProbe:
           httpGet:
             path: /health
             port: 8002
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 10
+          failureThreshold: 5

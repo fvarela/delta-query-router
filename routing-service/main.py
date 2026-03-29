@@ -32,6 +32,7 @@ _active_tokens: dict[str, str] = {}
 
 _workspace_client: WorkspaceClient | None = None
 _databricks_host: str | None = None
+_databricks_token: str | None = None
 _databricks_username: str | None = None
 _warehouse_id: str | None = None
 
@@ -42,7 +43,12 @@ logger = logging.getLogger("routing-service")
 
 @app.on_event("startup")
 async def load_databricks_credentials():
-    global _workspace_client, _databricks_host, _databricks_username, _warehouse_id
+    global \
+        _workspace_client, \
+        _databricks_host, \
+        _databricks_token, \
+        _databricks_username, \
+        _warehouse_id
     host = os.environ.get("DATABRICKS_HOST")
     token = os.environ.get("DATABRICKS_TOKEN")
     if not host or not token:
@@ -55,6 +61,7 @@ async def load_databricks_credentials():
         me = wc.current_user.me()
         _workspace_client = wc
         _databricks_host = host
+        _databricks_token = token
         _databricks_username = me.user_name
         _warehouse_id = os.environ.get("SQL_WAREHOUSE_ID")
         logger.info(f"Databricks credentials loaded from environment: {me.user_name}")
@@ -137,7 +144,7 @@ async def verify_token(authorization: str = Header(None)) -> str:
 async def save_databricks_settings(
     creds: DatabricksCredentials, username: str = Depends(verify_token)
 ):
-    global _workspace_client, _databricks_host, _databricks_username
+    global _workspace_client, _databricks_host, _databricks_token, _databricks_username
     try:
         if creds.token:
             wc = WorkspaceClient(host=creds.host, token=creds.token)
@@ -159,6 +166,7 @@ async def save_databricks_settings(
         raise HTTPException(status_code=400, detail=f"Failed to connect: {e}")
     _workspace_client = wc
     _databricks_host = creds.host
+    _databricks_token = creds.token  # may be None for client_id/secret auth
     _databricks_username = me.user_name
     _save_to_k8s_secret(creds)
     return {"status": "connected", "host": creds.host, "username": me.user_name}
@@ -367,22 +375,33 @@ async def list_tables(catalog: str, schema: str, username: str = Depends(verify_
 MAX_RESULT_ROWS = 1000
 
 
-async def _execute_on_duckdb(sql: str) -> dict:
-    """Execute SQL on the DuckDB worker via HTTP."""
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(f"{DUCKDB_WORKER_URL}/query", json={"sql": sql})
+async def _execute_on_duckdb(sql: str, tables: list[str] | None = None) -> dict:
+    """Execute SQL on the DuckDB worker via HTTP.
+
+    If tables are provided and Databricks credentials are available,
+    passes them to the worker for credential vending (Delta table loading).
+    """
+    payload: dict = {"sql": sql}
+
+    # Pass Databricks credentials + table names for credential vending
+    if tables and _databricks_host and _databricks_token:
+        payload["tables"] = tables
+        payload["databricks_host"] = _databricks_host
+        payload["databricks_token"] = _databricks_token
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        resp = await client.post(f"{DUCKDB_WORKER_URL}/query", json=payload)
         if resp.status_code != 200:
             detail = (
                 resp.json().get("detail", resp.text)
                 if resp.headers.get("content-type", "").startswith("application/json")
                 else resp.text
             )
-            # Enhance cryptic "Catalog does not exist" with actionable guidance
+            # Enhance cryptic DuckDB errors with actionable guidance
             if "does not exist" in detail and "Catalog" in detail:
                 detail = (
-                    f"{detail} — DuckDB cannot access Databricks Unity Catalog "
-                    "tables without credential vending (not yet configured). "
-                    "Use Smart Routing or select Databricks as the engine."
+                    f"{detail} — Credential vending may have failed to load "
+                    "the table. Check DuckDB worker logs for details."
                 )
             raise HTTPException(
                 status_code=502, detail=f"DuckDB worker error: {detail}"
@@ -495,7 +514,7 @@ async def execute_query(
     result = None
     try:
         if decision.engine == "duckdb":
-            result = await _execute_on_duckdb(body.sql)
+            result = await _execute_on_duckdb(body.sql, analysis.tables)
         else:
             result = _execute_on_databricks(body.sql)
     except Exception as e:
