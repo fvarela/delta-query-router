@@ -238,12 +238,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Run mode — derived from how many *visible* engines are selected
   // (Databricks engines are hidden when no workspace is connected)
-  const visibleEnabledCount = engines.filter(e => {
+  const visibleEnabledEngines = engines.filter(e => {
     if (!enabledEngineIds.has(e.id)) return false;
     if (e.engine_type === "databricks_sql" && !connectedWorkspace) return false;
     return true;
-  }).length;
+  });
+  const visibleEnabledCount = visibleEnabledEngines.length;
   const runMode: RunMode = visibleEnabledCount > 1 ? "multi" : "single";
+
+  // When exactly one engine is enabled, that's the single engine for forced-mode queries.
+  // This keeps singleEngineId in sync with checkbox toggles.
+  const derivedSingleEngineId = visibleEnabledCount === 1
+    ? visibleEnabledEngines[0].id
+    : singleEngineId;
 
   // Panel mode (Run vs Train)
   const [panelMode, setPanelModeRaw] = useState<PanelMode>("run");
@@ -330,7 +337,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       workspaces, setWorkspaces, connectedWorkspace, reloadWorkspaces,
       warehouses, selectedWarehouseId, warehousesLoading, reloadWarehouses, selectWarehouse, clearWarehouses,
       engines, reloadEngines, enabledEngineIds, toggleEngineEnabled, setAllEnginesEnabled,
-      singleEngineId, setSingleEngineId,
+      singleEngineId: derivedSingleEngineId, setSingleEngineId,
       runMode,
       panelMode, setPanelMode,
       activeModelId, setActiveModelId, models, reloadModels,
