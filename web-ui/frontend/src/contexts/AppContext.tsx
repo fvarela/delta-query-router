@@ -191,38 +191,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [singleEngineId, setSingleEngineId] = useState<number | null>(null);
 
   const reloadEngines = useCallback(async () => {
-    // DuckDB engines from mock (local workers — will be wired to real API later)
-    const allMock = await mockApi.getEngineCatalog();
-    const duckdbEngines = allMock.filter(e => e.engine_type === "duckdb");
-
-    // Databricks engines: convert real warehouse data into EngineCatalogEntry
-    const warehouseStateToRuntime = (state: string): import("../types").EngineRuntimeState => {
-      const s = state.toUpperCase();
-      if (s === "RUNNING") return "running";
-      if (s === "STARTING" || s === "RESUMING") return "starting";
-      if (s === "STOPPED" || s === "STOPPING" || s === "DELETED" || s === "DELETING") return "stopped";
-      return "unknown";
-    };
-    const databricksEngines: EngineCatalogEntry[] = warehouses.map((w, i) => ({
-      id: 1000 + i, // high IDs to avoid collision with DuckDB mock IDs
-      engine_type: "databricks_sql" as const,
-      display_name: w.name,
-      config: { cluster_size: w.cluster_size ?? "", warehouse_id: w.id, warehouse_type: w.warehouse_type ?? "" },
-      is_default: true,
-      enabled: true,
-      runtime_state: warehouseStateToRuntime(w.state),
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    }));
-
-    const e = [...databricksEngines, ...duckdbEngines];
-    setEngines(e);
-    // Default: all enabled engines are checked
-    setEnabledEngineIds(new Set(e.filter(x => x.enabled).map(x => x.id)));
-    // Default single engine: first enabled engine
-    const first = e.find(x => x.enabled);
-    if (first && singleEngineId === null) setSingleEngineId(first.id);
-  }, [singleEngineId, warehouses]);
+    // Fetch engines from real backend API (DuckDB worker health + Databricks warehouses)
+    try {
+      const e = await api.get<EngineCatalogEntry[]>("/api/engines");
+      setEngines(e);
+      // Default: all enabled engines are checked
+      setEnabledEngineIds(new Set(e.filter(x => x.enabled).map(x => x.id)));
+      // Default single engine: first enabled engine
+      const first = e.find(x => x.enabled);
+      if (first && singleEngineId === null) setSingleEngineId(first.id);
+    } catch {
+      // Fallback: keep whatever engines we have
+    }
+  }, [singleEngineId]);
 
   const toggleEngineEnabled = useCallback((id: number) => {
     setEnabledEngineIds(prev => {
@@ -312,10 +293,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [reloadStorageProbes]);
 
-  // Re-build engines list when warehouses change (connect/disconnect)
+  // Re-load engines when workspace connection changes (backend returns both DuckDB + Databricks)
   useEffect(() => {
     reloadEngines();
-  }, [warehouses]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [connectedWorkspace]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Initial data load
   useEffect(() => {

@@ -76,8 +76,8 @@ export interface EngineCatalogEntry {
   is_default: boolean;
   enabled: boolean;
   runtime_state: EngineRuntimeState;
-  created_at: string;
-  updated_at: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface EnginePreference {
@@ -214,6 +214,7 @@ export interface CatalogInfo {
 export interface SchemaInfo {
   name: string;
   catalog_name: string;
+  external_use_schema?: boolean;
 }
 
 // Foreign format identifiers — tables registered via Lakehouse Federation

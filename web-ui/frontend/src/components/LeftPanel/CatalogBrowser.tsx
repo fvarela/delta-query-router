@@ -4,7 +4,7 @@ import { useApp } from "@/contexts/AppContext";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import type { CatalogInfo, SchemaInfo, TableInfo } from "@/types";
 import { FOREIGN_FORMATS } from "@/types";
-import { ChevronRight, ChevronDown, Folder, Table2, Database } from "lucide-react";
+import { ChevronRight, ChevronDown, Folder, Table2, Database, ShieldCheck, ShieldOff } from "lucide-react";
 
 /** Three-color classification for the catalog tree indicator bar.
  *  Green  = DuckDB-readable (Delta / Iceberg with external access flags)
@@ -150,7 +150,12 @@ export const CatalogBrowser: React.FC = () => {
                 <button onClick={() => toggleSchema(cat.name, sch.name)} className="flex items-center gap-1 w-full pl-6 pr-3 py-1 hover:bg-muted text-left text-foreground">
                   {expanded[`${cat.name}.${sch.name}`] ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                   <Folder size={12} className="text-primary" />
-                  <span>{sch.name}</span>
+                  <span className="flex-1">{sch.name}</span>
+                  {sch.external_use_schema != null && (
+                    sch.external_use_schema
+                      ? <ShieldCheck size={12} className="text-status-success shrink-0" title="EXTERNAL_USE_SCHEMA granted" />
+                      : <ShieldOff size={12} className="text-muted-foreground/50 shrink-0" title="No external access grant" />
+                  )}
                 </button>
                 {loadingKeys.has(`${cat.name}.${sch.name}`) && <div className="pl-12 py-1"><LoadingSpinner size={12} /></div>}
                 {expanded[`${cat.name}.${sch.name}`] && tables[`${cat.name}.${sch.name}`]?.map(tbl => (
@@ -199,6 +204,25 @@ export const CatalogBrowser: React.FC = () => {
                   ? <span className="text-status-success">Yes</span>
                   : <span className="text-status-warning">No — {selectedTable.read_support_reason}</span>}
             </p>
+            {(() => {
+              const parts = selectedTable.full_name.split(".");
+              if (parts.length >= 2) {
+                const catalogName = parts[0];
+                const schemaList = schemas[catalogName];
+                const sch = schemaList?.find(s => s.name === parts[1]);
+                if (sch?.external_use_schema != null) {
+                  return (
+                    <p>
+                      <span className="font-medium text-foreground">Schema External Access:</span>{" "}
+                      {sch.external_use_schema
+                        ? <span className="text-status-success flex items-center gap-1 inline-flex"><ShieldCheck size={11} /> Granted</span>
+                        : <span className="text-muted-foreground flex items-center gap-1 inline-flex"><ShieldOff size={11} /> Not granted</span>}
+                    </p>
+                  );
+                }
+              }
+              return null;
+            })()}
           </div>
           <div className="mt-2">
             <p className="font-medium text-foreground mb-1">Columns</p>

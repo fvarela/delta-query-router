@@ -14,6 +14,7 @@ from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.responses import Response
 from pydantic import BaseModel
 from databricks.sdk import WorkspaceClient
+from databricks.sdk.service import catalog as catalog_models
 
 app = FastAPI()
 
@@ -244,6 +245,75 @@ class WarehouseSelection(BaseModel):
     warehouse_id: str
 
 
+@app.get("/api/engines")
+async def list_engines(username: str = Depends(verify_token)):
+    """Return all available execution engines with live status.
+
+    DuckDB workers: derived from actual health probe to duckdb-worker service.
+    Databricks warehouses: from SDK warehouse list (only when connected).
+    """
+    engines = []
+
+    # DuckDB worker — probe health endpoint for live status
+    duckdb_status: str = "stopped"
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{DUCKDB_WORKER_URL}/health")
+            resp.raise_for_status()
+            duckdb_status = "running"
+    except Exception:
+        duckdb_status = "stopped"
+
+    engines.append(
+        {
+            "id": 1,
+            "engine_type": "duckdb",
+            "display_name": "DuckDB Worker",
+            "config": {"memory_gb": 2, "cpu_count": 1},
+            "is_default": True,
+            "enabled": True,
+            "runtime_state": duckdb_status,
+        }
+    )
+
+    # Databricks warehouses (only when workspace is connected)
+    if _workspace_client:
+        try:
+            warehouses = _workspace_client.warehouses.list()
+            for i, wh in enumerate(warehouses):
+                state_str = wh.state.value if wh.state else "UNKNOWN"
+                s = state_str.upper()
+                if s == "RUNNING":
+                    runtime = "running"
+                elif s in ("STARTING", "RESUMING"):
+                    runtime = "starting"
+                elif s in ("STOPPED", "STOPPING", "DELETED", "DELETING"):
+                    runtime = "stopped"
+                else:
+                    runtime = "unknown"
+                engines.append(
+                    {
+                        "id": 1000 + i,
+                        "engine_type": "databricks_sql",
+                        "display_name": wh.name,
+                        "config": {
+                            "cluster_size": wh.cluster_size or "",
+                            "warehouse_id": wh.id,
+                            "warehouse_type": wh.warehouse_type.value
+                            if wh.warehouse_type
+                            else "",
+                        },
+                        "is_default": True,
+                        "enabled": True,
+                        "runtime_state": runtime,
+                    }
+                )
+        except Exception as e:
+            logger.warning("Failed to list warehouses for engines: %s", e)
+
+    return engines
+
+
 class QueryExecutionRequest(BaseModel):
     sql: str
     routing_mode: str = "smart"  # "smart", "duckdb", or "databricks"
@@ -274,10 +344,44 @@ async def list_schemas(catalog: str, username: str = Depends(verify_token)):
     if _workspace_client is None:
         raise HTTPException(status_code=400, detail="No Databricks workspace connected")
     try:
-        schemas = _workspace_client.schemas.list(catalog_name=catalog)
-        return [{"name": s.name, "catalog_name": s.catalog_name} for s in schemas]
+        schemas = list(_workspace_client.schemas.list(catalog_name=catalog))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list schemas: {e}")
+
+    # Check EXTERNAL_USE_SCHEMA grant for each schema
+    result = []
+    for s in schemas:
+        external_use_schema = False
+        full_name = f"{s.catalog_name}.{s.name}"
+        try:
+            grants = _workspace_client.grants.get_effective(
+                securable_type=catalog_models.SecurableType.SCHEMA,
+                full_name=full_name,
+            )
+            if grants.privilege_assignments:
+                for assignment in grants.privilege_assignments:
+                    if assignment.privileges:
+                        for priv in assignment.privileges:
+                            if priv.privilege and (
+                                priv.privilege
+                                == catalog_models.Privilege.EXTERNAL_USE_SCHEMA
+                                or getattr(priv.privilege, "value", None)
+                                == "EXTERNAL_USE_SCHEMA"
+                            ):
+                                external_use_schema = True
+                                break
+                    if external_use_schema:
+                        break
+        except Exception as e:
+            logger.debug("Could not check grants for schema %s: %s", full_name, e)
+        result.append(
+            {
+                "name": s.name,
+                "catalog_name": s.catalog_name,
+                "external_use_schema": external_use_schema,
+            }
+        )
+    return result
 
 
 @app.get("/api/databricks/catalogs/{catalog}/schemas/{schema}/tables")

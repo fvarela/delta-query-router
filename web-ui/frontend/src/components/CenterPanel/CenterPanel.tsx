@@ -186,8 +186,8 @@ export const CenterPanel: React.FC = () => {
         )}
       </div>
 
-      {/* ── Results area (fixed, non-scrollable, max 10 rows) ── */}
-      <div className="shrink-0">
+      {/* ── Results area (bounded, scrollable) ── */}
+      <div className="shrink-0 max-h-[40%] overflow-y-auto">
         {!queryResult && !executing && !queryError && (
           <div className="flex items-center justify-center h-24 text-muted-foreground text-[13px]">
             Run a query to see results here.
@@ -290,7 +290,7 @@ export const CenterPanel: React.FC = () => {
   );
 };
 
-/* ── Results View (metrics + data table, non-scrollable, max 10 rows) ── */
+/* ── Results View (metrics + data table, scrollable) ── */
 
 const ResultsView: React.FC<{ result: QueryExecutionResult }> = ({ result }) => (
   <div className="p-3 space-y-2">
@@ -300,13 +300,13 @@ const ResultsView: React.FC<{ result: QueryExecutionResult }> = ({ result }) => 
       <span className="text-foreground">Scanned: {(result.execution.data_scanned_bytes / 1024 / 1024).toFixed(1)} MB</span>
     </div>
 
-    {/* Results Table (max 10 rows, no scroll) */}
-    <div className="border border-border rounded">
-      <table className="w-full text-[11px]">
+    {/* Results Table (max 10 rows, horizontally scrollable) */}
+    <div className="border border-border rounded overflow-x-auto">
+      <table className="min-w-full text-[11px]">
         <thead>
           <tr className="bg-muted">
             {result.columns.map(c => (
-              <th key={c} className="text-left px-2 py-1 border-b border-border font-mono font-medium text-foreground">{c}</th>
+              <th key={c} className="text-left px-2 py-1 border-b border-border font-mono font-medium text-foreground whitespace-nowrap">{c}</th>
             ))}
           </tr>
         </thead>
@@ -314,7 +314,7 @@ const ResultsView: React.FC<{ result: QueryExecutionResult }> = ({ result }) => 
           {result.rows.slice(0, 10).map((row, i) => (
             <tr key={i} className={i % 2 ? "bg-card" : ""}>
               {row.map((cell, j) => (
-                <td key={j} className="px-2 py-1 border-b border-border font-mono text-foreground">{String(cell)}</td>
+                <td key={j} className="px-2 py-1 border-b border-border font-mono text-foreground whitespace-nowrap">{String(cell)}</td>
               ))}
             </tr>
           ))}
