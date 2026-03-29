@@ -186,8 +186,7 @@ async def health_backends():
     backends = {}
     # Check PostgreSQL
     try:
-        conn = db.fetch_one("SELECT 1")
-        conn.close()
+        db.fetch_one("SELECT 1")
         backends["postgresql"] = {"status": "connected"}
     except Exception as e:
         backends["postgresql"] = {"status": "error", "detail": str(e)}
