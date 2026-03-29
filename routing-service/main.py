@@ -222,6 +222,10 @@ async def list_warehouses(username: str = Depends(verify_token)):
                 "id": wh.id,
                 "name": wh.name,
                 "state": wh.state.value if wh.state else "UNKNOWN",
+                "cluster_size": wh.cluster_size if wh.cluster_size else None,
+                "warehouse_type": wh.warehouse_type.value
+                if wh.warehouse_type
+                else None,
             }
             for wh in warehouses
         ]

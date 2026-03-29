@@ -41,6 +41,8 @@ export interface Warehouse {
   id: string;
   name: string;
   state: string;
+  cluster_size?: string;
+  warehouse_type?: string;
 }
 
 // --- Collections & Queries ---

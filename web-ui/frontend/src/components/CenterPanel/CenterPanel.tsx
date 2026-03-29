@@ -33,6 +33,7 @@ const latencyColor = (ms: number) => {
 export const CenterPanel: React.FC = () => {
   const { editorSql, setEditorSql, runMode, singleEngineId, engines, queryResult, setQueryResult, collectionContext, activeCollectionId, triggerRefreshCollections } = useApp();
   const [executing, setExecuting] = useState(false);
+  const [queryError, setQueryError] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [logFilter, setLogFilter] = useState("all");
   const [modalEntry, setModalEntry] = useState<LogEntry | null>(null);
@@ -75,6 +76,8 @@ export const CenterPanel: React.FC = () => {
     if (!editorSql.trim()) return;
     setExecuting(true);
     setModalEntry(null);
+    setQueryError(null);
+    setQueryResult(null);
     try {
       let routing_mode = "smart";
       if (runMode === "single" && singleEngineId !== null) {
@@ -84,8 +87,18 @@ export const CenterPanel: React.FC = () => {
 
       const result = await api.post<QueryExecutionResult>("/api/query", { sql: editorSql, routing_mode });
       setQueryResult(result);
-    } catch {
-      // ignore — user sees no result update
+    } catch (err) {
+      // Parse backend error response — typically {"detail": "..."} JSON
+      let message = "Query execution failed";
+      if (err instanceof Error && err.message) {
+        try {
+          const parsed = JSON.parse(err.message);
+          message = parsed.detail || parsed.message || err.message;
+        } catch {
+          message = err.message;
+        }
+      }
+      setQueryError(message);
     } finally {
       setExecuting(false);
       loadLogs();
@@ -175,17 +188,25 @@ export const CenterPanel: React.FC = () => {
 
       {/* ── Results area (fixed, non-scrollable, max 10 rows) ── */}
       <div className="shrink-0">
-        {!queryResult && !executing && (
+        {!queryResult && !executing && !queryError && (
           <div className="flex items-center justify-center h-24 text-muted-foreground text-[13px]">
             Run a query to see results here.
           </div>
         )}
-        {executing && !queryResult && (
+        {executing && (
           <div className="flex items-center justify-center h-20">
             <LoadingSpinner size={24} />
           </div>
         )}
-        {queryResult && <ResultsView result={queryResult} />}
+        {queryError && !executing && (
+          <div className="mx-3 my-2 p-3 rounded border border-status-error/30 bg-status-error/10">
+            <div className="flex items-start gap-2">
+              <span className="text-status-error text-[12px] font-semibold shrink-0">Error</span>
+              <p className="text-[12px] text-status-error/90 font-mono break-all">{queryError}</p>
+            </div>
+          </div>
+        )}
+        {queryResult && !executing && <ResultsView result={queryResult} />}
       </div>
 
       {/* ── Query History (scrollable, takes remaining space) ── */}

@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from "react";
-import type { RunMode, PanelMode, QueryExecutionResult, Workspace, DatabricksSettings, EngineCatalogEntry, Model, RoutingSettings, StorageLatencyProbe } from "../types";
+import type { RunMode, PanelMode, QueryExecutionResult, Workspace, Warehouse, DatabricksSettings, EngineCatalogEntry, Model, RoutingSettings, StorageLatencyProbe } from "../types";
 import { mockApi } from "@/mocks/api";
 import { api } from "@/lib/api";
 
@@ -24,6 +24,14 @@ interface AppContextType {
   setWorkspaces: (ws: Workspace[]) => void;
   connectedWorkspace: Workspace | null; // derived — the one with connected === true
   reloadWorkspaces: () => Promise<void>;
+
+  // Warehouses
+  warehouses: Warehouse[];
+  selectedWarehouseId: string | null;
+  warehousesLoading: boolean;
+  reloadWarehouses: () => Promise<void>;
+  selectWarehouse: (id: string | null) => Promise<void>;
+  clearWarehouses: () => void;
 
   // Engines
   engines: EngineCatalogEntry[];
@@ -128,20 +136,93 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setWorkspaces(stored);
   }, []);
 
+  // Warehouses — fetched from real API when a workspace is connected
+  const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
+  const [selectedWarehouseId, setSelectedWarehouseId] = useState<string | null>(null);
+  const [warehousesLoading, setWarehousesLoading] = useState(false);
+
+  const reloadWarehouses = useCallback(async () => {
+    setWarehousesLoading(true);
+    try {
+      const list = await api.get<Warehouse[]>("/api/databricks/warehouses");
+      setWarehouses(list);
+
+      // If backend already has a warehouse_id selected, pre-select it (if it still exists in the list)
+      try {
+        const settings = await api.get<DatabricksSettings>("/api/settings/databricks");
+        if (settings.warehouse_id && list.some(w => w.id === settings.warehouse_id)) {
+          setSelectedWarehouseId(settings.warehouse_id);
+        } else if (settings.warehouse_id && !list.some(w => w.id === settings.warehouse_id)) {
+          // Previously selected warehouse no longer exists — clear selection
+          setSelectedWarehouseId(null);
+        }
+      } catch {
+        // Settings endpoint failed — don't change selection
+      }
+    } catch {
+      // Workspace not connected or API error — clear warehouse list
+      setWarehouses([]);
+    } finally {
+      setWarehousesLoading(false);
+    }
+  }, []);
+
+  const selectWarehouse = useCallback(async (id: string | null) => {
+    if (!id) {
+      setSelectedWarehouseId(null);
+      return;
+    }
+    try {
+      await api.put("/api/settings/warehouse", { warehouse_id: id });
+      setSelectedWarehouseId(id);
+    } catch {
+      // PUT failed — don't update local state
+    }
+  }, []);
+
+  const clearWarehouses = useCallback(() => {
+    setWarehouses([]);
+    setSelectedWarehouseId(null);
+  }, []);
+
   // Engines
   const [engines, setEngines] = useState<EngineCatalogEntry[]>([]);
   const [enabledEngineIds, setEnabledEngineIds] = useState<Set<number>>(new Set());
   const [singleEngineId, setSingleEngineId] = useState<number | null>(null);
 
   const reloadEngines = useCallback(async () => {
-    const e = await mockApi.getEngineCatalog();
+    // DuckDB engines from mock (local workers — will be wired to real API later)
+    const allMock = await mockApi.getEngineCatalog();
+    const duckdbEngines = allMock.filter(e => e.engine_type === "duckdb");
+
+    // Databricks engines: convert real warehouse data into EngineCatalogEntry
+    const warehouseStateToRuntime = (state: string): import("../types").EngineRuntimeState => {
+      const s = state.toUpperCase();
+      if (s === "RUNNING") return "running";
+      if (s === "STARTING" || s === "RESUMING") return "starting";
+      if (s === "STOPPED" || s === "STOPPING" || s === "DELETED" || s === "DELETING") return "stopped";
+      return "unknown";
+    };
+    const databricksEngines: EngineCatalogEntry[] = warehouses.map((w, i) => ({
+      id: 1000 + i, // high IDs to avoid collision with DuckDB mock IDs
+      engine_type: "databricks_sql" as const,
+      display_name: w.name,
+      config: { cluster_size: w.cluster_size ?? "", warehouse_id: w.id, warehouse_type: w.warehouse_type ?? "" },
+      is_default: true,
+      enabled: true,
+      runtime_state: warehouseStateToRuntime(w.state),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }));
+
+    const e = [...databricksEngines, ...duckdbEngines];
     setEngines(e);
     // Default: all enabled engines are checked
     setEnabledEngineIds(new Set(e.filter(x => x.enabled).map(x => x.id)));
     // Default single engine: first enabled engine
     const first = e.find(x => x.enabled);
     if (first && singleEngineId === null) setSingleEngineId(first.id);
-  }, [singleEngineId]);
+  }, [singleEngineId, warehouses]);
 
   const toggleEngineEnabled = useCallback((id: number) => {
     setEnabledEngineIds(prev => {
@@ -224,10 +305,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [reloadStorageProbes]);
 
+  // Re-build engines list when warehouses change (connect/disconnect)
+  useEffect(() => {
+    reloadEngines();
+  }, [warehouses]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Initial data load
   useEffect(() => {
-    reloadWorkspaces();
-    reloadEngines();
+    reloadWorkspaces().then(() => {
+      // Load warehouses after workspaces — needs connected workspace
+      reloadWarehouses();
+    });
     reloadModels();
     reloadStorageProbes();
     api.get<RoutingSettings>("/api/routing/settings").then(setRoutingSettings).catch(() => {});
@@ -240,6 +328,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       refreshCollections, triggerRefreshCollections,
       activeCollectionId, setActiveCollectionId,
       workspaces, setWorkspaces, connectedWorkspace, reloadWorkspaces,
+      warehouses, selectedWarehouseId, warehousesLoading, reloadWarehouses, selectWarehouse, clearWarehouses,
       engines, reloadEngines, enabledEngineIds, toggleEngineEnabled, setAllEnginesEnabled,
       singleEngineId, setSingleEngineId,
       runMode,

@@ -44,12 +44,13 @@ export const EnginesTable: React.FC = () => {
     if (e.engine_type === "duckdb") {
       return `${e.config.memory_gb} GB / ${e.config.cpu_count} CPU`;
     }
-    return e.config.cluster_size ?? "";
+    // Databricks: show cluster_size (e.g. "2X-Small") if available
+    return e.config.cluster_size || "";
   };
 
   const formatType = (e: typeof engines[0]) => {
     if (e.engine_type === "duckdb") return "DuckDB";
-    return "Databricks SQL";
+    return e.display_name || "Databricks SQL";
   };
 
   const modeIndicators = [
@@ -95,7 +96,7 @@ export const EnginesTable: React.FC = () => {
             <thead>
               <tr className="bg-muted">
                 <th className="w-7 px-2 py-1 border-b border-border"></th>
-                <th className="text-left px-2 py-1 border-b border-border">Type</th>
+                <th className="text-left px-2 py-1 border-b border-border">Engine</th>
                 <th className="text-left px-2 py-1 border-b border-border">Specs</th>
               </tr>
             </thead>

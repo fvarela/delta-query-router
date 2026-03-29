@@ -8,6 +8,7 @@
 //   - query logs:    query history via GET /api/logs — CenterPanel.tsx uses api.get() directly
 //   - query detail:  GET /api/query/{id} — CenterPanel.tsx uses api.get() directly
 //   - workspaces:    workspace connect/disconnect via POST /api/settings/databricks — WorkspaceManager.tsx uses api directly
+//   - warehouses:    warehouse list + selection via GET /api/databricks/warehouses + PUT /api/settings/warehouse — AppContext + WorkspaceManager
 //   - routing rules: GET/POST/DELETE /api/routing/rules — wired in Phase 8
 //   - routing settings: GET/PUT /api/routing/settings — wired in Phase 8
 //
@@ -43,7 +44,6 @@ const mkLog = (level: RoutingLogLevel, stage: string, message: string): RoutingL
 });
 
 // ---- Mutable state ----
-let selectedWarehouseId: string | null = null;
 let nextCollectionId = 3;
 let nextQueryId = 100;
 let nextRuleId = 100;
@@ -501,7 +501,7 @@ export const mockApi = {
   // Engine Catalog
   async getEngineCatalog(): Promise<EngineCatalogEntry[]> {
     // TODO: Replace with real API call — GET /api/engines
-    await delay(200);
+    // No delay — DuckDB engines are local data, avoid flash of empty state
     return JSON.parse(JSON.stringify(engineCatalog));
   },
 
