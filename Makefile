@@ -50,4 +50,7 @@ pods:
 # --- Full deploy ---
 apply:
 	kubectl apply -f k8s/
-.PHONY: build-routing build-webui build-duckdb build-all deploy-routing deploy-webui deploy-duckdb deploy-all schema-update logs-routing logs-webui logs-duckdb logs-postgres psql port-forward pods apply
+# --- Test ---
+smoke-test:
+	./scripts/smoke-test.sh
+.PHONY: build-routing build-webui build-duckdb build-all deploy-routing deploy-webui deploy-duckdb deploy-all schema-update logs-routing logs-webui logs-duckdb logs-postgres psql port-forward pods apply smoke-test
