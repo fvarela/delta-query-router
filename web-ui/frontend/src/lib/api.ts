@@ -36,14 +36,25 @@ class ApiClient {
     window.dispatchEvent(new CustomEvent(AUTH_UNAUTHORIZED_EVENT));
   }
 
+  /** Extract a user-friendly message from an error response body. */
+  private async extractErrorMessage(resp: Response): Promise<string> {
+    const text = await resp.text();
+    if (!text) return `HTTP ${resp.status}`;
+    try {
+      const json = JSON.parse(text);
+      return json.detail || json.message || text;
+    } catch {
+      return text;
+    }
+  }
+
   private async handleResponse<T>(resp: Response): Promise<T> {
     if (resp.status === 401) {
       this.handleUnauthorized();
       throw new Error("Unauthorized");
     }
     if (!resp.ok) {
-      const text = await resp.text();
-      throw new Error(text || `HTTP ${resp.status}`);
+      throw new Error(await this.extractErrorMessage(resp));
     }
     return resp.json();
   }
@@ -82,8 +93,7 @@ class ApiClient {
       throw new Error("Unauthorized");
     }
     if (!resp.ok && resp.status !== 204) {
-      const text = await resp.text();
-      throw new Error(text || `HTTP ${resp.status}`);
+      throw new Error(await this.extractErrorMessage(resp));
     }
   }
 }

@@ -7,15 +7,16 @@
 //   - query:         SQL execution via POST /api/query — CenterPanel.tsx uses api.post() directly
 //   - query logs:    query history via GET /api/logs — CenterPanel.tsx uses api.get() directly
 //   - query detail:  GET /api/query/{id} — CenterPanel.tsx uses api.get() directly
+//   - workspaces:    workspace connect/disconnect via POST /api/settings/databricks — WorkspaceManager.tsx uses api directly
+//   - warehouses:    warehouse list + selection via GET /api/databricks/warehouses + PUT /api/settings/warehouse — AppContext + WorkspaceManager
+//   - routing rules: GET/POST/DELETE /api/routing/rules — wired in Phase 8
+//   - routing settings: GET/PUT /api/routing/settings — wired in Phase 8
 //
 // MOCKED (backend endpoints not yet implemented):
-//   - workspaces:    workspace management, PAT tokens, connect/disconnect
 //   - engines:       engine catalog, enable/disable, runtime status
-//   - rules:         system rules, if-then rules CRUD, reset
 //   - models:        ML model listing, activation, training wizard
 //   - collections:   CRUD operations, query management, Add to Collection
 //   - benchmarks:    benchmark lifecycle, results, storage probes
-//   - routing:       routing settings (weights, bonuses)
 //   - probes:        storage latency probes
 //
 // All components import exclusively from this file via `mockApi`.
@@ -24,8 +25,7 @@
 // =============================================================================
 
 import type {
-  Workspace, DatabricksSettings, DatabricksCredentials, DatabricksConnectResponse,
-  Warehouse, Collection, CollectionWithQueries, Query,
+  Collection, CollectionWithQueries, Query,
   EngineCatalogEntry, EnginePreference, RoutingRule, RoutingSettings,
   QueryExecutionResult, BenchmarkSummary, BenchmarkDetail,
   Model, CatalogInfo, SchemaInfo, TableInfo, LogEntry,
@@ -44,25 +44,17 @@ const mkLog = (level: RoutingLogLevel, stage: string, message: string): RoutingL
 });
 
 // ---- Mutable state ----
-let connectedWorkspaceId: string | null = "ws-1";
-let selectedWarehouseId: string | null = null;
 let nextCollectionId = 3;
 let nextQueryId = 100;
 let nextRuleId = 100;
 let nextModelId = 3;
 let nextBenchmarkId = 4;
-let nextWorkspaceId = 3;
 
 let storageLatencyProbes: StorageLatencyProbe[] = [
   { id: 1, storage_location: "s3://delta-router/tpcds/", engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", probe_time_ms: 12.3, bytes_read: 1048576, measured_at: "2026-03-14T09:00:30Z" },
   { id: 2, storage_location: "s3://delta-router/tpcds/", engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", probe_time_ms: 11.8, bytes_read: 1048576, measured_at: "2026-03-14T09:00:30Z" },
   { id: 3, storage_location: "s3://delta-router/analytics/", engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", probe_time_ms: 14.1, bytes_read: 1048576, measured_at: "2026-03-15T14:30:25Z" },
   { id: 4, storage_location: "s3://delta-router/tpcds/", engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", probe_time_ms: 10.5, bytes_read: 1048576, measured_at: "2026-03-16T11:00:28Z" },
-];
-
-let workspaces: Workspace[] = [
-  { id: "ws-1", name: "Production", url: "https://adb-1234567890.12.azuredatabricks.net", token: "dapi_mock_token_12345", connected: true },
-  { id: "ws-2", name: "Development", url: "https://adb-9876543210.34.azuredatabricks.net", token: null, connected: false },
 ];
 
 let engineCatalog: EngineCatalogEntry[] = [
@@ -81,7 +73,7 @@ let routingRules: RoutingRule[] = [
   { id: 3, priority: 10, condition_type: "table_name", condition_value: "store_sales", target_engine: "duckdb", is_system: false, enabled: true },
 ];
 
-let routingSettings: RoutingSettings = { latency_weight: 0.5, cost_weight: 0.5, running_bonus_duckdb: 0.05, running_bonus_databricks: 0.15 };
+let routingSettings: RoutingSettings = { fit_weight: 0.5, cost_weight: 0.5, running_bonus_duckdb: 0.05, running_bonus_databricks: 0.15 };
 
 let models: Model[] = [
   {
@@ -219,60 +211,6 @@ const tableData: Record<string, TableInfo[]> = {
 
 // ---- Mock API ----
 export const mockApi = {
-  // Workspaces
-  async getWorkspaces(): Promise<Workspace[]> {
-    // TODO: Replace with real API call — GET /api/workspaces
-    await delay(200);
-    return JSON.parse(JSON.stringify(workspaces));
-  },
-
-  async addWorkspace(name: string, url: string): Promise<Workspace> {
-    // TODO: Replace with real API call — POST /api/workspaces
-    await delay(200);
-    const ws: Workspace = { id: `ws-${nextWorkspaceId++}`, name, url, token: null, connected: false };
-    workspaces.push(ws);
-    return { ...ws };
-  },
-
-  async deleteWorkspace(id: string): Promise<void> {
-    // TODO: Replace with real API call — DELETE /api/workspaces/:id
-    await delay(200);
-    if (connectedWorkspaceId === id) connectedWorkspaceId = null;
-    workspaces = workspaces.filter(w => w.id !== id);
-  },
-
-  async setWorkspaceToken(id: string, token: string): Promise<Workspace> {
-    // TODO: Replace with real API call — PUT /api/workspaces/:id/token
-    await delay(200);
-    const ws = workspaces.find(w => w.id === id);
-    if (!ws) throw new Error("Workspace not found");
-    ws.token = token;
-    return { ...ws };
-  },
-
-  async connectWorkspace(id: string): Promise<Workspace> {
-    // TODO: Replace with real API call — POST /api/workspaces/:id/connect
-    await delay(600);
-    // Disconnect any existing
-    workspaces.forEach(w => w.connected = false);
-    const ws = workspaces.find(w => w.id === id);
-    if (!ws) throw new Error("Workspace not found");
-    if (!ws.token) throw new Error("No PAT token configured");
-    ws.connected = true;
-    connectedWorkspaceId = id;
-    return { ...ws };
-  },
-
-  async disconnectWorkspace(id: string): Promise<Workspace> {
-    // TODO: Replace with real API call — POST /api/workspaces/:id/disconnect
-    await delay(200);
-    const ws = workspaces.find(w => w.id === id);
-    if (!ws) throw new Error("Workspace not found");
-    ws.connected = false;
-    if (connectedWorkspaceId === id) connectedWorkspaceId = null;
-    return { ...ws };
-  },
-
   // Catalog browser
   async getCatalogs(): Promise<CatalogInfo[]> {
     // TODO: Replace with real API call — GET /api/catalog/catalogs
@@ -563,7 +501,7 @@ export const mockApi = {
   // Engine Catalog
   async getEngineCatalog(): Promise<EngineCatalogEntry[]> {
     // TODO: Replace with real API call — GET /api/engines
-    await delay(200);
+    // No delay — DuckDB engines are local data, avoid flash of empty state
     return JSON.parse(JSON.stringify(engineCatalog));
   },
 

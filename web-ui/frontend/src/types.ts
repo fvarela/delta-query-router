@@ -13,11 +13,12 @@ export interface Workspace {
   id: string;
   name: string;
   url: string;
-  token: string | null; // PAT — null means not yet entered
+  token: string | null; // PAT — transient only, never persisted to localStorage
   connected: boolean;
+  username: string | null; // Databricks username, populated on connect
 }
 
-// --- Databricks settings (kept for mock API compat) ---
+// --- Databricks settings (from GET /api/settings/databricks) ---
 export interface DatabricksSettings {
   configured: boolean;
   host?: string;
@@ -40,6 +41,8 @@ export interface Warehouse {
   id: string;
   name: string;
   state: string;
+  cluster_size?: string;
+  warehouse_type?: string;
 }
 
 // --- Collections & Queries ---
@@ -73,8 +76,9 @@ export interface EngineCatalogEntry {
   is_default: boolean;
   enabled: boolean;
   runtime_state: EngineRuntimeState;
-  created_at: string;
-  updated_at: string;
+  scalable?: boolean;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface EnginePreference {
@@ -97,7 +101,7 @@ export interface RoutingRule {
 
 // --- Routing settings ---
 export interface RoutingSettings {
-  latency_weight: number;
+  fit_weight: number;
   cost_weight: number;
   running_bonus_duckdb: number;
   running_bonus_databricks: number;
@@ -211,6 +215,7 @@ export interface CatalogInfo {
 export interface SchemaInfo {
   name: string;
   catalog_name: string;
+  external_use_schema?: boolean;
 }
 
 // Foreign format identifiers — tables registered via Lakehouse Federation

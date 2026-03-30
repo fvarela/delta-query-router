@@ -4,7 +4,7 @@ import { useApp } from "@/contexts/AppContext";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import type { CatalogInfo, SchemaInfo, TableInfo } from "@/types";
 import { FOREIGN_FORMATS } from "@/types";
-import { ChevronRight, ChevronDown, Folder, Table2, Database } from "lucide-react";
+import { ChevronRight, ChevronDown, Folder, Table2, Database, ShieldCheck, ShieldOff } from "lucide-react";
 
 /** Three-color classification for the catalog tree indicator bar.
  *  Green  = DuckDB-readable (Delta / Iceberg with external access flags)
@@ -42,6 +42,7 @@ export const CatalogBrowser: React.FC = () => {
   const [loadingKeys, setLoadingKeys] = useState<Set<string>>(new Set());
   const [selectedTable, setSelectedTable] = useState<TableInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [treeErrors, setTreeErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!connectedWorkspace) {
@@ -78,8 +79,10 @@ export const CatalogBrowser: React.FC = () => {
       try {
         const s = await api.get<SchemaInfo[]>(`/api/databricks/catalogs/${catalog}/schemas`);
         setSchemas(prev => ({ ...prev, [catalog]: s }));
-      } catch {
-        // silently fail — user sees empty expansion
+        setTreeErrors(prev => { const n = { ...prev }; delete n[key]; return n; });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Failed to load schemas";
+        setTreeErrors(prev => ({ ...prev, [key]: msg }));
       }
       setLoadingKeys(prev => { const n = new Set(prev); n.delete(key); return n; });
     }
@@ -97,8 +100,10 @@ export const CatalogBrowser: React.FC = () => {
       try {
         const t = await api.get<TableInfo[]>(`/api/databricks/catalogs/${catalog}/schemas/${schema}/tables`);
         setTables(prev => ({ ...prev, [key]: t }));
-      } catch {
-        // silently fail — user sees empty expansion
+        setTreeErrors(prev => { const n = { ...prev }; delete n[key]; return n; });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Failed to load tables";
+        setTreeErrors(prev => ({ ...prev, [key]: msg }));
       }
       setLoadingKeys(prev => { const n = new Set(prev); n.delete(key); return n; });
     }
@@ -145,14 +150,21 @@ export const CatalogBrowser: React.FC = () => {
               <span>{cat.name}</span>
             </button>
             {loadingKeys.has(cat.name) && <div className="pl-8 py-1"><LoadingSpinner size={12} /></div>}
+            {treeErrors[cat.name] && <div className="pl-8 py-1 text-red-400 text-[11px]">{treeErrors[cat.name]}</div>}
             {expanded[cat.name] && schemas[cat.name]?.map(sch => (
               <div key={sch.name}>
                 <button onClick={() => toggleSchema(cat.name, sch.name)} className="flex items-center gap-1 w-full pl-6 pr-3 py-1 hover:bg-muted text-left text-foreground">
                   {expanded[`${cat.name}.${sch.name}`] ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                   <Folder size={12} className="text-primary" />
-                  <span>{sch.name}</span>
+                  <span className="flex-1">{sch.name}</span>
+                  {sch.external_use_schema != null && (
+                    sch.external_use_schema
+                      ? <ShieldCheck size={12} className="text-status-success shrink-0" title="EXTERNAL_USE_SCHEMA granted" />
+                      : <ShieldOff size={12} className="text-muted-foreground/50 shrink-0" title="No external access grant" />
+                  )}
                 </button>
                 {loadingKeys.has(`${cat.name}.${sch.name}`) && <div className="pl-12 py-1"><LoadingSpinner size={12} /></div>}
+                {treeErrors[`${cat.name}.${sch.name}`] && <div className="pl-12 py-1 text-red-400 text-[11px]">{treeErrors[`${cat.name}.${sch.name}`]}</div>}
                 {expanded[`${cat.name}.${sch.name}`] && tables[`${cat.name}.${sch.name}`]?.map(tbl => (
                   <button
                     key={tbl.name}
@@ -199,6 +211,25 @@ export const CatalogBrowser: React.FC = () => {
                   ? <span className="text-status-success">Yes</span>
                   : <span className="text-status-warning">No — {selectedTable.read_support_reason}</span>}
             </p>
+            {(() => {
+              const parts = selectedTable.full_name.split(".");
+              if (parts.length >= 2) {
+                const catalogName = parts[0];
+                const schemaList = schemas[catalogName];
+                const sch = schemaList?.find(s => s.name === parts[1]);
+                if (sch?.external_use_schema != null) {
+                  return (
+                    <p>
+                      <span className="font-medium text-foreground">Schema External Access:</span>{" "}
+                      {sch.external_use_schema
+                        ? <span className="text-status-success flex items-center gap-1 inline-flex"><ShieldCheck size={11} /> Granted</span>
+                        : <span className="text-muted-foreground flex items-center gap-1 inline-flex"><ShieldOff size={11} /> Not granted</span>}
+                    </p>
+                  );
+                }
+              }
+              return null;
+            })()}
           </div>
           <div className="mt-2">
             <p className="font-medium text-foreground mb-1">Columns</p>

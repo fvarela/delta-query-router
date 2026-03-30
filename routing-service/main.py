@@ -14,8 +14,89 @@ from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.responses import Response
 from pydantic import BaseModel
 from databricks.sdk import WorkspaceClient
+from databricks.sdk.errors import (
+    DatabricksError,
+    Unauthenticated,
+    PermissionDenied,
+    NotFound,
+    BadRequest,
+    InvalidState,
+    TooManyRequests,
+    TemporarilyUnavailable,
+    DeadlineExceeded,
+    InternalError,
+    OperationFailed,
+    OperationTimeout,
+)
+import requests as _requests  # for catching SDK network errors
 
 app = FastAPI()
+
+
+def _databricks_error_to_http(e: Exception) -> HTTPException:
+    """Translate Databricks SDK and network exceptions into user-friendly HTTPExceptions.
+
+    Order matters: subclasses must be checked before their parents
+    (e.g. InvalidState before BadRequest, ResourceDoesNotExist before NotFound).
+    """
+    # --- Auth errors ---
+    if isinstance(e, Unauthenticated):
+        return HTTPException(
+            status_code=401, detail="Invalid or expired Databricks token."
+        )
+    if isinstance(e, PermissionDenied):
+        return HTTPException(
+            status_code=403, detail=f"Insufficient Databricks permissions: {e}"
+        )
+    # --- Client errors ---
+    if isinstance(e, NotFound):
+        return HTTPException(
+            status_code=404, detail=f"Databricks resource not found: {e}"
+        )
+    if isinstance(e, InvalidState):
+        return HTTPException(
+            status_code=409, detail=f"Databricks resource in invalid state: {e}"
+        )
+    if isinstance(e, TooManyRequests):
+        return HTTPException(
+            status_code=429, detail="Databricks rate limit exceeded. Retry in a moment."
+        )
+    if isinstance(e, BadRequest):
+        return HTTPException(status_code=400, detail=f"Databricks request error: {e}")
+    # --- Server / transient errors ---
+    if isinstance(e, TemporarilyUnavailable):
+        return HTTPException(
+            status_code=503, detail="Databricks service temporarily unavailable."
+        )
+    if isinstance(e, DeadlineExceeded):
+        return HTTPException(status_code=504, detail="Databricks request timed out.")
+    if isinstance(e, InternalError):
+        return HTTPException(status_code=502, detail=f"Databricks internal error: {e}")
+    # --- Catch-all DatabricksError ---
+    if isinstance(e, DatabricksError):
+        return HTTPException(status_code=502, detail=f"Databricks error: {e}")
+    # --- SDK operation errors (not DatabricksError subclasses) ---
+    if isinstance(e, OperationTimeout):
+        return HTTPException(status_code=504, detail="Databricks operation timed out.")
+    if isinstance(e, OperationFailed):
+        return HTTPException(
+            status_code=502, detail=f"Databricks operation failed: {e}"
+        )
+    # --- Network errors (survive SDK retry logic) ---
+    if isinstance(e, _requests.ConnectionError):
+        return HTTPException(
+            status_code=502,
+            detail="Cannot reach Databricks. Check the workspace URL and network connectivity.",
+        )
+    if isinstance(e, _requests.Timeout):
+        return HTTPException(
+            status_code=504, detail="Connection to Databricks timed out."
+        )
+    # --- Unknown ---
+    return HTTPException(
+        status_code=500, detail=f"Unexpected error: {type(e).__name__}: {e}"
+    )
+
 
 # Backend connection config from environment
 POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "localhost")
@@ -23,15 +104,45 @@ POSTGRES_PORT = os.environ.get("POSTGRES_PORT", "5432")
 POSTGRES_DB = os.environ.get("POSTGRES_DB", "deltarouter")
 POSTGRES_USER = os.environ.get("POSTGRES_USER", "delta")
 POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "")
-DUCKDB_WORKER_URL = os.environ.get("DUCKDB_WORKER_URL", "http://localhost:8002")
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
+
+# Multi-tier DuckDB worker definitions
+# Stable IDs: small=1, medium=2, large=3
+DUCKDB_TIERS = [
+    {
+        "id": 1,
+        "name": "DuckDB Small",
+        "deployment": "duckdb-worker-small",
+        "url": "http://duckdb-worker-small:8002",
+        "memory_gb": 2,
+        "cpu_count": 1,
+    },
+    {
+        "id": 2,
+        "name": "DuckDB Medium",
+        "deployment": "duckdb-worker-medium",
+        "url": "http://duckdb-worker-medium:8002",
+        "memory_gb": 8,
+        "cpu_count": 2,
+    },
+    {
+        "id": 3,
+        "name": "DuckDB Large",
+        "deployment": "duckdb-worker-large",
+        "url": "http://duckdb-worker-large:8002",
+        "memory_gb": 16,
+        "cpu_count": 4,
+    },
+]
+DUCKDB_TIER_BY_ID = {t["id"]: t for t in DUCKDB_TIERS}
 
 # In-memory token store: {token_hex: username}
 _active_tokens: dict[str, str] = {}
 
 _workspace_client: WorkspaceClient | None = None
 _databricks_host: str | None = None
+_databricks_token: str | None = None
 _databricks_username: str | None = None
 _warehouse_id: str | None = None
 
@@ -42,7 +153,12 @@ logger = logging.getLogger("routing-service")
 
 @app.on_event("startup")
 async def load_databricks_credentials():
-    global _workspace_client, _databricks_host, _databricks_username, _warehouse_id
+    global \
+        _workspace_client, \
+        _databricks_host, \
+        _databricks_token, \
+        _databricks_username, \
+        _warehouse_id
     host = os.environ.get("DATABRICKS_HOST")
     token = os.environ.get("DATABRICKS_TOKEN")
     if not host or not token:
@@ -55,6 +171,7 @@ async def load_databricks_credentials():
         me = wc.current_user.me()
         _workspace_client = wc
         _databricks_host = host
+        _databricks_token = token
         _databricks_username = me.user_name
         _warehouse_id = os.environ.get("SQL_WAREHOUSE_ID")
         logger.info(f"Databricks credentials loaded from environment: {me.user_name}")
@@ -85,14 +202,23 @@ class DatabricksCredentials(BaseModel):
     client_secret: str | None = None
 
 
-def _save_to_k8s_secret(creds: DatabricksCredentials):
+def _get_k8s_core_api():
+    """Return a K8s CoreV1Api client, or None if not running in-cluster."""
     from kubernetes import client as k8s_client, config as k8s_config
 
     try:
         k8s_config.load_incluster_config()
     except Exception:
-        return  # Not running in cluster, skip sliently
-    v1 = k8s_client.CoreV1Api()
+        return None
+    return k8s_client.CoreV1Api()
+
+
+def _save_to_k8s_secret(creds: DatabricksCredentials):
+    from kubernetes import client as k8s_client
+
+    v1 = _get_k8s_core_api()
+    if v1 is None:
+        return  # Not running in cluster, skip silently
     secret_data = {"DATABRICKS_HOST": creds.host}
     if creds.token:
         secret_data["DATABRICKS_TOKEN"] = creds.token
@@ -100,6 +226,9 @@ def _save_to_k8s_secret(creds: DatabricksCredentials):
         secret_data["DATABRICKS_CLIENT_ID"] = creds.client_id
     if creds.client_secret:
         secret_data["DATABRICKS_CLIENT_SECRET"] = creds.client_secret
+    # Preserve warehouse_id so replace doesn't wipe it
+    if _warehouse_id:
+        secret_data["SQL_WAREHOUSE_ID"] = _warehouse_id
     secret = k8s_client.V1Secret(
         metadata=k8s_client.V1ObjectMeta(name="databricks-credentials"),
         string_data=secret_data,
@@ -109,6 +238,30 @@ def _save_to_k8s_secret(creds: DatabricksCredentials):
         v1.replace_namespaced_secret("databricks-credentials", "default", secret)
     except k8s_client.exceptions.ApiException as e:
         if e.status == 404:
+            v1.create_namespaced_secret("default", secret)
+        else:
+            raise
+
+
+def _patch_k8s_secret(key: str, value: str):
+    """Patch a single key into the databricks-credentials K8s Secret."""
+    import base64
+    from kubernetes import client as k8s_client
+
+    v1 = _get_k8s_core_api()
+    if v1 is None:
+        return  # Not running in cluster, skip silently
+    encoded = base64.b64encode(value.encode()).decode()
+    body = {"data": {key: encoded}}
+    try:
+        v1.patch_namespaced_secret("databricks-credentials", "default", body)
+    except k8s_client.exceptions.ApiException as e:
+        if e.status == 404:
+            # Secret doesn't exist yet — create it with just this key
+            secret = k8s_client.V1Secret(
+                metadata=k8s_client.V1ObjectMeta(name="databricks-credentials"),
+                string_data={key: value},
+            )
             v1.create_namespaced_secret("default", secret)
         else:
             raise
@@ -137,7 +290,7 @@ async def verify_token(authorization: str = Header(None)) -> str:
 async def save_databricks_settings(
     creds: DatabricksCredentials, username: str = Depends(verify_token)
 ):
-    global _workspace_client, _databricks_host, _databricks_username
+    global _workspace_client, _databricks_host, _databricks_token, _databricks_username
     try:
         if creds.token:
             wc = WorkspaceClient(host=creds.host, token=creds.token)
@@ -156,9 +309,10 @@ async def save_databricks_settings(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to connect: {e}")
+        raise _databricks_error_to_http(e)
     _workspace_client = wc
     _databricks_host = creds.host
+    _databricks_token = creds.token  # may be None for client_id/secret auth
     _databricks_username = me.user_name
     _save_to_k8s_secret(creds)
     return {"status": "connected", "host": creds.host, "username": me.user_name}
@@ -186,20 +340,20 @@ async def health_backends():
     backends = {}
     # Check PostgreSQL
     try:
-        conn = db.fetch_one("SELECT 1")
-        conn.close()
+        db.fetch_one("SELECT 1")
         backends["postgresql"] = {"status": "connected"}
     except Exception as e:
         backends["postgresql"] = {"status": "error", "detail": str(e)}
 
-    # Check DuckDB Worker
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.get(f"{DUCKDB_WORKER_URL}/health")
-            resp.raise_for_status()
-            backends["duckdb_worker"] = {"status": "connected"}
-    except Exception as e:
-        backends["duckdb_worker"] = {"status": "error", "detail": str(e)}
+    # Check DuckDB Workers (all tiers)
+    async with httpx.AsyncClient(timeout=3.0) as client:
+        for tier in DUCKDB_TIERS:
+            try:
+                resp = await client.get(f"{tier['url']}/health")
+                resp.raise_for_status()
+                backends[tier["deployment"]] = {"status": "connected"}
+            except Exception as e:
+                backends[tier["deployment"]] = {"status": "error", "detail": str(e)}
     if _workspace_client is None:
         backends["databricks"] = {"status": "not_configured"}
     else:
@@ -222,20 +376,140 @@ async def list_warehouses(username: str = Depends(verify_token)):
                 "id": wh.id,
                 "name": wh.name,
                 "state": wh.state.value if wh.state else "UNKNOWN",
+                "cluster_size": wh.cluster_size if wh.cluster_size else None,
+                "warehouse_type": wh.warehouse_type.value
+                if wh.warehouse_type
+                else None,
             }
             for wh in warehouses
         ]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list warehouses: {e}")
+        raise _databricks_error_to_http(e)
 
 
 class WarehouseSelection(BaseModel):
     warehouse_id: str
 
 
+@app.get("/api/engines")
+async def list_engines(username: str = Depends(verify_token)):
+    """Return all available execution engines with live status.
+
+    DuckDB workers: probe each tier's health endpoint for live status.
+    Databricks warehouses: from SDK warehouse list (only when connected).
+    """
+    engines = []
+
+    # DuckDB workers — probe each tier's health endpoint
+    async with httpx.AsyncClient(timeout=3.0) as client:
+        for tier in DUCKDB_TIERS:
+            status: str = "stopped"
+            try:
+                resp = await client.get(f"{tier['url']}/health")
+                resp.raise_for_status()
+                status = "running"
+            except Exception:
+                status = "stopped"
+
+            engines.append(
+                {
+                    "id": tier["id"],
+                    "engine_type": "duckdb",
+                    "display_name": tier["name"],
+                    "config": {
+                        "memory_gb": tier["memory_gb"],
+                        "cpu_count": tier["cpu_count"],
+                    },
+                    "is_default": tier["id"] == 1,
+                    "enabled": True,
+                    "runtime_state": status,
+                    "scalable": True,
+                }
+            )
+
+    # Databricks warehouses (only when workspace is connected)
+    if _workspace_client:
+        try:
+            warehouses = _workspace_client.warehouses.list()
+            for i, wh in enumerate(warehouses):
+                state_str = wh.state.value if wh.state else "UNKNOWN"
+                s = state_str.upper()
+                if s == "RUNNING":
+                    runtime = "running"
+                elif s in ("STARTING", "RESUMING"):
+                    runtime = "starting"
+                elif s in ("STOPPED", "STOPPING", "DELETED", "DELETING"):
+                    runtime = "stopped"
+                else:
+                    runtime = "unknown"
+                engines.append(
+                    {
+                        "id": 1000 + i,
+                        "engine_type": "databricks_sql",
+                        "display_name": wh.name,
+                        "config": {
+                            "cluster_size": wh.cluster_size or "",
+                            "warehouse_id": wh.id,
+                            "warehouse_type": wh.warehouse_type.value
+                            if wh.warehouse_type
+                            else "",
+                        },
+                        "is_default": True,
+                        "enabled": True,
+                        "runtime_state": runtime,
+                    }
+                )
+        except Exception as e:
+            logger.warning("Failed to list warehouses for engines: %s", e)
+
+    return engines
+
+
 class QueryExecutionRequest(BaseModel):
     sql: str
     routing_mode: str = "smart"  # "smart", "duckdb", or "databricks"
+
+
+class ScaleRequest(BaseModel):
+    replicas: int  # 0 = stop, 1 = start
+
+
+@app.post("/api/engines/{engine_id}/scale")
+async def scale_engine(
+    engine_id: int, body: ScaleRequest, username: str = Depends(verify_token)
+):
+    """Scale a DuckDB worker tier up (replicas=1) or down (replicas=0)."""
+    tier = DUCKDB_TIER_BY_ID.get(engine_id)
+    if not tier:
+        raise HTTPException(status_code=404, detail="Engine not found")
+    if body.replicas not in (0, 1):
+        raise HTTPException(status_code=400, detail="replicas must be 0 or 1")
+
+    from kubernetes import client as k8s_client, config as k8s_config
+
+    try:
+        k8s_config.load_incluster_config()
+    except Exception:
+        raise HTTPException(
+            status_code=500, detail="Not running in a Kubernetes cluster"
+        )
+
+    apps_v1 = k8s_client.AppsV1Api()
+    deployment_name = tier["deployment"]
+    try:
+        apps_v1.patch_namespaced_deployment_scale(
+            name=deployment_name,
+            namespace="default",
+            body={"spec": {"replicas": body.replicas}},
+        )
+    except k8s_client.exceptions.ApiException as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to scale {deployment_name}: {e.reason}",
+        )
+
+    action = "started" if body.replicas == 1 else "stopped"
+    return {"engine_id": engine_id, "deployment": deployment_name, "status": action}
 
 
 @app.put("/api/settings/warehouse")
@@ -244,6 +518,11 @@ async def save_warehouse(
 ):
     global _warehouse_id
     _warehouse_id = body.warehouse_id
+    try:
+        _patch_k8s_secret("SQL_WAREHOUSE_ID", body.warehouse_id)
+        logger.info(f"Warehouse ID persisted to K8s Secret: {body.warehouse_id}")
+    except Exception as e:
+        logger.warning(f"Failed to persist warehouse ID to K8s Secret: {e}")
     return {"warehouse_id": body.warehouse_id, "status": "saved"}
 
 
@@ -255,7 +534,7 @@ async def list_catalogs(username: str = Depends(verify_token)):
         catalogs = _workspace_client.catalogs.list()
         return [{"name": c.name} for c in catalogs]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list catalogs: {e}")
+        raise _databricks_error_to_http(e)
 
 
 @app.get("/api/databricks/catalogs/{catalog}/schemas")
@@ -263,10 +542,37 @@ async def list_schemas(catalog: str, username: str = Depends(verify_token)):
     if _workspace_client is None:
         raise HTTPException(status_code=400, detail="No Databricks workspace connected")
     try:
-        schemas = _workspace_client.schemas.list(catalog_name=catalog)
-        return [{"name": s.name, "catalog_name": s.catalog_name} for s in schemas]
+        schemas = list(_workspace_client.schemas.list(catalog_name=catalog))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list schemas: {e}")
+        raise _databricks_error_to_http(e)
+
+    # Check EXTERNAL_USE_SCHEMA grant for each schema
+    # NOTE: SDK grants.get(securable_type=SecurableType.SCHEMA) sends uppercase
+    # "SCHEMA" in the URL path, but the API requires lowercase "schema".
+    # Use raw api_client.do() as a workaround.
+    result = []
+    for s in schemas:
+        external_use_schema = False
+        full_name = f"{s.catalog_name}.{s.name}"
+        try:
+            resp = _workspace_client.api_client.do(
+                "GET",
+                f"/api/2.1/unity-catalog/permissions/schema/{full_name}",
+            )
+            for assignment in resp.get("privilege_assignments", []):
+                if "EXTERNAL_USE_SCHEMA" in (assignment.get("privileges") or []):
+                    external_use_schema = True
+                    break
+        except Exception as e:
+            logger.debug("Could not check grants for schema %s: %s", full_name, e)
+        result.append(
+            {
+                "name": s.name,
+                "catalog_name": s.catalog_name,
+                "external_use_schema": external_use_schema,
+            }
+        )
+    return result
 
 
 @app.get("/api/databricks/catalogs/{catalog}/schemas/{schema}/tables")
@@ -353,8 +659,10 @@ async def list_tables(catalog: str, schema: str, username: str = Depends(verify_
                     "Failed to cache metadata for %s", entry.full_name, exc_info=True
                 )
         return result
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list tables: {e}")
+        raise _databricks_error_to_http(e)
 
 
 # ---------------------------------------------------------------------------
@@ -364,16 +672,53 @@ async def list_tables(catalog: str, schema: str, username: str = Depends(verify_
 MAX_RESULT_ROWS = 1000
 
 
-async def _execute_on_duckdb(sql: str) -> dict:
-    """Execute SQL on the DuckDB worker via HTTP."""
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(f"{DUCKDB_WORKER_URL}/query", json={"sql": sql})
+async def _execute_on_duckdb(sql: str, tables: list[str] | None = None) -> dict:
+    """Execute SQL on the first running DuckDB worker via HTTP.
+
+    Probes all tiers in order (small → medium → large) and uses the first
+    that responds to a health check.  If tables are provided and Databricks
+    credentials are available, passes them to the worker for credential vending.
+    """
+    # Find the first running DuckDB worker
+    worker_url: str | None = None
+    async with httpx.AsyncClient(timeout=3.0) as probe_client:
+        for tier in DUCKDB_TIERS:
+            try:
+                resp = await probe_client.get(f"{tier['url']}/health")
+                resp.raise_for_status()
+                worker_url = tier["url"]
+                break
+            except Exception:
+                continue
+
+    if worker_url is None:
+        raise HTTPException(
+            status_code=503,
+            detail="No DuckDB worker is currently running. Start one from the Engines panel.",
+        )
+
+    payload: dict = {"sql": sql}
+
+    # Pass Databricks credentials + table names for credential vending
+    if tables and _databricks_host and _databricks_token:
+        payload["tables"] = tables
+        payload["databricks_host"] = _databricks_host
+        payload["databricks_token"] = _databricks_token
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        resp = await client.post(f"{worker_url}/query", json=payload)
         if resp.status_code != 200:
             detail = (
                 resp.json().get("detail", resp.text)
                 if resp.headers.get("content-type", "").startswith("application/json")
                 else resp.text
             )
+            # Enhance cryptic DuckDB errors with actionable guidance
+            if "does not exist" in detail and "Catalog" in detail:
+                detail = (
+                    f"{detail} — Credential vending may have failed to load "
+                    "the table. Check DuckDB worker logs for details."
+                )
             raise HTTPException(
                 status_code=502, detail=f"DuckDB worker error: {detail}"
             )
@@ -395,11 +740,14 @@ def _execute_on_databricks(sql: str) -> dict:
 
     from databricks.sdk.service.sql import StatementState
 
-    response = _workspace_client.statement_execution.execute_statement(
-        statement=sql,
-        warehouse_id=_warehouse_id,
-        wait_timeout="30s",
-    )
+    try:
+        response = _workspace_client.statement_execution.execute_statement(
+            statement=sql,
+            warehouse_id=_warehouse_id,
+            wait_timeout="30s",
+        )
+    except Exception as e:
+        raise _databricks_error_to_http(e)
 
     state = response.status.state if response.status else None
     if state == StatementState.FAILED:
@@ -466,29 +814,88 @@ async def execute_query(
         )
 
     # 3. Fetch table metadata
-    table_metadata = catalog_service.get_tables_metadata(
-        analysis.tables, _workspace_client
+    try:
+        table_metadata = catalog_service.get_tables_metadata(
+            analysis.tables, _workspace_client
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _databricks_error_to_http(exc)
+
+    # 4. Load routing settings and probe engine states for scoring
+    try:
+        settings_row = db.fetch_one("SELECT * FROM routing_settings WHERE id = 1")
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to load routing settings: {exc}"
+        )
+    r_settings = (
+        routing_engine.RoutingSettings(
+            fit_weight=settings_row["fit_weight"],
+            cost_weight=settings_row["cost_weight"],
+            running_bonus_duckdb=settings_row["running_bonus_duckdb"],
+            running_bonus_databricks=settings_row["running_bonus_databricks"],
+        )
+        if settings_row
+        else routing_engine.RoutingSettings()
     )
 
-    # 4. Route
+    # Probe DuckDB: any tier responding to health?
+    duckdb_running = False
+    async with httpx.AsyncClient(timeout=2.0) as probe:
+        for tier in DUCKDB_TIERS:
+            try:
+                resp = await probe.get(f"{tier['url']}/health")
+                resp.raise_for_status()
+                duckdb_running = True
+                break
+            except Exception:
+                continue
+
+    # Databricks warehouse state: check if selected warehouse is RUNNING
+    databricks_running = False
+    if _workspace_client and _warehouse_id:
+        try:
+            wh = _workspace_client.warehouses.get(_warehouse_id)
+            databricks_running = (
+                wh.state is not None and wh.state.value.upper() == "RUNNING"
+            )
+        except Exception:
+            pass  # Can't determine state, assume not running
+
+    e_states = routing_engine.EngineStates(
+        duckdb_running=duckdb_running,
+        databricks_running=databricks_running,
+    )
+
+    # 5. Route
     try:
         routing_result = routing_engine.route_query(
-            analysis, table_metadata, body.routing_mode
+            analysis,
+            table_metadata,
+            body.routing_mode,
+            settings=r_settings,
+            engine_states=e_states,
         )
         decision = routing_result.decision
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # 5. Execute on chosen engine
+    # 6. Execute on chosen engine
     wall_start = time.monotonic()
+    exec_error: Exception | None = None
+    result = None
     try:
         if decision.engine == "duckdb":
-            result = await _execute_on_duckdb(body.sql)
+            result = await _execute_on_duckdb(body.sql, analysis.tables)
         else:
             result = _execute_on_databricks(body.sql)
-    except HTTPException:
-        raise
     except Exception as e:
+        exec_error = e
+    wall_ms = round((time.monotonic() - wall_start) * 1000, 2)
+
+    if exec_error is not None:
         # Serialize routing events collected so far for the error log
         error_events = [
             {
@@ -507,13 +914,15 @@ async def execute_query(
             engine=decision.engine,
             reason=decision.reason,
             complexity_score=decision.complexity_score,
-            execution_time_ms=None,
+            execution_time_ms=wall_ms,
             routing_log_events=error_events,
         )
+        if isinstance(exec_error, HTTPException):
+            raise exec_error
         raise HTTPException(
-            status_code=502, detail=f"Execution failed on {decision.engine}: {e}"
+            status_code=502,
+            detail=f"Execution failed on {decision.engine}: {exec_error}",
         )
-    wall_ms = round((time.monotonic() - wall_start) * 1000, 2)
 
     # Use engine-reported time if available, else wall-clock
     execution_time_ms = (
@@ -589,7 +998,7 @@ async def execute_query(
 async def get_query(correlation_id: str, username: str = Depends(verify_token)):
     row = db.fetch_one(
         """SELECT q.correlation_id, q.query_text, q.status, q.submitted_at, q.completed_at,
-                    q.routing_log_events,
+                    q.execution_time_ms, q.routing_log_events,
                     r.engine, r.reason, r.complexity_score
             FROM query_logs q
             JOIN routing_decisions r ON r.query_log_id = q.id
@@ -606,6 +1015,7 @@ async def get_query(correlation_id: str, username: str = Depends(verify_token)):
         "completed_at": row["completed_at"].isoformat()
         if row["completed_at"]
         else None,
+        "execution_time_ms": row["execution_time_ms"],
         "routing_decision": {
             "engine": row["engine"],
             "engine_display_name": "DuckDB"
@@ -620,7 +1030,8 @@ async def get_query(correlation_id: str, username: str = Depends(verify_token)):
 
 @app.get("/api/logs")
 async def get_logs(engine: str | None = None, username: str = Depends(verify_token)):
-    base_sql = """ SELECT q.correlation_id, q.query_text, q.status, q.submitted_at, 
+    base_sql = """ SELECT q.correlation_id, q.query_text, q.status, q.submitted_at,
+                        q.execution_time_ms,
                         r.engine, r.reason, r.complexity_score
                    FROM query_logs q
                    JOIN routing_decisions r ON r.query_log_id = q.id
@@ -642,7 +1053,9 @@ async def get_logs(engine: str | None = None, username: str = Depends(verify_tok
             if r["engine"] == "duckdb"
             else "Databricks",
             "status": r["status"],
-            "latency_ms": 0,
+            "latency_ms": round(r["execution_time_ms"])
+            if r["execution_time_ms"]
+            else 0,
         }
         for r in rows
     ]
@@ -759,7 +1172,7 @@ async def reset_routing_rules(username: str = Depends(verify_token)):
 # Routing settings
 # ---------------------------------------------------------------------------
 class UpdateRoutingSettings(BaseModel):
-    latency_weight: float | None = None
+    fit_weight: float | None = None
     cost_weight: float | None = None
     running_bonus_duckdb: float | None = None
     running_bonus_databricks: float | None = None
@@ -771,7 +1184,7 @@ async def get_routing_settings(username: str = Depends(verify_token)):
     if not row:
         raise HTTPException(status_code=500, detail="Routing settings not initialized")
     return {
-        "latency_weight": row["latency_weight"],
+        "fit_weight": row["fit_weight"],
         "cost_weight": row["cost_weight"],
         "running_bonus_duckdb": row["running_bonus_duckdb"],
         "running_bonus_databricks": row["running_bonus_databricks"],
@@ -792,22 +1205,22 @@ async def update_routing_settings(
             status_code=400, detail="running_bonus_databricks must be non-negative"
         )
     # Weight auto-complement logic
-    latency_w = body.latency_weight
+    fit_w = body.fit_weight
     cost_w = body.cost_weight
-    if latency_w is not None and cost_w is not None:
-        if abs((latency_w + cost_w) - 1.0) > 1e-9:
+    if fit_w is not None and cost_w is not None:
+        if abs((fit_w + cost_w) - 1.0) > 1e-9:
             raise HTTPException(
                 status_code=400,
-                detail="latency_weight and cost_weight must sum to 1.0",
+                detail="fit_weight and cost_weight must sum to 1.0",
             )
-    elif latency_w is not None:
-        cost_w = round(1.0 - latency_w, 10)
+    elif fit_w is not None:
+        cost_w = round(1.0 - fit_w, 10)
     elif cost_w is not None:
-        latency_w = round(1.0 - cost_w, 10)
+        fit_w = round(1.0 - cost_w, 10)
     # Build SET clause from non-None fields
     fields = {}
-    if latency_w is not None:
-        fields["latency_weight"] = latency_w
+    if fit_w is not None:
+        fields["fit_weight"] = fit_w
     if cost_w is not None:
         fields["cost_weight"] = cost_w
     if body.running_bonus_duckdb is not None:
@@ -831,7 +1244,7 @@ async def update_routing_settings(
         tuple(values) if values else None,
     )
     return {
-        "latency_weight": row["latency_weight"],
+        "fit_weight": row["fit_weight"],
         "cost_weight": row["cost_weight"],
         "running_bonus_duckdb": row["running_bonus_duckdb"],
         "running_bonus_databricks": row["running_bonus_databricks"],

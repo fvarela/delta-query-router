@@ -39,6 +39,15 @@ def _clear_rule_cache():
     routing_engine._rules_cache_time = 0.0
 
 
+# Default routing settings row returned by db.fetch_one for the scoring stage
+_MOCK_SETTINGS_ROW = {
+    "fit_weight": 0.5,
+    "cost_weight": 0.5,
+    "running_bonus_duckdb": 0.2,
+    "running_bonus_databricks": 0.1,
+}
+
+
 # ---------------------------------------------------------------------------
 # Auth
 # ---------------------------------------------------------------------------
@@ -110,16 +119,22 @@ class TestSqlValidation:
 class TestDuckDbExecution:
     """Test queries routed to the DuckDB worker."""
 
+    @patch("main.db.fetch_one", return_value=_MOCK_SETTINGS_ROW)
     @patch("main.catalog_service.get_tables_metadata", return_value={})
     @patch("routing_engine._load_rules", side_effect=_mock_routing_rules_empty)
     @patch("main.httpx.AsyncClient")
-    def test_simple_select_via_duckdb(self, mock_client_cls, _rules, _meta):
-        """SELECT 1 with no tables → fallback to DuckDB (low complexity, no tables)."""
-        # Mock httpx.AsyncClient as async context manager
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.headers = {"content-type": "application/json"}
-        mock_response.json.return_value = {
+    def test_simple_select_via_duckdb(self, mock_client_cls, _rules, _meta, _db):
+        """SELECT 1 with no tables → scoring picks DuckDB (low complexity)."""
+        # Mock httpx.AsyncClient as async context manager — handles both
+        # the engine-state probe and the actual DuckDB execution.
+        mock_health_resp = MagicMock()
+        mock_health_resp.status_code = 200
+        mock_health_resp.raise_for_status = MagicMock()
+
+        mock_exec_resp = MagicMock()
+        mock_exec_resp.status_code = 200
+        mock_exec_resp.headers = {"content-type": "application/json"}
+        mock_exec_resp.json.return_value = {
             "columns": ["1"],
             "rows": [[1]],
             "row_count": 1,
@@ -127,7 +142,8 @@ class TestDuckDbExecution:
         }
 
         mock_client = AsyncMock()
-        mock_client.post.return_value = mock_response
+        mock_client.get.return_value = mock_health_resp
+        mock_client.post.return_value = mock_exec_resp
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client_cls.return_value = mock_client
@@ -143,21 +159,26 @@ class TestDuckDbExecution:
         assert data["correlation_id"]  # UUID present
         assert data["routing_decision"]["engine"] == "duckdb"
         assert data["routing_decision"]["engine_display_name"] == "DuckDB"
-        assert data["routing_decision"]["stage"] == "FALLBACK"
+        assert data["routing_decision"]["stage"] == "SCORING"
         assert isinstance(data["routing_decision"]["complexity_score"], (int, float))
         assert data["columns"] == ["1"]
         assert data["rows"] == [[1]]
         assert data["execution"]["execution_time_ms"] == 0.5
 
+    @patch("main.db.fetch_one", return_value=_MOCK_SETTINGS_ROW)
     @patch("main.catalog_service.get_tables_metadata", return_value={})
     @patch("routing_engine._load_rules", side_effect=_mock_routing_rules_empty)
     @patch("main.httpx.AsyncClient")
-    def test_forced_duckdb(self, mock_client_cls, _rules, _meta):
+    def test_forced_duckdb(self, mock_client_cls, _rules, _meta, _db):
         """routing_mode=duckdb → FORCED stage."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.headers = {"content-type": "application/json"}
-        mock_response.json.return_value = {
+        mock_health_resp = MagicMock()
+        mock_health_resp.status_code = 200
+        mock_health_resp.raise_for_status = MagicMock()
+
+        mock_exec_resp = MagicMock()
+        mock_exec_resp.status_code = 200
+        mock_exec_resp.headers = {"content-type": "application/json"}
+        mock_exec_resp.json.return_value = {
             "columns": ["x"],
             "rows": [[42]],
             "row_count": 1,
@@ -165,7 +186,8 @@ class TestDuckDbExecution:
         }
 
         mock_client = AsyncMock()
-        mock_client.post.return_value = mock_response
+        mock_client.get.return_value = mock_health_resp
+        mock_client.post.return_value = mock_exec_resp
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client_cls.return_value = mock_client
@@ -181,19 +203,25 @@ class TestDuckDbExecution:
         assert data["routing_decision"]["engine"] == "duckdb"
         assert data["routing_decision"]["stage"] == "FORCED"
 
+    @patch("main.db.fetch_one", return_value=_MOCK_SETTINGS_ROW)
     @patch("main.catalog_service.get_tables_metadata", return_value={})
     @patch("routing_engine._load_rules", side_effect=_mock_routing_rules_empty)
     @patch("main.httpx.AsyncClient")
-    def test_duckdb_worker_error_returns_502(self, mock_client_cls, _rules, _meta):
+    def test_duckdb_worker_error_returns_502(self, mock_client_cls, _rules, _meta, _db):
         """DuckDB worker returning 400 → 502 to the caller."""
-        mock_response = MagicMock()
-        mock_response.status_code = 400
-        mock_response.headers = {"content-type": "application/json"}
-        mock_response.text = "bad query"
-        mock_response.json.return_value = {"detail": "Parser Error: syntax error"}
+        mock_health_resp = MagicMock()
+        mock_health_resp.status_code = 200
+        mock_health_resp.raise_for_status = MagicMock()
+
+        mock_exec_resp = MagicMock()
+        mock_exec_resp.status_code = 400
+        mock_exec_resp.headers = {"content-type": "application/json"}
+        mock_exec_resp.text = "bad query"
+        mock_exec_resp.json.return_value = {"detail": "Parser Error: syntax error"}
 
         mock_client = AsyncMock()
-        mock_client.post.return_value = mock_response
+        mock_client.get.return_value = mock_health_resp
+        mock_client.post.return_value = mock_exec_resp
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client_cls.return_value = mock_client
@@ -216,11 +244,20 @@ class TestDuckDbExecution:
 class TestDatabricksExecution:
     """Test queries routed to Databricks."""
 
+    @patch("main.db.fetch_one", return_value=_MOCK_SETTINGS_ROW)
     @patch("main.catalog_service.get_tables_metadata", return_value={})
     @patch("routing_engine._load_rules", side_effect=_mock_routing_rules_empty)
-    def test_forced_databricks_success(self, _rules, _meta):
+    @patch("main.httpx.AsyncClient")
+    def test_forced_databricks_success(self, mock_client_cls, _rules, _meta, _db):
         """routing_mode=databricks with a mocked SDK response."""
         from databricks.sdk.service.sql import StatementState
+
+        # httpx mock for engine probing (scoring stage)
+        mock_probe = AsyncMock()
+        mock_probe.get.side_effect = Exception("connection refused")
+        mock_probe.__aenter__ = AsyncMock(return_value=mock_probe)
+        mock_probe.__aexit__ = AsyncMock(return_value=False)
+        mock_client_cls.return_value = mock_probe
 
         mock_status = MagicMock()
         mock_status.state = StatementState.SUCCEEDED
@@ -270,10 +307,20 @@ class TestDatabricksExecution:
         assert data["columns"] == ["answer"]
         assert data["rows"] == [["42"]]
 
+    @patch("main.db.fetch_one", return_value=_MOCK_SETTINGS_ROW)
     @patch("main.catalog_service.get_tables_metadata", return_value={})
     @patch("routing_engine._load_rules", side_effect=_mock_routing_rules_empty)
-    def test_databricks_no_workspace_returns_400(self, _rules, _meta):
+    @patch("main.httpx.AsyncClient")
+    def test_databricks_no_workspace_returns_400(
+        self, mock_client_cls, _rules, _meta, _db
+    ):
         """Databricks route with no workspace connected → 400."""
+        mock_probe = AsyncMock()
+        mock_probe.get.side_effect = Exception("connection refused")
+        mock_probe.__aenter__ = AsyncMock(return_value=mock_probe)
+        mock_probe.__aexit__ = AsyncMock(return_value=False)
+        mock_client_cls.return_value = mock_probe
+
         original_wc = main._workspace_client
         try:
             main._workspace_client = None
@@ -289,10 +336,20 @@ class TestDatabricksExecution:
         assert resp.status_code == 400
         assert "No Databricks workspace" in resp.json()["detail"]
 
+    @patch("main.db.fetch_one", return_value=_MOCK_SETTINGS_ROW)
     @patch("main.catalog_service.get_tables_metadata", return_value={})
     @patch("routing_engine._load_rules", side_effect=_mock_routing_rules_empty)
-    def test_databricks_no_warehouse_returns_400(self, _rules, _meta):
+    @patch("main.httpx.AsyncClient")
+    def test_databricks_no_warehouse_returns_400(
+        self, mock_client_cls, _rules, _meta, _db
+    ):
         """Databricks route with workspace but no warehouse → 400."""
+        mock_probe = AsyncMock()
+        mock_probe.get.side_effect = Exception("connection refused")
+        mock_probe.__aenter__ = AsyncMock(return_value=mock_probe)
+        mock_probe.__aexit__ = AsyncMock(return_value=False)
+        mock_client_cls.return_value = mock_probe
+
         original_wc = main._workspace_client
         original_wid = main._warehouse_id
         try:
@@ -311,11 +368,21 @@ class TestDatabricksExecution:
         assert resp.status_code == 400
         assert "No SQL warehouse" in resp.json()["detail"]
 
+    @patch("main.db.fetch_one", return_value=_MOCK_SETTINGS_ROW)
     @patch("main.catalog_service.get_tables_metadata", return_value={})
     @patch("routing_engine._load_rules", side_effect=_mock_routing_rules_empty)
-    def test_databricks_failed_execution_returns_502(self, _rules, _meta):
+    @patch("main.httpx.AsyncClient")
+    def test_databricks_failed_execution_returns_502(
+        self, mock_client_cls, _rules, _meta, _db
+    ):
         """Databricks FAILED state → 502."""
         from databricks.sdk.service.sql import StatementState
+
+        mock_probe = AsyncMock()
+        mock_probe.get.side_effect = Exception("connection refused")
+        mock_probe.__aenter__ = AsyncMock(return_value=mock_probe)
+        mock_probe.__aexit__ = AsyncMock(return_value=False)
+        mock_client_cls.return_value = mock_probe
 
         mock_error = MagicMock()
         mock_error.message = "TABLE_NOT_FOUND"
@@ -357,14 +424,19 @@ class TestDatabricksExecution:
 class TestResponseStructure:
     """Verify the response matches the frontend QueryExecutionResult shape."""
 
+    @patch("main.db.fetch_one", return_value=_MOCK_SETTINGS_ROW)
     @patch("main.catalog_service.get_tables_metadata", return_value={})
     @patch("routing_engine._load_rules", side_effect=_mock_routing_rules_empty)
     @patch("main.httpx.AsyncClient")
-    def test_response_has_all_fields(self, mock_client_cls, _rules, _meta):
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.headers = {"content-type": "application/json"}
-        mock_response.json.return_value = {
+    def test_response_has_all_fields(self, mock_client_cls, _rules, _meta, _db):
+        mock_health_resp = MagicMock()
+        mock_health_resp.status_code = 200
+        mock_health_resp.raise_for_status = MagicMock()
+
+        mock_exec_resp = MagicMock()
+        mock_exec_resp.status_code = 200
+        mock_exec_resp.headers = {"content-type": "application/json"}
+        mock_exec_resp.json.return_value = {
             "columns": ["a", "b"],
             "rows": [[1, 2], [3, 4]],
             "row_count": 2,
@@ -372,7 +444,8 @@ class TestResponseStructure:
         }
 
         mock_client = AsyncMock()
-        mock_client.post.return_value = mock_response
+        mock_client.get.return_value = mock_health_resp
+        mock_client.post.return_value = mock_exec_resp
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client_cls.return_value = mock_client
@@ -415,8 +488,9 @@ class TestResponseStructure:
 class TestRoutingIntegration:
     """Test that routing decisions are correctly reflected in the response."""
 
+    @patch("main.db.fetch_one", return_value=_MOCK_SETTINGS_ROW)
     @patch("main.httpx.AsyncClient")
-    def test_default_routing_mode_is_smart(self, mock_client_cls):
+    def test_default_routing_mode_is_smart(self, mock_client_cls, _db):
         """When routing_mode is omitted, it defaults to 'smart'."""
         from catalog_service import TableMetadata
 
@@ -434,10 +508,14 @@ class TestRoutingIntegration:
             )
         }
 
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.headers = {"content-type": "application/json"}
-        mock_response.json.return_value = {
+        mock_health_resp = MagicMock()
+        mock_health_resp.status_code = 200
+        mock_health_resp.raise_for_status = MagicMock()
+
+        mock_exec_resp = MagicMock()
+        mock_exec_resp.status_code = 200
+        mock_exec_resp.headers = {"content-type": "application/json"}
+        mock_exec_resp.json.return_value = {
             "columns": ["id"],
             "rows": [[1]],
             "row_count": 1,
@@ -445,7 +523,8 @@ class TestRoutingIntegration:
         }
 
         mock_client = AsyncMock()
-        mock_client.post.return_value = mock_response
+        mock_client.get.return_value = mock_health_resp
+        mock_client.post.return_value = mock_exec_resp
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client_cls.return_value = mock_client
@@ -462,9 +541,9 @@ class TestRoutingIntegration:
 
         assert resp.status_code == 200
         data = resp.json()
-        # Simple DELTA table, low complexity → DuckDB via FALLBACK
+        # Simple DELTA table, low complexity → DuckDB via SCORING
         assert data["routing_decision"]["engine"] == "duckdb"
-        assert data["routing_decision"]["stage"] == "FALLBACK"
+        assert data["routing_decision"]["stage"] == "SCORING"
 
 
 # ---------------------------------------------------------------------------
@@ -475,14 +554,21 @@ class TestRoutingIntegration:
 class TestRoutingLogEvents:
     """Verify POST /api/query includes routing_log_events."""
 
+    @patch("main.db.fetch_one", return_value=_MOCK_SETTINGS_ROW)
     @patch("main.catalog_service.get_tables_metadata", return_value={})
     @patch("routing_engine._load_rules", side_effect=_mock_routing_rules_empty)
     @patch("main.httpx.AsyncClient")
-    def test_response_includes_routing_log_events(self, mock_client_cls, _rules, _meta):
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.headers = {"content-type": "application/json"}
-        mock_response.json.return_value = {
+    def test_response_includes_routing_log_events(
+        self, mock_client_cls, _rules, _meta, _db
+    ):
+        mock_health_resp = MagicMock()
+        mock_health_resp.status_code = 200
+        mock_health_resp.raise_for_status = MagicMock()
+
+        mock_exec_resp = MagicMock()
+        mock_exec_resp.status_code = 200
+        mock_exec_resp.headers = {"content-type": "application/json"}
+        mock_exec_resp.json.return_value = {
             "columns": ["1"],
             "rows": [[1]],
             "row_count": 1,
@@ -490,7 +576,8 @@ class TestRoutingLogEvents:
         }
 
         mock_client = AsyncMock()
-        mock_client.post.return_value = mock_response
+        mock_client.get.return_value = mock_health_resp
+        mock_client.post.return_value = mock_exec_resp
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client_cls.return_value = mock_client

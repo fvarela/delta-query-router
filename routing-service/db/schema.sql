@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS query_logs (
     submitted_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     completed_at    TIMESTAMPTZ,
     status          VARCHAR(20) NOT NULL DEFAULT 'pending',
+    execution_time_ms FLOAT,
     routing_log_events JSONB
 );
 CREATE TABLE IF NOT EXISTS routing_decisions (
@@ -78,7 +79,7 @@ ON CONFLICT DO NOTHING;
 -- Routing settings: singleton row for global routing configuration
 CREATE TABLE IF NOT EXISTS routing_settings (
     id                       INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-    latency_weight           FLOAT NOT NULL DEFAULT 0.5,
+    fit_weight               FLOAT NOT NULL DEFAULT 0.5,
     cost_weight              FLOAT NOT NULL DEFAULT 0.5,
     running_bonus_duckdb     FLOAT NOT NULL DEFAULT 0.05,
     running_bonus_databricks FLOAT NOT NULL DEFAULT 0.15,

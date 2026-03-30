@@ -34,6 +34,7 @@ def _make_row(
     complexity_score=1.5,
     submitted_at=_UNSET,
     completed_at=_UNSET,
+    execution_time_ms=None,
     routing_log_events=None,
 ):
     """Build a dict matching the JOIN result shape from the DB."""
@@ -49,6 +50,7 @@ def _make_row(
         "status": status,
         "submitted_at": submitted_at,
         "completed_at": completed_at,
+        "execution_time_ms": execution_time_ms,
         "engine": engine,
         "reason": reason,
         "complexity_score": complexity_score,
@@ -83,6 +85,7 @@ class TestGetQuery:
             engine="databricks",
             reason="Default to Databricks",
             complexity_score=3.0,
+            execution_time_ms=2500.0,
         )
 
         resp = client.get(f"/api/query/{SAMPLE_UUID}", headers=_auth_header())
@@ -94,6 +97,7 @@ class TestGetQuery:
         assert data["status"] == "success"
         assert "submitted_at" in data
         assert "completed_at" in data
+        assert data["execution_time_ms"] == 2500.0
 
         rd = data["routing_decision"]
         assert rd["engine"] == "databricks"
@@ -210,10 +214,19 @@ class TestGetLogs:
         assert "WHERE" not in call_args[0][0]
 
     @patch("main.db.fetch_all")
-    def test_latency_ms_is_zero(self, mock_fetch):
-        """latency_ms is hardcoded to 0 (execution_time_ms no longer in query)."""
+    def test_latency_ms_from_execution_time(self, mock_fetch):
+        """latency_ms is read from execution_time_ms column."""
         mock_fetch.return_value = [
-            _make_row(),
+            _make_row(execution_time_ms=1234.7),
+        ]
+        resp = client.get("/api/logs", headers=_auth_header())
+        assert resp.json()[0]["latency_ms"] == 1235  # rounded
+
+    @patch("main.db.fetch_all")
+    def test_latency_ms_null_defaults_to_zero(self, mock_fetch):
+        """latency_ms defaults to 0 when execution_time_ms is NULL (old rows)."""
+        mock_fetch.return_value = [
+            _make_row(execution_time_ms=None),
         ]
         resp = client.get("/api/logs", headers=_auth_header())
         assert resp.json()[0]["latency_ms"] == 0

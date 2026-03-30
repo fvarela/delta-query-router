@@ -18,7 +18,7 @@ def _auth_header():
 def _default_settings(**overrides):
     base = {
         "id": 1,
-        "latency_weight": 0.5,
+        "fit_weight": 0.5,
         "cost_weight": 0.5,
         "running_bonus_duckdb": 0.05,
         "running_bonus_databricks": 0.15,
@@ -48,7 +48,7 @@ class TestGetSettings:
         resp = client.get("/api/routing/settings", headers=_auth_header())
         assert resp.status_code == 200
         data = resp.json()
-        assert data["latency_weight"] == 0.5
+        assert data["fit_weight"] == 0.5
         assert data["cost_weight"] == 0.5
         assert data["running_bonus_duckdb"] == 0.05
         assert data["running_bonus_databricks"] == 0.15
@@ -71,39 +71,39 @@ class TestGetSettings:
 # ---------------------------------------------------------------------------
 class TestUpdateWeights:
     @patch("main.db.fetch_one")
-    def test_latency_only_auto_complements_cost(self, mock_fetch):
-        mock_fetch.return_value = _default_settings(latency_weight=0.3, cost_weight=0.7)
+    def test_perf_only_auto_complements_cost(self, mock_fetch):
+        mock_fetch.return_value = _default_settings(fit_weight=0.3, cost_weight=0.7)
         resp = client.put(
             "/api/routing/settings",
-            json={"latency_weight": 0.3},
+            json={"fit_weight": 0.3},
             headers=_auth_header(),
         )
         assert resp.status_code == 200
-        assert resp.json()["latency_weight"] == 0.3
+        assert resp.json()["fit_weight"] == 0.3
         assert resp.json()["cost_weight"] == 0.7
         # Verify both weights sent to DB
         sql_arg = mock_fetch.call_args[0][0]
-        assert "latency_weight" in sql_arg
+        assert "fit_weight" in sql_arg
         assert "cost_weight" in sql_arg
 
     @patch("main.db.fetch_one")
-    def test_cost_only_auto_complements_latency(self, mock_fetch):
-        mock_fetch.return_value = _default_settings(latency_weight=0.2, cost_weight=0.8)
+    def test_cost_only_auto_complements_perf(self, mock_fetch):
+        mock_fetch.return_value = _default_settings(fit_weight=0.2, cost_weight=0.8)
         resp = client.put(
             "/api/routing/settings",
             json={"cost_weight": 0.8},
             headers=_auth_header(),
         )
         assert resp.status_code == 200
-        assert resp.json()["latency_weight"] == 0.2
+        assert resp.json()["fit_weight"] == 0.2
         assert resp.json()["cost_weight"] == 0.8
 
     @patch("main.db.fetch_one")
     def test_both_weights_summing_to_one(self, mock_fetch):
-        mock_fetch.return_value = _default_settings(latency_weight=0.3, cost_weight=0.7)
+        mock_fetch.return_value = _default_settings(fit_weight=0.3, cost_weight=0.7)
         resp = client.put(
             "/api/routing/settings",
-            json={"latency_weight": 0.3, "cost_weight": 0.7},
+            json={"fit_weight": 0.3, "cost_weight": 0.7},
             headers=_auth_header(),
         )
         assert resp.status_code == 200
@@ -111,7 +111,7 @@ class TestUpdateWeights:
     def test_both_weights_not_summing_to_one_returns_400(self):
         resp = client.put(
             "/api/routing/settings",
-            json={"latency_weight": 0.5, "cost_weight": 0.6},
+            json={"fit_weight": 0.5, "cost_weight": 0.6},
             headers=_auth_header(),
         )
         assert resp.status_code == 400
@@ -147,7 +147,7 @@ class TestUpdateMisc:
     def test_empty_body_returns_current(self, mock_fetch):
         resp = client.put("/api/routing/settings", json={}, headers=_auth_header())
         assert resp.status_code == 200
-        assert resp.json()["latency_weight"] == 0.5
+        assert resp.json()["fit_weight"] == 0.5
 
     @patch("main.db.fetch_one")
     def test_update_bonus_only(self, mock_fetch):
@@ -161,7 +161,7 @@ class TestUpdateMisc:
         assert resp.json()["running_bonus_duckdb"] == 0.1
         # Verify weights were NOT included in the update
         sql_arg = mock_fetch.call_args[0][0]
-        assert "latency_weight" not in sql_arg
+        assert "fit_weight" not in sql_arg
 
     @patch("main.db.fetch_one")
     def test_update_sets_updated_at(self, mock_fetch):

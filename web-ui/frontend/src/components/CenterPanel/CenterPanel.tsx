@@ -33,6 +33,7 @@ const latencyColor = (ms: number) => {
 export const CenterPanel: React.FC = () => {
   const { editorSql, setEditorSql, runMode, singleEngineId, engines, queryResult, setQueryResult, collectionContext, activeCollectionId, triggerRefreshCollections } = useApp();
   const [executing, setExecuting] = useState(false);
+  const [queryError, setQueryError] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [logFilter, setLogFilter] = useState("all");
   const [modalEntry, setModalEntry] = useState<LogEntry | null>(null);
@@ -75,6 +76,8 @@ export const CenterPanel: React.FC = () => {
     if (!editorSql.trim()) return;
     setExecuting(true);
     setModalEntry(null);
+    setQueryError(null);
+    setQueryResult(null);
     try {
       let routing_mode = "smart";
       if (runMode === "single" && singleEngineId !== null) {
@@ -84,8 +87,9 @@ export const CenterPanel: React.FC = () => {
 
       const result = await api.post<QueryExecutionResult>("/api/query", { sql: editorSql, routing_mode });
       setQueryResult(result);
-    } catch {
-      // ignore — user sees no result update
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Query execution failed";
+      setQueryError(message);
     } finally {
       setExecuting(false);
       loadLogs();
@@ -173,19 +177,27 @@ export const CenterPanel: React.FC = () => {
         )}
       </div>
 
-      {/* ── Results area (fixed, non-scrollable, max 10 rows) ── */}
-      <div className="shrink-0">
-        {!queryResult && !executing && (
+      {/* ── Results area (bounded, scrollable) ── */}
+      <div className="shrink-0 max-h-[40%] overflow-y-auto">
+        {!queryResult && !executing && !queryError && (
           <div className="flex items-center justify-center h-24 text-muted-foreground text-[13px]">
             Run a query to see results here.
           </div>
         )}
-        {executing && !queryResult && (
+        {executing && (
           <div className="flex items-center justify-center h-20">
             <LoadingSpinner size={24} />
           </div>
         )}
-        {queryResult && <ResultsView result={queryResult} />}
+        {queryError && !executing && (
+          <div className="mx-3 my-2 p-3 rounded border border-status-error/30 bg-status-error/10">
+            <div className="flex items-start gap-2">
+              <span className="text-status-error text-[12px] font-semibold shrink-0">Error</span>
+              <p className="text-[12px] text-status-error/90 font-mono break-all">{queryError}</p>
+            </div>
+          </div>
+        )}
+        {queryResult && !executing && <ResultsView result={queryResult} />}
       </div>
 
       {/* ── Query History (scrollable, takes remaining space) ── */}
@@ -269,7 +281,7 @@ export const CenterPanel: React.FC = () => {
   );
 };
 
-/* ── Results View (metrics + data table, non-scrollable, max 10 rows) ── */
+/* ── Results View (metrics + data table, scrollable) ── */
 
 const ResultsView: React.FC<{ result: QueryExecutionResult }> = ({ result }) => (
   <div className="p-3 space-y-2">
@@ -279,13 +291,13 @@ const ResultsView: React.FC<{ result: QueryExecutionResult }> = ({ result }) => 
       <span className="text-foreground">Scanned: {(result.execution.data_scanned_bytes / 1024 / 1024).toFixed(1)} MB</span>
     </div>
 
-    {/* Results Table (max 10 rows, no scroll) */}
-    <div className="border border-border rounded">
-      <table className="w-full text-[11px]">
+    {/* Results Table (max 10 rows, horizontally scrollable) */}
+    <div className="border border-border rounded overflow-x-auto">
+      <table className="min-w-full text-[11px]">
         <thead>
           <tr className="bg-muted">
             {result.columns.map(c => (
-              <th key={c} className="text-left px-2 py-1 border-b border-border font-mono font-medium text-foreground">{c}</th>
+              <th key={c} className="text-left px-2 py-1 border-b border-border font-mono font-medium text-foreground whitespace-nowrap">{c}</th>
             ))}
           </tr>
         </thead>
@@ -293,7 +305,7 @@ const ResultsView: React.FC<{ result: QueryExecutionResult }> = ({ result }) => 
           {result.rows.slice(0, 10).map((row, i) => (
             <tr key={i} className={i % 2 ? "bg-card" : ""}>
               {row.map((cell, j) => (
-                <td key={j} className="px-2 py-1 border-b border-border font-mono text-foreground">{String(cell)}</td>
+                <td key={j} className="px-2 py-1 border-b border-border font-mono text-foreground whitespace-nowrap">{String(cell)}</td>
               ))}
             </tr>
           ))}

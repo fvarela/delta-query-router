@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: duckdb-worker-small
+  labels:
+    app: duckdb-worker-small
+    duckdb-tier: small
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8002
+    targetPort: 8002
+    protocol: TCP
+    name: http
+  selector:
+    app: duckdb-worker-small
