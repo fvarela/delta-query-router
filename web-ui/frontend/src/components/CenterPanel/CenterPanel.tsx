@@ -88,16 +88,7 @@ export const CenterPanel: React.FC = () => {
       const result = await api.post<QueryExecutionResult>("/api/query", { sql: editorSql, routing_mode });
       setQueryResult(result);
     } catch (err) {
-      // Parse backend error response — typically {"detail": "..."} JSON
-      let message = "Query execution failed";
-      if (err instanceof Error && err.message) {
-        try {
-          const parsed = JSON.parse(err.message);
-          message = parsed.detail || parsed.message || err.message;
-        } catch {
-          message = err.message;
-        }
-      }
+      const message = err instanceof Error ? err.message : "Query execution failed";
       setQueryError(message);
     } finally {
       setExecuting(false);

@@ -42,6 +42,7 @@ export const CatalogBrowser: React.FC = () => {
   const [loadingKeys, setLoadingKeys] = useState<Set<string>>(new Set());
   const [selectedTable, setSelectedTable] = useState<TableInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [treeErrors, setTreeErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!connectedWorkspace) {
@@ -78,8 +79,10 @@ export const CatalogBrowser: React.FC = () => {
       try {
         const s = await api.get<SchemaInfo[]>(`/api/databricks/catalogs/${catalog}/schemas`);
         setSchemas(prev => ({ ...prev, [catalog]: s }));
-      } catch {
-        // silently fail — user sees empty expansion
+        setTreeErrors(prev => { const n = { ...prev }; delete n[key]; return n; });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Failed to load schemas";
+        setTreeErrors(prev => ({ ...prev, [key]: msg }));
       }
       setLoadingKeys(prev => { const n = new Set(prev); n.delete(key); return n; });
     }
@@ -97,8 +100,10 @@ export const CatalogBrowser: React.FC = () => {
       try {
         const t = await api.get<TableInfo[]>(`/api/databricks/catalogs/${catalog}/schemas/${schema}/tables`);
         setTables(prev => ({ ...prev, [key]: t }));
-      } catch {
-        // silently fail — user sees empty expansion
+        setTreeErrors(prev => { const n = { ...prev }; delete n[key]; return n; });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Failed to load tables";
+        setTreeErrors(prev => ({ ...prev, [key]: msg }));
       }
       setLoadingKeys(prev => { const n = new Set(prev); n.delete(key); return n; });
     }
@@ -145,6 +150,7 @@ export const CatalogBrowser: React.FC = () => {
               <span>{cat.name}</span>
             </button>
             {loadingKeys.has(cat.name) && <div className="pl-8 py-1"><LoadingSpinner size={12} /></div>}
+            {treeErrors[cat.name] && <div className="pl-8 py-1 text-red-400 text-[11px]">{treeErrors[cat.name]}</div>}
             {expanded[cat.name] && schemas[cat.name]?.map(sch => (
               <div key={sch.name}>
                 <button onClick={() => toggleSchema(cat.name, sch.name)} className="flex items-center gap-1 w-full pl-6 pr-3 py-1 hover:bg-muted text-left text-foreground">
@@ -158,6 +164,7 @@ export const CatalogBrowser: React.FC = () => {
                   )}
                 </button>
                 {loadingKeys.has(`${cat.name}.${sch.name}`) && <div className="pl-12 py-1"><LoadingSpinner size={12} /></div>}
+                {treeErrors[`${cat.name}.${sch.name}`] && <div className="pl-12 py-1 text-red-400 text-[11px]">{treeErrors[`${cat.name}.${sch.name}`]}</div>}
                 {expanded[`${cat.name}.${sch.name}`] && tables[`${cat.name}.${sch.name}`]?.map(tbl => (
                   <button
                     key={tbl.name}

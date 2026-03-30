@@ -14,8 +14,89 @@ from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.responses import Response
 from pydantic import BaseModel
 from databricks.sdk import WorkspaceClient
+from databricks.sdk.errors import (
+    DatabricksError,
+    Unauthenticated,
+    PermissionDenied,
+    NotFound,
+    BadRequest,
+    InvalidState,
+    TooManyRequests,
+    TemporarilyUnavailable,
+    DeadlineExceeded,
+    InternalError,
+    OperationFailed,
+    OperationTimeout,
+)
+import requests as _requests  # for catching SDK network errors
 
 app = FastAPI()
+
+
+def _databricks_error_to_http(e: Exception) -> HTTPException:
+    """Translate Databricks SDK and network exceptions into user-friendly HTTPExceptions.
+
+    Order matters: subclasses must be checked before their parents
+    (e.g. InvalidState before BadRequest, ResourceDoesNotExist before NotFound).
+    """
+    # --- Auth errors ---
+    if isinstance(e, Unauthenticated):
+        return HTTPException(
+            status_code=401, detail="Invalid or expired Databricks token."
+        )
+    if isinstance(e, PermissionDenied):
+        return HTTPException(
+            status_code=403, detail=f"Insufficient Databricks permissions: {e}"
+        )
+    # --- Client errors ---
+    if isinstance(e, NotFound):
+        return HTTPException(
+            status_code=404, detail=f"Databricks resource not found: {e}"
+        )
+    if isinstance(e, InvalidState):
+        return HTTPException(
+            status_code=409, detail=f"Databricks resource in invalid state: {e}"
+        )
+    if isinstance(e, TooManyRequests):
+        return HTTPException(
+            status_code=429, detail="Databricks rate limit exceeded. Retry in a moment."
+        )
+    if isinstance(e, BadRequest):
+        return HTTPException(status_code=400, detail=f"Databricks request error: {e}")
+    # --- Server / transient errors ---
+    if isinstance(e, TemporarilyUnavailable):
+        return HTTPException(
+            status_code=503, detail="Databricks service temporarily unavailable."
+        )
+    if isinstance(e, DeadlineExceeded):
+        return HTTPException(status_code=504, detail="Databricks request timed out.")
+    if isinstance(e, InternalError):
+        return HTTPException(status_code=502, detail=f"Databricks internal error: {e}")
+    # --- Catch-all DatabricksError ---
+    if isinstance(e, DatabricksError):
+        return HTTPException(status_code=502, detail=f"Databricks error: {e}")
+    # --- SDK operation errors (not DatabricksError subclasses) ---
+    if isinstance(e, OperationTimeout):
+        return HTTPException(status_code=504, detail="Databricks operation timed out.")
+    if isinstance(e, OperationFailed):
+        return HTTPException(
+            status_code=502, detail=f"Databricks operation failed: {e}"
+        )
+    # --- Network errors (survive SDK retry logic) ---
+    if isinstance(e, _requests.ConnectionError):
+        return HTTPException(
+            status_code=502,
+            detail="Cannot reach Databricks. Check the workspace URL and network connectivity.",
+        )
+    if isinstance(e, _requests.Timeout):
+        return HTTPException(
+            status_code=504, detail="Connection to Databricks timed out."
+        )
+    # --- Unknown ---
+    return HTTPException(
+        status_code=500, detail=f"Unexpected error: {type(e).__name__}: {e}"
+    )
+
 
 # Backend connection config from environment
 POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "localhost")
@@ -228,7 +309,7 @@ async def save_databricks_settings(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to connect: {e}")
+        raise _databricks_error_to_http(e)
     _workspace_client = wc
     _databricks_host = creds.host
     _databricks_token = creds.token  # may be None for client_id/secret auth
@@ -303,7 +384,7 @@ async def list_warehouses(username: str = Depends(verify_token)):
             for wh in warehouses
         ]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list warehouses: {e}")
+        raise _databricks_error_to_http(e)
 
 
 class WarehouseSelection(BaseModel):
@@ -453,7 +534,7 @@ async def list_catalogs(username: str = Depends(verify_token)):
         catalogs = _workspace_client.catalogs.list()
         return [{"name": c.name} for c in catalogs]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list catalogs: {e}")
+        raise _databricks_error_to_http(e)
 
 
 @app.get("/api/databricks/catalogs/{catalog}/schemas")
@@ -463,7 +544,7 @@ async def list_schemas(catalog: str, username: str = Depends(verify_token)):
     try:
         schemas = list(_workspace_client.schemas.list(catalog_name=catalog))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list schemas: {e}")
+        raise _databricks_error_to_http(e)
 
     # Check EXTERNAL_USE_SCHEMA grant for each schema
     # NOTE: SDK grants.get(securable_type=SecurableType.SCHEMA) sends uppercase
@@ -578,8 +659,10 @@ async def list_tables(catalog: str, schema: str, username: str = Depends(verify_
                     "Failed to cache metadata for %s", entry.full_name, exc_info=True
                 )
         return result
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list tables: {e}")
+        raise _databricks_error_to_http(e)
 
 
 # ---------------------------------------------------------------------------
@@ -657,11 +740,14 @@ def _execute_on_databricks(sql: str) -> dict:
 
     from databricks.sdk.service.sql import StatementState
 
-    response = _workspace_client.statement_execution.execute_statement(
-        statement=sql,
-        warehouse_id=_warehouse_id,
-        wait_timeout="30s",
-    )
+    try:
+        response = _workspace_client.statement_execution.execute_statement(
+            statement=sql,
+            warehouse_id=_warehouse_id,
+            wait_timeout="30s",
+        )
+    except Exception as e:
+        raise _databricks_error_to_http(e)
 
     state = response.status.state if response.status else None
     if state == StatementState.FAILED:
@@ -728,12 +814,22 @@ async def execute_query(
         )
 
     # 3. Fetch table metadata
-    table_metadata = catalog_service.get_tables_metadata(
-        analysis.tables, _workspace_client
-    )
+    try:
+        table_metadata = catalog_service.get_tables_metadata(
+            analysis.tables, _workspace_client
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _databricks_error_to_http(exc)
 
     # 4. Load routing settings and probe engine states for scoring
-    settings_row = db.fetch_one("SELECT * FROM routing_settings WHERE id = 1")
+    try:
+        settings_row = db.fetch_one("SELECT * FROM routing_settings WHERE id = 1")
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to load routing settings: {exc}"
+        )
     r_settings = (
         routing_engine.RoutingSettings(
             fit_weight=settings_row["fit_weight"],

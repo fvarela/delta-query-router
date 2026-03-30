@@ -42,14 +42,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUsername(user);
       setIsAuthenticated(true);
     } catch (err: any) {
-      // Parse the error — backend returns {"detail": "Invalid credentials"}
-      let message = "Login failed";
-      try {
-        const parsed = JSON.parse(err.message);
-        if (parsed.detail) message = parsed.detail;
-      } catch {
-        if (err.message && err.message !== "Unauthorized") message = err.message;
-      }
+      const message = err instanceof Error && err.message !== "Unauthorized"
+        ? err.message
+        : "Login failed";
       setLoginError(message);
       throw err;
     } finally {

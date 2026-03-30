@@ -3,7 +3,7 @@ import { useApp } from "@/contexts/AppContext";
 import { api } from "@/lib/api";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
-import { Plug, Unplug, Trash2, Plus, Eye, EyeOff, Key, ChevronDown, Warehouse as WarehouseIcon } from "lucide-react";
+import { Plug, Unplug, Trash2, Plus, Eye, EyeOff, Key, ChevronDown } from "lucide-react";
 
 const WORKSPACES_KEY = "delta_router_workspaces";
 
@@ -14,7 +14,7 @@ const saveWorkspacesToStorage = (ws: Array<{ id: string; name: string; url: stri
 
 export const WorkspaceManager: React.FC = () => {
   const { workspaces, setWorkspaces, reloadWorkspaces, connectedWorkspace,
-    warehouses, selectedWarehouseId, warehousesLoading, reloadWarehouses, selectWarehouse, clearWarehouses } = useApp();
+    reloadWarehouses, clearWarehouses } = useApp();
   const [open, setOpen] = useState(false);
   const [connecting, setConnecting] = useState<string | null>(null);
   const [connectError, setConnectError] = useState<string | null>(null);
@@ -77,13 +77,7 @@ export const WorkspaceManager: React.FC = () => {
       reloadWarehouses();
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Connection failed";
-      // Try to extract detail from JSON error response
-      try {
-        const parsed = JSON.parse(msg);
-        setConnectError(parsed.detail || msg);
-      } catch {
-        setConnectError(msg);
-      }
+      setConnectError(msg);
     } finally {
       setConnecting(null);
     }
@@ -157,42 +151,6 @@ export const WorkspaceManager: React.FC = () => {
         )}
         <ChevronDown size={12} className={`ml-auto text-muted-foreground shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
-
-      {/* ── Warehouse selector — visible when connected ── */}
-      {connectedWorkspace && (
-        <div className="px-3 py-1 flex items-center gap-1.5 border-t border-panel-border/50">
-          <WarehouseIcon size={11} className="text-muted-foreground shrink-0" />
-          {warehousesLoading ? (
-            <span className="text-[10px] text-muted-foreground flex items-center gap-1">
-              <LoadingSpinner size={10} /> Loading warehouses...
-            </span>
-          ) : warehouses.length === 0 ? (
-            <span className="text-[10px] text-muted-foreground">No SQL Warehouses found</span>
-          ) : (
-            <select
-              value={selectedWarehouseId ?? ""}
-              onChange={e => selectWarehouse(e.target.value || null)}
-              className="flex-1 min-w-0 text-[10px] bg-transparent text-foreground border-none outline-none cursor-pointer truncate py-0.5"
-            >
-              <option value="">Select warehouse...</option>
-              {warehouses.map(wh => (
-                <option key={wh.id} value={wh.id}>
-                  {wh.name} ({wh.state})
-                </option>
-              ))}
-            </select>
-          )}
-          {/* State dot for selected warehouse */}
-          {selectedWarehouseId && warehouses.length > 0 && (() => {
-            const wh = warehouses.find(w => w.id === selectedWarehouseId);
-            if (!wh) return null;
-            const dotColor = wh.state === "RUNNING" ? "bg-status-success"
-              : wh.state === "STARTING" ? "bg-status-warning"
-              : "bg-muted-foreground/40";
-            return <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotColor}`} title={wh.state} />;
-          })()}
-        </div>
-      )}
 
       {/* ── Expandable dropdown ── */}
       {open && (
