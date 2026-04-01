@@ -150,7 +150,8 @@ export interface QueryExecutionResult {
 export interface BenchmarkSummary {
   id: number;
   collection_id: number;
-  status: "provisioning" | "warming_up" | "running" | "cleaning_up" | "complete" | "failed";
+  collection_name?: string;
+  status: "warming_up" | "running" | "complete" | "failed";
   engine_count: number;
   created_at: string;
   updated_at: string;
@@ -159,13 +160,12 @@ export interface BenchmarkSummary {
 export interface BenchmarkDetail extends BenchmarkSummary {
   warmups: BenchmarkWarmup[];
   results: BenchmarkResult[];
-  storage_probes?: StorageLatencyProbe[];
 }
 
 export interface BenchmarkWarmup {
   engine_id: string;
   engine_display_name: string;
-  cold_start_time_ms: number;
+  cold_start_time_ms: number | null;
   started_at: string;
 }
 
@@ -173,9 +173,8 @@ export interface BenchmarkResult {
   engine_id: string;
   engine_display_name: string;
   query_id: number;
-  execution_time_ms: number;
-  data_scanned_bytes: number;
-  io_latency_ms?: number; // ODQ-9: I/O latency component
+  execution_time_ms: number | null;
+  error_message?: string | null;
 }
 
 // --- ML Models (bundle: latency + cost trained together) ---

@@ -8,7 +8,7 @@ import type { CollectionWithQueries, BenchmarkSummary, BenchmarkDetail } from "@
 import { ArrowLeft, Plus, Trash2, X } from "lucide-react";
 
 export const CollectionsPanel: React.FC = () => {
-  const { setEditorSql, setCollectionContext, refreshCollections, setActiveCollectionId } = useApp();
+  const { setEditorSql, setCollectionContext, refreshCollections, setActiveCollectionId, engines, enabledEngineIds } = useApp();
   const [collections, setCollections] = useState<CollectionWithQueries[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeCollection, setActiveCollectionLocal] = useState<CollectionWithQueries | null>(null);
@@ -23,7 +23,7 @@ export const CollectionsPanel: React.FC = () => {
   const [benchmarks, setBenchmarks] = useState<BenchmarkSummary[]>([]);
   const [benchmarkDetail, setBenchmarkDetail] = useState<BenchmarkDetail | null>(null);
   const [runningBenchmark, setRunningBenchmark] = useState(false);
-  const [benchmarkStage, setBenchmarkStage] = useState("");
+  const [benchmarkError, setBenchmarkError] = useState<string | null>(null);
 
   // Sync activeCollectionId to context for "Add to Collection" button in CenterPanel
   const setActiveCollection = (c: CollectionWithQueries | null) => {
@@ -93,17 +93,22 @@ export const CollectionsPanel: React.FC = () => {
 
   const handleRunBenchmark = async () => {
     if (!activeCollection) return;
-    setRunningBenchmark(true);
-    const stages = ["Provisioning engines...", "Warming up engines...", "Running queries...", "Cleaning up temporary engines...", "Complete"];
-    for (const stage of stages) {
-      setBenchmarkStage(stage);
-      await new Promise(r => setTimeout(r, 2000));
+    const engineIds = engines.filter(e => enabledEngineIds.has(e.id)).map(e => e.id);
+    if (engineIds.length === 0) {
+      setBenchmarkError("No engines enabled. Enable at least one engine in the right panel.");
+      return;
     }
-    await mockApi.createBenchmark(activeCollection.id, [1, 4, 5]);
-    const b = await mockApi.getBenchmarks(activeCollection.id);
-    setBenchmarks(b);
-    setRunningBenchmark(false);
-    setBenchmarkStage("");
+    setRunningBenchmark(true);
+    setBenchmarkError(null);
+    try {
+      await mockApi.createBenchmark(activeCollection.id, engineIds);
+      const b = await mockApi.getBenchmarks(activeCollection.id);
+      setBenchmarks(b);
+    } catch (e: any) {
+      setBenchmarkError(e?.message || "Benchmark failed");
+    } finally {
+      setRunningBenchmark(false);
+    }
   };
 
   const openBenchmarkDetail = async (id: number) => {
@@ -115,7 +120,7 @@ export const CollectionsPanel: React.FC = () => {
 
   // Benchmark Detail View
   if (benchmarkDetail) {
-    const engines = [...new Set(benchmarkDetail.results.map(r => r.engine_display_name))];
+    const engineNames = [...new Set(benchmarkDetail.results.map(r => r.engine_display_name))];
     const queryIds = [...new Set(benchmarkDetail.results.map(r => r.query_id))];
 
     return (
@@ -138,7 +143,7 @@ export const CollectionsPanel: React.FC = () => {
                 {benchmarkDetail.warmups.map(w => (
                   <tr key={w.engine_id} className="even:bg-card">
                     <td className="px-2 py-1 border-b border-border text-foreground">{w.engine_display_name}</td>
-                    <td className="px-2 py-1 border-b border-border text-right text-foreground">{w.cold_start_time_ms.toLocaleString()}</td>
+                    <td className="px-2 py-1 border-b border-border text-right text-foreground">{w.cold_start_time_ms != null ? w.cold_start_time_ms.toLocaleString() : <span className="text-status-error">failed</span>}</td>
                   </tr>
                 ))}
               </tbody>
@@ -158,7 +163,7 @@ export const CollectionsPanel: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {engines.map((engine, eIdx) => (
+                  {engineNames.map((engine, eIdx) => (
                     <tr key={engine} className={eIdx % 2 ? "bg-card" : ""}>
                       <td className="px-2 py-1 border-b border-r border-border font-medium text-foreground sticky left-0 z-10 whitespace-nowrap"
                           style={{ backgroundColor: eIdx % 2 ? "var(--card)" : "var(--background)" }}>
@@ -166,19 +171,22 @@ export const CollectionsPanel: React.FC = () => {
                       </td>
                       {queryIds.map((qId, qIdx) => {
                         const r = benchmarkDetail.results.find(res => res.query_id === qId && res.engine_display_name === engine);
-                        const v = r?.execution_time_ms ?? 0;
-                        const io = r?.io_latency_ms;
+                        const v = r?.execution_time_ms;
+                        if (v == null) {
+                          return (
+                            <td key={qIdx} className="px-2 py-1 border-b border-border text-right text-status-error" title={r?.error_message ?? "no data"}>
+                              —
+                            </td>
+                          );
+                        }
                         // Color: best/worst per query (column)
-                        const colTimes = engines.map(e => benchmarkDetail.results.find(res => res.query_id === qId && res.engine_display_name === e)?.execution_time_ms ?? 0);
+                        const colTimes = engineNames.map(e => benchmarkDetail.results.find(res => res.query_id === qId && res.engine_display_name === e)?.execution_time_ms).filter((t): t is number => t != null);
                         const min = Math.min(...colTimes);
                         const max = Math.max(...colTimes);
                         const colorClass = v === min ? "text-status-success font-semibold" : v === max ? "text-status-error" : "text-foreground";
                         return (
                           <td key={qIdx} className={`px-2 py-1 border-b border-border text-right ${colorClass}`}>
-                            {io != null
-                              ? <span title={`Compute: ${v - io}ms + I/O: ${io}ms`}>{v.toLocaleString()}</span>
-                              : v.toLocaleString()
-                            }
+                            {v.toLocaleString()}
                           </td>
                         );
                       })}
@@ -187,45 +195,8 @@ export const CollectionsPanel: React.FC = () => {
                 </tbody>
               </table>
             </div>
-            {benchmarkDetail.results.some(r => r.io_latency_ms != null) && (
-              <p className="text-[9px] text-muted-foreground mt-1">Hover cells for I/O breakdown</p>
-            )}
           </div>
 
-          {/* Storage Probes captured during benchmark */}
-          {benchmarkDetail.storage_probes && benchmarkDetail.storage_probes.length > 0 && (
-            <div>
-              <h4 className="font-semibold mb-1 text-foreground">Storage Latency Probes</h4>
-              <table className="w-full border border-border text-[11px]">
-                <thead>
-                  <tr className="bg-muted">
-                    <th className="text-left px-2 py-1 border-b border-border">Location</th>
-                    <th className="text-left px-2 py-1 border-b border-border">Engine</th>
-                    <th className="text-right px-2 py-1 border-b border-border">Latency</th>
-                    <th className="text-right px-2 py-1 border-b border-border">Bytes</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {benchmarkDetail.storage_probes.map((p, idx) => (
-                    <tr key={idx} className="even:bg-card">
-                      <td className="px-2 py-1 border-b border-border text-foreground truncate max-w-[100px]" title={p.storage_location}>
-                        {p.storage_location.replace(/^.*:\/\/[^/]+\//, "")}
-                      </td>
-                      <td className="px-2 py-1 border-b border-border text-foreground">{p.engine_display_name}</td>
-                      <td className={`px-2 py-1 border-b border-border text-right font-medium ${
-                        p.probe_time_ms < 50 ? "text-status-success" : p.probe_time_ms < 150 ? "text-status-warning" : "text-status-error"
-                      }`}>
-                        {p.probe_time_ms}ms
-                      </td>
-                      <td className="px-2 py-1 border-b border-border text-right text-muted-foreground">
-                        {(p.bytes_read / 1024).toFixed(0)} KB
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
         </div>
       </div>
     );
@@ -272,15 +243,20 @@ export const CollectionsPanel: React.FC = () => {
             {runningBenchmark ? (
               <div className="space-y-2">
                 <LoadingSpinner />
-                <p className="text-[11px] text-muted-foreground">{benchmarkStage}</p>
+                <p className="text-[11px] text-muted-foreground">Running benchmark...</p>
               </div>
             ) : (
-              <button
-                onClick={handleRunBenchmark}
-                className="px-3 py-1.5 bg-primary text-primary-foreground rounded-md text-[11px] font-medium w-full"
-              >
-                Run Benchmark
-              </button>
+              <>
+                <button
+                  onClick={handleRunBenchmark}
+                  className="px-3 py-1.5 bg-primary text-primary-foreground rounded-md text-[11px] font-medium w-full"
+                >
+                  Run Benchmark
+                </button>
+                {benchmarkError && (
+                  <p className="text-[11px] text-status-error mt-1">{benchmarkError}</p>
+                )}
+              </>
             )}
           </div>
 
@@ -295,7 +271,7 @@ export const CollectionsPanel: React.FC = () => {
                 >
                   <span className="text-foreground">{new Date(b.created_at).toLocaleDateString()}</span>
                   <div className="flex items-center gap-2">
-                    <StatusBadge variant={b.status === "complete" ? "success" : "error"}>{b.status}</StatusBadge>
+                    <StatusBadge variant={b.status === "complete" ? "success" : b.status === "failed" ? "error" : "warning"}>{b.status}</StatusBadge>
                     <span className="text-muted-foreground">{b.engine_count} eng</span>
                   </div>
                 </button>
