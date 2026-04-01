@@ -201,9 +201,9 @@ export interface StorageLatencyProbe {
   id: number;
   storage_location: string;
   engine_id: string;
-  engine_display_name: string;
+  engine_display_name?: string;
   probe_time_ms: number;
-  bytes_read: number;
+  bytes_read: number | null;
   measured_at: string;
 }
 

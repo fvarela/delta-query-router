@@ -16,10 +16,10 @@
 //
 // MOCKED (backend endpoints not yet implemented):
 //   - models:        ML model listing, activation, training wizard
-//   - probes:        storage latency probes
 //
 // REAL (wired to backend):
 //   - benchmarks:    CRUD + execution via /api/benchmarks — wired in Phase 10
+//   - probes:        storage latency probes via /api/latency-probes — wired in Phase 10
 //
 // All components import exclusively from this file via `mockApi`.
 // When a real endpoint is available, replace the corresponding mock function
@@ -50,13 +50,6 @@ const mkLog = (level: RoutingLogLevel, stage: string, message: string): RoutingL
 // ---- Mutable state ----
 let nextRuleId = 100;
 let nextModelId = 3;
-
-let storageLatencyProbes: StorageLatencyProbe[] = [
-  { id: 1, storage_location: "s3://delta-router/tpcds/", engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", probe_time_ms: 12.3, bytes_read: 1048576, measured_at: "2026-03-14T09:00:30Z" },
-  { id: 2, storage_location: "s3://delta-router/tpcds/", engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", probe_time_ms: 11.8, bytes_read: 1048576, measured_at: "2026-03-14T09:00:30Z" },
-  { id: 3, storage_location: "s3://delta-router/analytics/", engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", probe_time_ms: 14.1, bytes_read: 1048576, measured_at: "2026-03-15T14:30:25Z" },
-  { id: 4, storage_location: "s3://delta-router/tpcds/", engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", probe_time_ms: 10.5, bytes_read: 1048576, measured_at: "2026-03-16T11:00:28Z" },
-];
 
 let routingRules: RoutingRule[] = [
   { id: 1, priority: 1, condition_type: "table_type", condition_value: "VIEW", target_engine: "databricks", is_system: true, enabled: true },
@@ -465,24 +458,14 @@ export const mockApi = {
     return logs.slice(0, 20);
   },
 
-  // Storage Latency Probes (ODQ-9)
+  // Storage Latency Probes (real — wired to /api/latency-probes)
   async getStorageLatencyProbes(): Promise<StorageLatencyProbe[]> {
-    // TODO: Replace with real API call — GET /api/storage/probes
-    await delay(200);
-    return JSON.parse(JSON.stringify(storageLatencyProbes));
+    return api.get<StorageLatencyProbe[]>('/api/latency-probes');
   },
 
   async runStorageLatencyProbes(): Promise<StorageLatencyProbe[]> {
-    // TODO: Replace with real API call — POST /api/storage/probes/run
-    await delay(2000); // Simulate probe execution time
-    const now = new Date().toISOString();
-    const newProbes: StorageLatencyProbe[] = [
-      { id: storageLatencyProbes.length + 1, storage_location: "s3://delta-router/tpcds/", engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", probe_time_ms: 11.5 + Math.random() * 3, bytes_read: 1048576, measured_at: now },
-      { id: storageLatencyProbes.length + 2, storage_location: "s3://delta-router/tpcds/", engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", probe_time_ms: 10.2 + Math.random() * 3, bytes_read: 1048576, measured_at: now },
-      { id: storageLatencyProbes.length + 3, storage_location: "s3://delta-router/analytics/", engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", probe_time_ms: 13.0 + Math.random() * 3, bytes_read: 1048576, measured_at: now },
-    ];
-    storageLatencyProbes.push(...newProbes);
-    return JSON.parse(JSON.stringify(newProbes));
+    const resp = await api.post<{ probes: StorageLatencyProbe[] }>('/api/latency-probes/run', {});
+    return resp.probes;
   },
 
   // Routing Settings

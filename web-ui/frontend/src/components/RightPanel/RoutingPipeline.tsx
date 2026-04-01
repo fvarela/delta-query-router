@@ -319,7 +319,7 @@ export const RoutingPipeline: React.FC = () => {
   // Storage Latency
   const uniqueLocations = new Set(storageProbes.map(p => p.storage_location)).size;
   const formatLatency = (ms: number) => `${ms.toFixed(0)} ms`;
-  const formatBytes = (b: number) => b < 1024 * 1024 ? `${(b / 1024).toFixed(0)} KB` : `${(b / (1024 * 1024)).toFixed(1)} MB`;
+  const formatBytes = (b: number | null) => b == null ? "—" : b < 1024 * 1024 ? `${(b / 1024).toFixed(0)} KB` : `${(b / (1024 * 1024)).toFixed(1)} MB`;
   const formatTime = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
   /* ── Build node metadata ──────────────────────────────────── */
