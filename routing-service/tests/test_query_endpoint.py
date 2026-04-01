@@ -11,6 +11,19 @@ from main import app
 
 client = TestClient(app)
 
+# Fake engine rows for mocking engines_api.get_duckdb_engines()
+_FAKE_DUCKDB_ENGINES = [
+    {
+        "id": "duckdb-1",
+        "engine_type": "duckdb",
+        "display_name": "DuckDB Small",
+        "k8s_service_name": "duckdb-worker",
+        "config": {},
+        "cost_tier": 3,
+        "is_active": True,
+    },
+]
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -120,11 +133,14 @@ class TestSqlValidation:
 class TestDuckDbExecution:
     """Test queries routed to the DuckDB worker."""
 
+    @patch("engines_api.get_duckdb_engines", return_value=_FAKE_DUCKDB_ENGINES)
     @patch("main.db.fetch_one", return_value=_MOCK_SETTINGS_ROW)
     @patch("main.catalog_service.get_tables_metadata", return_value={})
     @patch("routing_engine._load_rules", side_effect=_mock_routing_rules_empty)
     @patch("main.httpx.AsyncClient")
-    def test_simple_select_via_duckdb(self, mock_client_cls, _rules, _meta, _db):
+    def test_simple_select_via_duckdb(
+        self, mock_client_cls, _rules, _meta, _db, _engines
+    ):
         """SELECT 1 with no tables → scoring picks DuckDB (low complexity)."""
         # Mock httpx.AsyncClient as async context manager — handles both
         # the engine-state probe and the actual DuckDB execution.
@@ -166,11 +182,12 @@ class TestDuckDbExecution:
         assert data["rows"] == [[1]]
         assert data["execution"]["execution_time_ms"] == 0.5
 
+    @patch("engines_api.get_duckdb_engines", return_value=_FAKE_DUCKDB_ENGINES)
     @patch("main.db.fetch_one", return_value=_MOCK_SETTINGS_ROW)
     @patch("main.catalog_service.get_tables_metadata", return_value={})
     @patch("routing_engine._load_rules", side_effect=_mock_routing_rules_empty)
     @patch("main.httpx.AsyncClient")
-    def test_forced_duckdb(self, mock_client_cls, _rules, _meta, _db):
+    def test_forced_duckdb(self, mock_client_cls, _rules, _meta, _db, _engines):
         """routing_mode=duckdb → FORCED stage."""
         mock_health_resp = MagicMock()
         mock_health_resp.status_code = 200
@@ -204,11 +221,14 @@ class TestDuckDbExecution:
         assert data["routing_decision"]["engine"] == "duckdb"
         assert data["routing_decision"]["stage"] == "FORCED"
 
+    @patch("engines_api.get_duckdb_engines", return_value=_FAKE_DUCKDB_ENGINES)
     @patch("main.db.fetch_one", return_value=_MOCK_SETTINGS_ROW)
     @patch("main.catalog_service.get_tables_metadata", return_value={})
     @patch("routing_engine._load_rules", side_effect=_mock_routing_rules_empty)
     @patch("main.httpx.AsyncClient")
-    def test_duckdb_worker_error_returns_502(self, mock_client_cls, _rules, _meta, _db):
+    def test_duckdb_worker_error_returns_502(
+        self, mock_client_cls, _rules, _meta, _db, _engines
+    ):
         """DuckDB worker returning 400 → 502 to the caller."""
         mock_health_resp = MagicMock()
         mock_health_resp.status_code = 200
@@ -245,11 +265,14 @@ class TestDuckDbExecution:
 class TestDatabricksExecution:
     """Test queries routed to Databricks."""
 
+    @patch("engines_api.get_duckdb_engines", return_value=_FAKE_DUCKDB_ENGINES)
     @patch("main.db.fetch_one", return_value=_MOCK_SETTINGS_ROW)
     @patch("main.catalog_service.get_tables_metadata", return_value={})
     @patch("routing_engine._load_rules", side_effect=_mock_routing_rules_empty)
     @patch("main.httpx.AsyncClient")
-    def test_forced_databricks_success(self, mock_client_cls, _rules, _meta, _db):
+    def test_forced_databricks_success(
+        self, mock_client_cls, _rules, _meta, _db, _engines
+    ):
         """routing_mode=databricks with a mocked SDK response."""
         from databricks.sdk.service.sql import StatementState
 
@@ -308,12 +331,13 @@ class TestDatabricksExecution:
         assert data["columns"] == ["answer"]
         assert data["rows"] == [["42"]]
 
+    @patch("engines_api.get_duckdb_engines", return_value=_FAKE_DUCKDB_ENGINES)
     @patch("main.db.fetch_one", return_value=_MOCK_SETTINGS_ROW)
     @patch("main.catalog_service.get_tables_metadata", return_value={})
     @patch("routing_engine._load_rules", side_effect=_mock_routing_rules_empty)
     @patch("main.httpx.AsyncClient")
     def test_databricks_no_workspace_returns_400(
-        self, mock_client_cls, _rules, _meta, _db
+        self, mock_client_cls, _rules, _meta, _db, _engines
     ):
         """Databricks route with no workspace connected → 400."""
         mock_probe = AsyncMock()
@@ -337,12 +361,13 @@ class TestDatabricksExecution:
         assert resp.status_code == 400
         assert "No Databricks workspace" in resp.json()["detail"]
 
+    @patch("engines_api.get_duckdb_engines", return_value=_FAKE_DUCKDB_ENGINES)
     @patch("main.db.fetch_one", return_value=_MOCK_SETTINGS_ROW)
     @patch("main.catalog_service.get_tables_metadata", return_value={})
     @patch("routing_engine._load_rules", side_effect=_mock_routing_rules_empty)
     @patch("main.httpx.AsyncClient")
     def test_databricks_no_warehouse_returns_400(
-        self, mock_client_cls, _rules, _meta, _db
+        self, mock_client_cls, _rules, _meta, _db, _engines
     ):
         """Databricks route with workspace but no warehouse → 400."""
         mock_probe = AsyncMock()
@@ -369,12 +394,13 @@ class TestDatabricksExecution:
         assert resp.status_code == 400
         assert "No SQL warehouse" in resp.json()["detail"]
 
+    @patch("engines_api.get_duckdb_engines", return_value=_FAKE_DUCKDB_ENGINES)
     @patch("main.db.fetch_one", return_value=_MOCK_SETTINGS_ROW)
     @patch("main.catalog_service.get_tables_metadata", return_value={})
     @patch("routing_engine._load_rules", side_effect=_mock_routing_rules_empty)
     @patch("main.httpx.AsyncClient")
     def test_databricks_failed_execution_returns_502(
-        self, mock_client_cls, _rules, _meta, _db
+        self, mock_client_cls, _rules, _meta, _db, _engines
     ):
         """Databricks FAILED state → 502."""
         from databricks.sdk.service.sql import StatementState
@@ -425,11 +451,14 @@ class TestDatabricksExecution:
 class TestResponseStructure:
     """Verify the response matches the frontend QueryExecutionResult shape."""
 
+    @patch("engines_api.get_duckdb_engines", return_value=_FAKE_DUCKDB_ENGINES)
     @patch("main.db.fetch_one", return_value=_MOCK_SETTINGS_ROW)
     @patch("main.catalog_service.get_tables_metadata", return_value={})
     @patch("routing_engine._load_rules", side_effect=_mock_routing_rules_empty)
     @patch("main.httpx.AsyncClient")
-    def test_response_has_all_fields(self, mock_client_cls, _rules, _meta, _db):
+    def test_response_has_all_fields(
+        self, mock_client_cls, _rules, _meta, _db, _engines
+    ):
         mock_health_resp = MagicMock()
         mock_health_resp.status_code = 200
         mock_health_resp.raise_for_status = MagicMock()
@@ -489,9 +518,10 @@ class TestResponseStructure:
 class TestRoutingIntegration:
     """Test that routing decisions are correctly reflected in the response."""
 
+    @patch("engines_api.get_duckdb_engines", return_value=_FAKE_DUCKDB_ENGINES)
     @patch("main.db.fetch_one", return_value=_MOCK_SETTINGS_ROW)
     @patch("main.httpx.AsyncClient")
-    def test_default_routing_mode_is_smart(self, mock_client_cls, _db):
+    def test_default_routing_mode_is_smart(self, mock_client_cls, _db, _engines):
         """When routing_mode is omitted, it defaults to 'smart'."""
         from catalog_service import TableMetadata
 
@@ -555,12 +585,13 @@ class TestRoutingIntegration:
 class TestRoutingLogEvents:
     """Verify POST /api/query includes routing_log_events."""
 
+    @patch("engines_api.get_duckdb_engines", return_value=_FAKE_DUCKDB_ENGINES)
     @patch("main.db.fetch_one", return_value=_MOCK_SETTINGS_ROW)
     @patch("main.catalog_service.get_tables_metadata", return_value={})
     @patch("routing_engine._load_rules", side_effect=_mock_routing_rules_empty)
     @patch("main.httpx.AsyncClient")
     def test_response_includes_routing_log_events(
-        self, mock_client_cls, _rules, _meta, _db
+        self, mock_client_cls, _rules, _meta, _db, _engines
     ):
         mock_health_resp = MagicMock()
         mock_health_resp.status_code = 200
