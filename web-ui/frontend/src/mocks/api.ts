@@ -11,11 +11,11 @@
 //   - warehouses:    warehouse list + selection via GET /api/databricks/warehouses + PUT /api/settings/warehouse — AppContext + WorkspaceManager
 //   - routing rules: GET/POST/DELETE /api/routing/rules — wired in Phase 8
 //   - routing settings: GET/PUT /api/routing/settings — wired in Phase 8
+//   - collections:   CRUD + query management via /api/collections — wired in Phase 10
 //
 // MOCKED (backend endpoints not yet implemented):
 //   - engines:       engine catalog, enable/disable, runtime status
 //   - models:        ML model listing, activation, training wizard
-//   - collections:   CRUD operations, query management, Add to Collection
 //   - benchmarks:    benchmark lifecycle, results, storage probes
 //   - probes:        storage latency probes
 //
@@ -32,6 +32,8 @@ import type {
   RoutingLogEvent, RoutingLogLevel, StorageLatencyProbe,
 } from "../types";
 
+import { api } from "../lib/api";
+
 const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 const logTs = () => {
@@ -44,8 +46,6 @@ const mkLog = (level: RoutingLogLevel, stage: string, message: string): RoutingL
 });
 
 // ---- Mutable state ----
-let nextCollectionId = 3;
-let nextQueryId = 100;
 let nextRuleId = 100;
 let nextModelId = 3;
 let nextBenchmarkId = 4;
@@ -89,26 +89,6 @@ let models: Model[] = [
     latency_model: { r_squared: 0.79, mae_ms: 62, model_path: "/models/bundle_002_latency.joblib" },
     cost_model: { r_squared: 0.83, mae_usd: 0.0018, model_path: "/models/bundle_002_cost.joblib" },
     is_active: false, created_at: "2026-03-12T10:00:00Z", benchmark_count: 8, training_queries: 45,
-  },
-];
-
-let collections: CollectionWithQueries[] = [
-  {
-    id: 1, name: "TPC-DS Benchmark", description: "Standard TPC-DS queries for benchmarking", created_at: "2026-03-10T10:00:00Z", updated_at: "2026-03-14T15:00:00Z",
-    queries: [
-      { id: 1, collection_id: 1, query_text: "SELECT c_customer_sk, c_first_name, c_last_name FROM delta_router_dev.tpcds.customer WHERE c_birth_country = 'UNITED STATES' LIMIT 100", sequence_number: 1 },
-      { id: 2, collection_id: 1, query_text: "SELECT ss_sold_date_sk, SUM(ss_net_profit) AS total_profit FROM delta_router_dev.tpcds.store_sales GROUP BY ss_sold_date_sk ORDER BY total_profit DESC LIMIT 20", sequence_number: 2 },
-      { id: 3, collection_id: 1, query_text: "SELECT cs_sold_date_sk, cs_item_sk, cs_quantity FROM delta_router_dev.tpcds.catalog_sales WHERE cs_quantity > 50 LIMIT 100", sequence_number: 3 },
-      { id: 4, collection_id: 1, query_text: "SELECT cd_gender, cd_education_status, COUNT(*) AS cnt FROM delta_router_dev.tpcds.customer_demographics GROUP BY cd_gender, cd_education_status", sequence_number: 4 },
-      { id: 5, collection_id: 1, query_text: "SELECT d_date_sk, d_year, d_quarter_name FROM delta_router_dev.tpcds.date_dim WHERE d_year = 2024", sequence_number: 5 },
-    ],
-  },
-  {
-    id: 2, name: "Ad-hoc Queries", description: "Quick exploratory queries", created_at: "2026-03-12T08:00:00Z", updated_at: "2026-03-14T12:00:00Z",
-    queries: [
-      { id: 6, collection_id: 2, query_text: "SELECT * FROM delta_router_dev.analytics.revenue_summary LIMIT 50", sequence_number: 1 },
-      { id: 7, collection_id: 2, query_text: "SELECT * FROM delta_router_dev.tpcds.customer WHERE c_customer_sk < 100", sequence_number: 2 },
-    ],
   },
 ];
 
@@ -234,64 +214,33 @@ export const mockApi = {
     return tableData[`${catalog}.${schema}`] || [];
   },
 
-  // Collections
+  // Collections (real — wired to /api/collections)
   async getCollections(): Promise<Collection[]> {
-    // TODO: Replace with real API call — GET /api/collections
-    await delay(200);
-    return collections.map(({ queries: _q, ...rest }) => rest);
+    return api.get<Collection[]>('/api/collections');
   },
 
   async getCollection(id: number): Promise<CollectionWithQueries> {
-    // TODO: Replace with real API call — GET /api/collections/:id
-    await delay(200);
-    const c = collections.find(c => c.id === id);
-    if (!c) throw new Error("Collection not found");
-    return JSON.parse(JSON.stringify(c));
+    return api.get<CollectionWithQueries>(`/api/collections/${id}`);
   },
 
   async createCollection(name: string, description: string): Promise<Collection> {
-    // TODO: Replace with real API call — POST /api/collections
-    await delay(300);
-    const c: CollectionWithQueries = { id: nextCollectionId++, name, description, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), queries: [] };
-    collections.push(c);
-    const { queries: _q, ...rest } = c;
-    return rest;
+    return api.post<Collection>('/api/collections', { name, description });
   },
 
   async updateCollection(id: number, data: Partial<Collection>): Promise<Collection> {
-    // TODO: Replace with real API call — PUT /api/collections/:id
-    await delay(200);
-    const c = collections.find(c => c.id === id);
-    if (!c) throw new Error("Not found");
-    Object.assign(c, data, { updated_at: new Date().toISOString() });
-    const { queries: _q, ...rest } = c;
-    return rest;
+    return api.put<Collection>(`/api/collections/${id}`, data);
   },
 
   async deleteCollection(id: number): Promise<void> {
-    // TODO: Replace with real API call — DELETE /api/collections/:id
-    await delay(200);
-    collections = collections.filter(c => c.id !== id);
+    await api.del(`/api/collections/${id}`);
   },
 
   async addQuery(collectionId: number, queryText: string): Promise<Query> {
-    // TODO: Replace with real API call — POST /api/collections/:id/queries
-    await delay(200);
-    const c = collections.find(c => c.id === collectionId);
-    if (!c) throw new Error("Not found");
-    const seq = c.queries.length + 1;
-    const q: Query = { id: nextQueryId++, collection_id: collectionId, query_text: queryText, sequence_number: seq };
-    c.queries.push(q);
-    return q;
+    return api.post<Query>(`/api/collections/${collectionId}/queries`, { query_text: queryText });
   },
 
   async deleteQuery(collectionId: number, queryId: number): Promise<void> {
-    // TODO: Replace with real API call — DELETE /api/collections/:collectionId/queries/:queryId
-    await delay(200);
-    const c = collections.find(c => c.id === collectionId);
-    if (!c) throw new Error("Not found");
-    c.queries = c.queries.filter(q => q.id !== queryId);
-    c.queries.forEach((q, i) => q.sequence_number = i + 1);
+    await api.del(`/api/collections/${collectionId}/queries/${queryId}`);
   },
 
   // Query Execution
