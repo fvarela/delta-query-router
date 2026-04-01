@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main
+import auth
 from main import app
 
 client = TestClient(app)
@@ -14,7 +15,7 @@ client = TestClient(app)
 # Helper: inject a valid token and return auth header
 def _auth_header():
     token = "test-token-abc"
-    main._active_tokens[token] = "testuser"
+    auth._active_tokens[token] = "testuser"
     return {"Authorization": f"Bearer {token}"}
 
 

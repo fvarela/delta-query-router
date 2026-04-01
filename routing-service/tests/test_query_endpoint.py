@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main
+import auth
 from main import app
 
 client = TestClient(app)
@@ -18,7 +19,7 @@ client = TestClient(app)
 
 def _auth_header():
     token = "test-token-query"
-    main._active_tokens[token] = "testuser"
+    auth._active_tokens[token] = "testuser"
     return {"Authorization": f"Bearer {token}"}
 
 

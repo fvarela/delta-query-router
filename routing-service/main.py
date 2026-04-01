@@ -1,5 +1,4 @@
 import os
-import secrets
 import time
 import uuid
 
@@ -10,6 +9,9 @@ import catalog_service
 import query_analyzer
 import routing_engine
 import query_logger
+import auth
+import collections_api
+from auth import verify_token
 from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -31,6 +33,8 @@ from databricks.sdk.errors import (
 import requests as _requests  # for catching SDK network errors
 
 app = FastAPI()
+app.include_router(auth.router)
+app.include_router(collections_api.router, dependencies=[Depends(verify_token)])
 
 
 def _databricks_error_to_http(e: Exception) -> HTTPException:
@@ -104,8 +108,6 @@ POSTGRES_PORT = os.environ.get("POSTGRES_PORT", "5432")
 POSTGRES_DB = os.environ.get("POSTGRES_DB", "deltarouter")
 POSTGRES_USER = os.environ.get("POSTGRES_USER", "delta")
 POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "")
-ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
 # Multi-tier DuckDB worker definitions
 # Stable IDs: small=1, medium=2, large=3
@@ -136,9 +138,6 @@ DUCKDB_TIERS = [
     },
 ]
 DUCKDB_TIER_BY_ID = {t["id"]: t for t in DUCKDB_TIERS}
-
-# In-memory token store: {token_hex: username}
-_active_tokens: dict[str, str] = {}
 
 _workspace_client: WorkspaceClient | None = None
 _databricks_host: str | None = None
@@ -188,11 +187,6 @@ async def init_database():
 async def close_database():
     query_logger.shutdown()
     db.close_db()
-
-
-class LoginRequest(BaseModel):
-    username: str
-    password: str
 
 
 class DatabricksCredentials(BaseModel):
@@ -265,25 +259,6 @@ def _patch_k8s_secret(key: str, value: str):
             v1.create_namespaced_secret("default", secret)
         else:
             raise
-
-
-@app.post("/api/auth/login")
-async def login(creds: LoginRequest):
-    if creds.username != ADMIN_USERNAME or creds.password != ADMIN_PASSWORD:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    token = secrets.token_hex(32)
-    _active_tokens[token] = creds.username
-    return {"token": token}
-
-
-async def verify_token(authorization: str = Header(None)) -> str:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid token")
-    token = authorization.split(" ", 1)[1]
-    username = _active_tokens.get(token)
-    if not username:
-        raise HTTPException(status_code=401, detail="Invalid token")
-    return username
 
 
 @app.post("/api/settings/databricks")
