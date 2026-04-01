@@ -12,9 +12,9 @@
 //   - routing rules: GET/POST/DELETE /api/routing/rules — wired in Phase 8
 //   - routing settings: GET/PUT /api/routing/settings — wired in Phase 8
 //   - collections:   CRUD + query management via /api/collections — wired in Phase 10
+//   - engines:       engine catalog + runtime status via /api/engines — wired in Phase 10
 //
 // MOCKED (backend endpoints not yet implemented):
-//   - engines:       engine catalog, enable/disable, runtime status
 //   - models:        ML model listing, activation, training wizard
 //   - benchmarks:    benchmark lifecycle, results, storage probes
 //   - probes:        storage latency probes
@@ -26,7 +26,7 @@
 
 import type {
   Collection, CollectionWithQueries, Query,
-  EngineCatalogEntry, EnginePreference, RoutingRule, RoutingSettings,
+  RoutingRule, RoutingSettings,
   QueryExecutionResult, BenchmarkSummary, BenchmarkDetail,
   Model, CatalogInfo, SchemaInfo, TableInfo, LogEntry,
   RoutingLogEvent, RoutingLogLevel, StorageLatencyProbe,
@@ -56,16 +56,6 @@ let storageLatencyProbes: StorageLatencyProbe[] = [
   { id: 3, storage_location: "s3://delta-router/analytics/", engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", probe_time_ms: 14.1, bytes_read: 1048576, measured_at: "2026-03-15T14:30:25Z" },
   { id: 4, storage_location: "s3://delta-router/tpcds/", engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", probe_time_ms: 10.5, bytes_read: 1048576, measured_at: "2026-03-16T11:00:28Z" },
 ];
-
-let engineCatalog: EngineCatalogEntry[] = [
-  { id: 1, engine_type: "databricks_sql", display_name: "Serverless 2X-Small", config: { cluster_size: "2XS" }, is_default: true, enabled: true, runtime_state: "running", created_at: "2026-03-01T00:00:00Z", updated_at: "2026-03-01T00:00:00Z" },
-  { id: 2, engine_type: "databricks_sql", display_name: "Serverless Medium", config: { cluster_size: "M" }, is_default: true, enabled: true, runtime_state: "stopped", created_at: "2026-03-01T00:00:00Z", updated_at: "2026-03-01T00:00:00Z" },
-  { id: 3, engine_type: "databricks_sql", display_name: "Serverless Large", config: { cluster_size: "L" }, is_default: true, enabled: true, runtime_state: "starting", created_at: "2026-03-01T00:00:00Z", updated_at: "2026-03-01T00:00:00Z" },
-  { id: 4, engine_type: "duckdb", display_name: "DuckDB 2GB/2CPU", config: { memory_gb: 2, cpu_count: 2 }, is_default: true, enabled: true, runtime_state: "running", created_at: "2026-03-01T00:00:00Z", updated_at: "2026-03-01T00:00:00Z" },
-  { id: 5, engine_type: "duckdb", display_name: "DuckDB 8GB/4CPU", config: { memory_gb: 8, cpu_count: 4 }, is_default: true, enabled: true, runtime_state: "running", created_at: "2026-03-01T00:00:00Z", updated_at: "2026-03-01T00:00:00Z" },
-  { id: 6, engine_type: "duckdb", display_name: "DuckDB 16GB/8CPU", config: { memory_gb: 16, cpu_count: 8 }, is_default: true, enabled: true, runtime_state: "running", created_at: "2026-03-01T00:00:00Z", updated_at: "2026-03-01T00:00:00Z" },
-];
-const defaultEngineCatalog = JSON.parse(JSON.stringify(engineCatalog));
 
 let routingRules: RoutingRule[] = [
   { id: 1, priority: 1, condition_type: "table_type", condition_value: "VIEW", target_engine: "databricks", is_system: true, enabled: true },
@@ -445,29 +435,6 @@ export const mockApi = {
     // TODO: Replace with real API call — DELETE /api/benchmarks/:id
     await delay(200);
     benchmarks = benchmarks.filter(b => b.id !== id);
-  },
-
-  // Engine Catalog
-  async getEngineCatalog(): Promise<EngineCatalogEntry[]> {
-    // TODO: Replace with real API call — GET /api/engines
-    // No delay — DuckDB engines are local data, avoid flash of empty state
-    return JSON.parse(JSON.stringify(engineCatalog));
-  },
-
-  async toggleEngineCatalogEntry(id: number, enabled: boolean): Promise<EngineCatalogEntry> {
-    // TODO: Replace with real API call — PUT /api/engines/:id
-    await delay(200);
-    const e = engineCatalog.find(e => e.id === id);
-    if (!e) throw new Error("Not found");
-    e.enabled = enabled;
-    return { ...e };
-  },
-
-  async resetEngineCatalog(): Promise<EngineCatalogEntry[]> {
-    // TODO: Replace with real API call — POST /api/engines/reset
-    await delay(300);
-    engineCatalog = JSON.parse(JSON.stringify(defaultEngineCatalog));
-    return JSON.parse(JSON.stringify(engineCatalog));
   },
 
   // Routing Rules

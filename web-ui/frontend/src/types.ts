@@ -69,12 +69,13 @@ export interface Query {
 export type EngineRuntimeState = "running" | "stopped" | "starting" | "unknown";
 
 export interface EngineCatalogEntry {
-  id: number;
+  id: string;
   engine_type: "databricks_sql" | "duckdb";
   display_name: string;
   config: Record<string, any>;
   is_default: boolean;
   enabled: boolean;
+  cost_tier: number;
   runtime_state: EngineRuntimeState;
   scalable?: boolean;
   created_at?: string;

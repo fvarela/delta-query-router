@@ -94,11 +94,12 @@ export const EnginesTable: React.FC = () => {
           <div className="px-3 py-3 text-muted-foreground text-[11px]">No engines available.</div>
         ) : (
           <table className="w-full text-[11px]">
-            <thead>
+             <thead>
               <tr className="bg-muted">
                 <th className="w-7 px-2 py-1 border-b border-border"></th>
                 <th className="text-left px-2 py-1 border-b border-border">Engine</th>
                 <th className="text-left px-2 py-1 border-b border-border">Specs</th>
+                <th className="text-center px-2 py-1 border-b border-border" title="Cost tier (1=cheapest, 10=most expensive)">Cost</th>
                 <th className="w-12 px-2 py-1 border-b border-border"></th>
               </tr>
             </thead>
@@ -129,6 +130,9 @@ export const EnginesTable: React.FC = () => {
                     </td>
                     <td className="px-2 py-1 border-b border-border text-muted-foreground">
                       {formatSpecs(e)}
+                    </td>
+                    <td className="px-2 py-1 border-b border-border text-center text-muted-foreground">
+                      {e.cost_tier}
                     </td>
                     <td className="px-2 py-1 border-b border-border text-center">
                       {canScale && (
