@@ -47,10 +47,43 @@ port-forward:
 	kubectl port-forward svc/web-ui 8501:8501
 pods:
 	kubectl get pods
-# --- Full deploy ---
+# --- Full deploy (minikube) ---
 apply:
 	kubectl apply -f k8s/
 # --- Test ---
 smoke-test:
 	./scripts/smoke-test.sh
-.PHONY: build-routing build-webui build-duckdb build-all deploy-routing deploy-webui deploy-duckdb deploy-all schema-update logs-routing logs-webui logs-duckdb logs-postgres psql port-forward pods apply smoke-test
+# --- Azure / Terraform ---
+tf-init:
+	terraform -chdir=infrastructure/terraform init
+tf-plan:
+	terraform -chdir=infrastructure/terraform plan
+tf-apply:
+	terraform -chdir=infrastructure/terraform apply
+tf-destroy:
+	terraform -chdir=infrastructure/terraform destroy
+# --- ACR image build + push ---
+ACR_LOGIN_SERVER := $(shell terraform -chdir=infrastructure/terraform output -raw acr_login_server 2>/dev/null)
+GIT_SHA := $(shell git rev-parse --short HEAD)
+acr-login:
+	az acr login --name $(ACR_LOGIN_SERVER)
+build-push: acr-login build-all
+	docker tag routing-service:latest $(ACR_LOGIN_SERVER)/delta-router/routing-service:$(GIT_SHA)
+	docker tag routing-service:latest $(ACR_LOGIN_SERVER)/delta-router/routing-service:latest
+	docker push $(ACR_LOGIN_SERVER)/delta-router/routing-service:$(GIT_SHA)
+	docker push $(ACR_LOGIN_SERVER)/delta-router/routing-service:latest
+	docker tag web-ui:latest $(ACR_LOGIN_SERVER)/delta-router/web-ui:$(GIT_SHA)
+	docker tag web-ui:latest $(ACR_LOGIN_SERVER)/delta-router/web-ui:latest
+	docker push $(ACR_LOGIN_SERVER)/delta-router/web-ui:$(GIT_SHA)
+	docker push $(ACR_LOGIN_SERVER)/delta-router/web-ui:latest
+	docker tag duckdb-worker:latest $(ACR_LOGIN_SERVER)/delta-router/duckdb-worker:$(GIT_SHA)
+	docker tag duckdb-worker:latest $(ACR_LOGIN_SERVER)/delta-router/duckdb-worker:latest
+	docker push $(ACR_LOGIN_SERVER)/delta-router/duckdb-worker:$(GIT_SHA)
+	docker push $(ACR_LOGIN_SERVER)/delta-router/duckdb-worker:latest
+# --- Full Azure deployment ---
+deploy-azure: build-push tf-apply
+# --- Utility ---
+get-ip:
+	kubectl get ingress -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}'
+	@echo
+.PHONY: build-routing build-webui build-duckdb build-all deploy-routing deploy-webui deploy-duckdb deploy-all schema-update logs-routing logs-webui logs-duckdb logs-postgres psql port-forward pods apply smoke-test tf-init tf-plan tf-apply tf-destroy acr-login build-push deploy-azure get-ip
