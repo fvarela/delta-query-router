@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "delta-router.routingService.fullname" . }}
+  labels:
+    {{- include "delta-router.labels" . | nindent 4 }}
+    app: routing-service
+spec:
+  replicas: {{ .Values.routingService.replicas }}
+  selector:
+    matchLabels:
+      app: routing-service
+  template:
+    metadata:
+      labels:
+        {{- include "delta-router.labels" . | nindent 8 }}
+        app: routing-service
+    spec:
+      serviceAccountName: {{ include "delta-router.routingService.fullname" . }}
+      containers:
+      - name: routing-service
+        image: "{{ .Values.routingService.image.repository }}:{{ .Values.routingService.image.tag }}"
+        imagePullPolicy: {{ .Values.routingService.image.pullPolicy }}
+        envFrom:
+        - configMapRef:
+            name: {{ include "delta-router.routingService.fullname" . }}-config
+        - secretRef:
+            name: {{ include "delta-router.fullname" . }}-postgresql
+        - secretRef:
+            name: {{ include "delta-router.fullname" . }}-admin-credentials
+        - secretRef:
+            name: databricks-credentials
+            optional: true
+        ports:
+        - containerPort: {{ .Values.routingService.port }}
+          name: http
+        resources:
+          {{- toYaml .Values.routingService.resources | nindent 10 }}
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.routingService.port }}
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.routingService.port }}
+          initialDelaySeconds: 15
+          periodSeconds: 20

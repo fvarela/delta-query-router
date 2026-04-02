@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "delta-router.routingService.fullname" . }}
+  labels:
+    {{- include "delta-router.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "delta-router.routingService.fullname" . }}-secret-manager
+  labels:
+    {{- include "delta-router.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/scale"]
+    verbs: ["get", "list", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "delta-router.routingService.fullname" . }}-secret-binding
+  labels:
+    {{- include "delta-router.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "delta-router.routingService.fullname" . }}-secret-manager
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "delta-router.routingService.fullname" . }}
+    namespace: {{ .Release.Namespace }}
