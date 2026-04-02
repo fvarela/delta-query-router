@@ -1,0 +1,45 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "delta-router.postgresql.fullname" . }}-schema-init
+  labels:
+    {{- include "delta-router.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: schema-init
+        image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}"
+        imagePullPolicy: {{ .Values.postgresql.image.pullPolicy }}
+        command:
+        - psql
+        - -h
+        - {{ include "delta-router.postgresql.fullname" . }}
+        - -U
+        - $(POSTGRES_USER)
+        - -d
+        - $(POSTGRES_DB)
+        - -f
+        - /schema/schema.sql
+        envFrom:
+        - secretRef:
+            name: {{ include "delta-router.fullname" . }}-postgresql
+        env:
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "delta-router.fullname" . }}-postgresql
+              key: POSTGRES_PASSWORD
+        volumeMounts:
+        - name: schema
+          mountPath: /schema
+      volumes:
+      - name: schema
+        configMap:
+          name: {{ include "delta-router.postgresql.fullname" . }}-schema

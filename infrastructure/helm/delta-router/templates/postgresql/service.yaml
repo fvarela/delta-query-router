@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "delta-router.postgresql.fullname" . }}
+  labels:
+    {{- include "delta-router.labels" . | nindent 4 }}
+    app: postgresql
+spec:
+  type: ClusterIP
+  ports:
+  - port: {{ .Values.postgresql.port }}
+    targetPort: {{ .Values.postgresql.port }}
+    protocol: TCP
+    name: postgres
+  selector:
+    app: postgresql
