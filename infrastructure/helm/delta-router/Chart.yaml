@@ -1,0 +1,6 @@
+apiVersion: v2
+name: delta-router
+description: Delta Router - intelligent SQL query router for Unity Catalog
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

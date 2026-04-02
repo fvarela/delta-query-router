@@ -1,0 +1,18 @@
+Delta Router deployed successfully!
+Services:
+  - routing-service: port {{ .Values.routingService.port }}
+  - web-ui:          port {{ .Values.webUi.port }}
+  - duckdb-worker:   port {{ .Values.duckdbWorker.port }}
+  - postgresql:      port {{ .Values.postgresql.port }}
+{{- if .Values.ingress.enabled }}
+Ingress is enabled. Get the external IP:
+  kubectl get svc -n ingress-nginx ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+Then access:
+  Web UI:          http://<EXTERNAL-IP>/
+  Routing Service: http://<EXTERNAL-IP>:8000/health
+{{- else }}
+No ingress configured. Access via port-forward:
+  kubectl port-forward svc/{{ include "delta-router.webUi.fullname" . }} 8501:{{ .Values.webUi.port }}
+  kubectl port-forward svc/{{ include "delta-router.routingService.fullname" . }} 8000:{{ .Values.routingService.port }}
+Then open: http://localhost:8501/
+{{- end }}

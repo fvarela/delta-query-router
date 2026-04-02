@@ -1,0 +1,100 @@
+routingService:
+  image:
+    repository: routing-service
+    tag: latest
+    pullPolicy: Never
+  replicas: 1
+  port: 8000
+  service:
+    type: ClusterIP
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+webUi:
+  image:
+    repository: web-ui
+    tag: latest
+    pullPolicy: Never
+  replicas: 1
+  port: 8501
+  service:
+    type: ClusterIP
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+duckdbWorker:
+  image:
+    repository: duckdb-worker
+    tag: latest
+    pullPolicy: Never
+  port: 8002
+  tiers:
+    small:
+      enabled: true
+      replicas: 1
+      resources:
+        requests:
+          cpu: 200m
+          memory: 512Mi
+        limits:
+          cpu: "1"
+          memory: 2Gi
+    medium:
+      enabled: false
+      replicas: 0
+      resources:
+        requests:
+          cpu: 500m
+          memory: 2Gi
+        limits:
+          cpu: "2"
+          memory: 8Gi
+    large:
+      enabled: false
+      replicas: 0
+      resources:
+        requests:
+          cpu: "1"
+          memory: 4Gi
+        limits:
+          cpu: "4"
+          memory: 16Gi
+postgresql:
+  image:
+    repository: postgres
+    tag: "16"
+    pullPolicy: IfNotPresent
+  port: 5432
+  storage:
+    size: 1Gi
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  host: ""
+secrets:
+  adminCredentials:
+    create: true
+    username: admin
+    password: admin
+  postgresqlCredentials:
+    create: true
+    user: delta
+    password: deltapass
+    database: deltarouter
