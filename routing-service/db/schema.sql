@@ -85,11 +85,101 @@ CREATE TABLE IF NOT EXISTS routing_settings (
     running_bonus_databricks FLOAT NOT NULL DEFAULT 0.15,
     updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- =============================================================================
+-- Phase 10: Benchmark Infrastructure
+-- =============================================================================
+-- Query collections for benchmark runs
+CREATE TABLE IF NOT EXISTS collections (
+    id              SERIAL PRIMARY KEY,
+    name            TEXT NOT NULL,
+    description     TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+-- Queries within a collection, ordered by sequence_number
+CREATE TABLE IF NOT EXISTS collection_queries (
+    id              SERIAL PRIMARY KEY,
+    collection_id   INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+    query_text      TEXT NOT NULL,
+    sequence_number INTEGER NOT NULL,
+    UNIQUE(collection_id, sequence_number)
+);
+-- Execution engines (DuckDB workers, Databricks warehouses)
+CREATE TABLE IF NOT EXISTS engines (
+    id              TEXT PRIMARY KEY,
+    engine_type     TEXT NOT NULL,
+    display_name    TEXT NOT NULL,
+    config          JSONB NOT NULL DEFAULT '{}',
+    k8s_service_name TEXT,
+    cost_tier       INTEGER NOT NULL DEFAULT 5 CHECK (cost_tier >= 1 AND cost_tier <= 10),
+    is_active       BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+-- Engine fallback ordering
+CREATE TABLE IF NOT EXISTS engine_preferences (
+    id              SERIAL PRIMARY KEY,
+    engine_id       TEXT NOT NULL REFERENCES engines(id) ON DELETE CASCADE,
+    preference_order INTEGER NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(engine_id)
+);
+-- Benchmark runs
+CREATE TABLE IF NOT EXISTS benchmarks (
+    id              SERIAL PRIMARY KEY,
+    collection_id   INTEGER NOT NULL REFERENCES collections(id),
+    status          TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'warming_up', 'running', 'complete', 'failed')),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+-- Warm-up probe results per engine per benchmark
+CREATE TABLE IF NOT EXISTS benchmark_engine_warmups (
+    id              SERIAL PRIMARY KEY,
+    benchmark_id    INTEGER NOT NULL REFERENCES benchmarks(id) ON DELETE CASCADE,
+    engine_id       TEXT NOT NULL,
+    cold_start_time_ms FLOAT,
+    started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+-- Per-query per-engine benchmark execution results
+CREATE TABLE IF NOT EXISTS benchmark_results (
+    id              SERIAL PRIMARY KEY,
+    benchmark_id    INTEGER NOT NULL REFERENCES benchmarks(id) ON DELETE CASCADE,
+    engine_id       TEXT NOT NULL,
+    query_id        INTEGER NOT NULL REFERENCES collection_queries(id),
+    execution_time_ms FLOAT,
+    io_latency_ms   FLOAT,
+    error_message   TEXT
+);
+-- Storage latency probe measurements
+CREATE TABLE IF NOT EXISTS storage_latency_probes (
+    id              SERIAL PRIMARY KEY,
+    storage_location TEXT NOT NULL,
+    engine_id       TEXT NOT NULL,
+    probe_time_ms   FLOAT NOT NULL,
+    bytes_read      BIGINT,
+    measured_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- Seed with defaults
 INSERT INTO routing_settings (id) VALUES (1) ON CONFLICT DO NOTHING;
+
+-- Seed default DuckDB engines
+INSERT INTO engines (id, engine_type, display_name, config, k8s_service_name, cost_tier) VALUES
+    ('duckdb-1', 'duckdb', 'DuckDB — Small', '{"memory_gb": 1, "cpu_count": 1}', 'duckdb-worker', 3),
+    ('duckdb-2', 'duckdb', 'DuckDB — Medium', '{"memory_gb": 2, "cpu_count": 2}', 'duckdb-worker-medium', 4),
+    ('duckdb-3', 'duckdb', 'DuckDB — Large', '{"memory_gb": 4, "cpu_count": 4}', 'duckdb-worker-large', 5)
+ON CONFLICT DO NOTHING;
+
+
 
 CREATE INDEX IF NOT EXISTS idx_api_keys_key_prefix ON api_keys(key_prefix);
 -- Indexes for common query patterns
 CREATE INDEX IF NOT EXISTS idx_query_logs_submitted_at ON query_logs(submitted_at);
 CREATE INDEX IF NOT EXISTS idx_routing_decisions_query_log_id ON routing_decisions(query_log_id);
 CREATE INDEX IF NOT EXISTS idx_query_logs_correlation_id ON query_logs(correlation_id);
+
+CREATE INDEX IF NOT EXISTS idx_collection_queries_collection_id ON collection_queries(collection_id);
+CREATE INDEX IF NOT EXISTS idx_benchmarks_collection_id ON benchmarks(collection_id);
+CREATE INDEX IF NOT EXISTS idx_benchmark_results_benchmark_id ON benchmark_results(benchmark_id);
+CREATE INDEX IF NOT EXISTS idx_storage_probes_location_engine ON storage_latency_probes(storage_location, engine_id);

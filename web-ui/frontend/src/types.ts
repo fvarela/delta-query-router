@@ -69,12 +69,13 @@ export interface Query {
 export type EngineRuntimeState = "running" | "stopped" | "starting" | "unknown";
 
 export interface EngineCatalogEntry {
-  id: number;
+  id: string;
   engine_type: "databricks_sql" | "duckdb";
   display_name: string;
   config: Record<string, any>;
   is_default: boolean;
   enabled: boolean;
+  cost_tier: number;
   runtime_state: EngineRuntimeState;
   scalable?: boolean;
   created_at?: string;
@@ -139,7 +140,6 @@ export interface QueryExecutionResult {
   };
   execution: {
     execution_time_ms: number;
-    data_scanned_bytes: number;
   };
   columns: string[];
   rows: any[][];
@@ -149,7 +149,8 @@ export interface QueryExecutionResult {
 export interface BenchmarkSummary {
   id: number;
   collection_id: number;
-  status: "provisioning" | "warming_up" | "running" | "cleaning_up" | "complete" | "failed";
+  collection_name?: string;
+  status: "warming_up" | "running" | "complete" | "failed";
   engine_count: number;
   created_at: string;
   updated_at: string;
@@ -158,13 +159,12 @@ export interface BenchmarkSummary {
 export interface BenchmarkDetail extends BenchmarkSummary {
   warmups: BenchmarkWarmup[];
   results: BenchmarkResult[];
-  storage_probes?: StorageLatencyProbe[];
 }
 
 export interface BenchmarkWarmup {
   engine_id: string;
   engine_display_name: string;
-  cold_start_time_ms: number;
+  cold_start_time_ms: number | null;
   started_at: string;
 }
 
@@ -172,16 +172,14 @@ export interface BenchmarkResult {
   engine_id: string;
   engine_display_name: string;
   query_id: number;
-  execution_time_ms: number;
-  data_scanned_bytes: number;
-  io_latency_ms?: number; // ODQ-9: I/O latency component
+  execution_time_ms: number | null;
+  error_message?: string | null;
 }
 
-// --- ML Models (bundle: latency + cost trained together) ---
+// --- ML Models (latency prediction only — cost uses static engine tiers per ODQ-14) ---
 export interface SubModelMetrics {
   r_squared: number;
-  mae_ms?: number;  // latency model: MAE in milliseconds
-  mae_usd?: number; // cost model: MAE in USD
+  mae_ms?: number;
   model_path: string;
 }
 
@@ -189,11 +187,10 @@ export interface Model {
   id: number;
   linked_engines: string[];
   latency_model: SubModelMetrics;
-  cost_model: SubModelMetrics;
   is_active: boolean;
   created_at: string;
   benchmark_count?: number;
-  training_queries?: number; // total queries used in training
+  training_queries?: number;
 }
 
 // --- Storage Latency Probes (ODQ-9) ---
@@ -201,9 +198,9 @@ export interface StorageLatencyProbe {
   id: number;
   storage_location: string;
   engine_id: string;
-  engine_display_name: string;
+  engine_display_name?: string;
   probe_time_ms: number;
-  bytes_read: number;
+  bytes_read: number | null;
   measured_at: string;
 }
 

@@ -37,16 +37,16 @@ interface AppContextType {
   engines: EngineCatalogEntry[];
   reloadEngines: () => Promise<void>;
   /** IDs of engines selected for multi-engine routing (checkboxes) */
-  enabledEngineIds: Set<number>;
-  toggleEngineEnabled: (id: number) => void;
-  setAllEnginesEnabled: (ids: number[]) => void;
+  enabledEngineIds: Set<string>;
+  toggleEngineEnabled: (id: string) => void;
+  setAllEnginesEnabled: (ids: string[]) => void;
   /** ID of the single engine selected via radio button */
-  singleEngineId: number | null;
-  setSingleEngineId: (id: number | null) => void;
+  singleEngineId: string | null;
+  setSingleEngineId: (id: string | null) => void;
 
   /** Scale a DuckDB engine (start/stop) */
-  scaleEngine: (engineId: number, replicas: number) => Promise<void>;
-  scalingEngineIds: Set<number>;
+  scaleEngine: (engineId: string, replicas: number) => Promise<void>;
+  scalingEngineIds: Set<string>;
 
   // Run mode (derived from engine selection count — not settable directly)
   runMode: RunMode;
@@ -191,9 +191,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Engines
   const [engines, setEngines] = useState<EngineCatalogEntry[]>([]);
-  const [enabledEngineIds, setEnabledEngineIds] = useState<Set<number>>(new Set());
-  const [singleEngineId, setSingleEngineId] = useState<number | null>(null);
-  const [scalingEngineIds, setScalingEngineIds] = useState<Set<number>>(new Set());
+  const [enabledEngineIds, setEnabledEngineIds] = useState<Set<string>>(new Set());
+  const [singleEngineId, setSingleEngineId] = useState<string | null>(null);
+  const [scalingEngineIds, setScalingEngineIds] = useState<Set<string>>(new Set());
 
   const reloadEngines = useCallback(async () => {
     // Fetch engines from real backend API (DuckDB worker health + Databricks warehouses)
@@ -210,7 +210,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [singleEngineId]);
 
-  const scaleEngine = useCallback(async (engineId: number, replicas: number) => {
+  const scaleEngine = useCallback(async (engineId: string, replicas: number) => {
     setScalingEngineIds(prev => new Set(prev).add(engineId));
     try {
       await api.post(`/api/engines/${engineId}/scale`, { replicas });
@@ -226,7 +226,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [reloadEngines]);
 
-  const toggleEngineEnabled = useCallback((id: number) => {
+  const toggleEngineEnabled = useCallback((id: string) => {
     setEnabledEngineIds(prev => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id); else next.add(id);
@@ -234,7 +234,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   }, []);
 
-  const setAllEnginesEnabled = useCallback((ids: number[]) => {
+  const setAllEnginesEnabled = useCallback((ids: string[]) => {
     setEnabledEngineIds(new Set(ids));
   }, []);
 
@@ -256,7 +256,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Panel mode (Run vs Train)
   const [panelMode, setPanelModeRaw] = useState<PanelMode>("run");
-  const [savedEngineIds, setSavedEngineIds] = useState<Set<number> | null>(null);
+  const [savedEngineIds, setSavedEngineIds] = useState<Set<string> | null>(null);
 
   const setPanelMode = useCallback((mode: PanelMode) => {
     if (mode === "train") {

@@ -7,6 +7,7 @@ from uuid import UUID
 from fastapi.testclient import TestClient
 
 import main
+import auth
 from main import app
 
 _UNSET = object()  # sentinel to distinguish "not passed" from explicit None
@@ -21,7 +22,7 @@ client = TestClient(app)
 
 def _auth_header():
     token = "test-token-logs"
-    main._active_tokens[token] = "testuser"
+    auth._active_tokens[token] = "testuser"
     return {"Authorization": f"Bearer {token}"}
 
 

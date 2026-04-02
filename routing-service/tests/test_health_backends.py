@@ -7,6 +7,28 @@ from main import app
 
 client = TestClient(app)
 
+# Fake engine rows matching the DB schema shape
+_FAKE_DUCKDB_ENGINES = [
+    {
+        "id": "duckdb-1",
+        "engine_type": "duckdb",
+        "display_name": "DuckDB Small",
+        "k8s_service_name": "duckdb-worker",
+        "config": {},
+        "cost_tier": 3,
+        "is_active": True,
+    },
+    {
+        "id": "duckdb-2",
+        "engine_type": "duckdb",
+        "display_name": "DuckDB Medium",
+        "k8s_service_name": "duckdb-worker-medium",
+        "config": {},
+        "cost_tier": 4,
+        "is_active": True,
+    },
+]
+
 
 def _mock_httpx_ok():
     """Create a properly mocked httpx.AsyncClient for async with."""
@@ -29,23 +51,28 @@ def _mock_httpx_error(msg="Connection refused"):
 class TestHealthBackends:
     """GET /health/backends — public endpoint, no auth required."""
 
+    @patch("engines_api.get_duckdb_engines", return_value=_FAKE_DUCKDB_ENGINES)
     @patch("main._workspace_client", None)
     @patch("main.db.fetch_one", return_value={"?column?": 1})
-    def test_all_healthy_except_databricks_not_configured(self, mock_fetch):
-        """PostgreSQL + DuckDB tiers connected, Databricks not configured."""
+    def test_all_healthy_except_databricks_not_configured(
+        self, mock_fetch, mock_engines
+    ):
+        """PostgreSQL + DuckDB engines connected, Databricks not configured."""
         mock_client = _mock_httpx_ok()
         with patch("main.httpx.AsyncClient", return_value=mock_client):
             resp = client.get("/health/backends")
         assert resp.status_code == 200
         data = resp.json()
         assert data["postgresql"]["status"] == "connected"
-        # Multi-tier DuckDB: each tier is reported as its deployment name
-        assert data["duckdb-worker-small"]["status"] == "connected"
+        # DB-backed engines: each engine reported by k8s_service_name
+        assert data["duckdb-worker"]["status"] == "connected"
+        assert data["duckdb-worker-medium"]["status"] == "connected"
         assert data["databricks"]["status"] == "not_configured"
 
+    @patch("engines_api.get_duckdb_engines", return_value=_FAKE_DUCKDB_ENGINES)
     @patch("main._workspace_client", None)
     @patch("main.db.fetch_one", side_effect=Exception("connection refused"))
-    def test_postgresql_error(self, mock_fetch):
+    def test_postgresql_error(self, mock_fetch, mock_engines):
         """PostgreSQL returns error when fetch_one raises."""
         mock_client = _mock_httpx_ok()
         with patch("main.httpx.AsyncClient", return_value=mock_client):
@@ -55,9 +82,10 @@ class TestHealthBackends:
         assert data["postgresql"]["status"] == "error"
         assert "connection refused" in data["postgresql"]["detail"]
 
+    @patch("engines_api.get_duckdb_engines", return_value=_FAKE_DUCKDB_ENGINES)
     @patch("main._workspace_client", None)
     @patch("main.db.fetch_one", return_value={"?column?": 1})
-    def test_duckdb_worker_unreachable(self, mock_fetch):
+    def test_duckdb_worker_unreachable(self, mock_fetch, mock_engines):
         """DuckDB worker returns error when HTTP call fails."""
         mock_client = _mock_httpx_error("Connection refused")
         with patch("main.httpx.AsyncClient", return_value=mock_client):
@@ -65,12 +93,13 @@ class TestHealthBackends:
         assert resp.status_code == 200
         data = resp.json()
         assert data["postgresql"]["status"] == "connected"
-        # All tiers report error when unreachable
-        assert data["duckdb-worker-small"]["status"] == "error"
-        assert "Connection refused" in data["duckdb-worker-small"]["detail"]
+        # All engines report error when unreachable
+        assert data["duckdb-worker"]["status"] == "error"
+        assert "Connection refused" in data["duckdb-worker"]["detail"]
 
+    @patch("engines_api.get_duckdb_engines", return_value=_FAKE_DUCKDB_ENGINES)
     @patch("main.db.fetch_one", return_value={"?column?": 1})
-    def test_databricks_connected(self, mock_fetch):
+    def test_databricks_connected(self, mock_fetch, mock_engines):
         """Databricks returns connected when workspace client is set."""
         mock_client = _mock_httpx_ok()
         mock_ws = MagicMock()
@@ -84,8 +113,9 @@ class TestHealthBackends:
             data = resp.json()
             assert data["databricks"]["status"] == "connected"
 
+    @patch("engines_api.get_duckdb_engines", return_value=_FAKE_DUCKDB_ENGINES)
     @patch("main.db.fetch_one", return_value={"?column?": 1})
-    def test_databricks_error(self, mock_fetch):
+    def test_databricks_error(self, mock_fetch, mock_engines):
         """Databricks returns error when SDK call fails."""
         mock_client = _mock_httpx_ok()
         mock_ws = MagicMock()
@@ -100,7 +130,8 @@ class TestHealthBackends:
             assert data["databricks"]["status"] == "error"
             assert "token expired" in data["databricks"]["detail"]
 
-    def test_no_auth_required(self):
+    @patch("engines_api.get_duckdb_engines", return_value=_FAKE_DUCKDB_ENGINES)
+    def test_no_auth_required(self, mock_engines):
         """Health endpoints are public — no Authorization header needed."""
         mock_client = _mock_httpx_ok()
         with (

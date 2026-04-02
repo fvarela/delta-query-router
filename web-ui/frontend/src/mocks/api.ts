@@ -11,13 +11,15 @@
 //   - warehouses:    warehouse list + selection via GET /api/databricks/warehouses + PUT /api/settings/warehouse — AppContext + WorkspaceManager
 //   - routing rules: GET/POST/DELETE /api/routing/rules — wired in Phase 8
 //   - routing settings: GET/PUT /api/routing/settings — wired in Phase 8
+//   - collections:   CRUD + query management via /api/collections — wired in Phase 10
+//   - engines:       engine catalog + runtime status via /api/engines — wired in Phase 10
 //
 // MOCKED (backend endpoints not yet implemented):
-//   - engines:       engine catalog, enable/disable, runtime status
 //   - models:        ML model listing, activation, training wizard
-//   - collections:   CRUD operations, query management, Add to Collection
-//   - benchmarks:    benchmark lifecycle, results, storage probes
-//   - probes:        storage latency probes
+//
+// REAL (wired to backend):
+//   - benchmarks:    CRUD + execution via /api/benchmarks — wired in Phase 10
+//   - probes:        storage latency probes via /api/latency-probes — wired in Phase 10
 //
 // All components import exclusively from this file via `mockApi`.
 // When a real endpoint is available, replace the corresponding mock function
@@ -26,11 +28,13 @@
 
 import type {
   Collection, CollectionWithQueries, Query,
-  EngineCatalogEntry, EnginePreference, RoutingRule, RoutingSettings,
+  RoutingRule, RoutingSettings,
   QueryExecutionResult, BenchmarkSummary, BenchmarkDetail,
   Model, CatalogInfo, SchemaInfo, TableInfo, LogEntry,
   RoutingLogEvent, RoutingLogLevel, StorageLatencyProbe,
 } from "../types";
+
+import { api } from "../lib/api";
 
 const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
 
@@ -44,28 +48,8 @@ const mkLog = (level: RoutingLogLevel, stage: string, message: string): RoutingL
 });
 
 // ---- Mutable state ----
-let nextCollectionId = 3;
-let nextQueryId = 100;
 let nextRuleId = 100;
 let nextModelId = 3;
-let nextBenchmarkId = 4;
-
-let storageLatencyProbes: StorageLatencyProbe[] = [
-  { id: 1, storage_location: "s3://delta-router/tpcds/", engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", probe_time_ms: 12.3, bytes_read: 1048576, measured_at: "2026-03-14T09:00:30Z" },
-  { id: 2, storage_location: "s3://delta-router/tpcds/", engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", probe_time_ms: 11.8, bytes_read: 1048576, measured_at: "2026-03-14T09:00:30Z" },
-  { id: 3, storage_location: "s3://delta-router/analytics/", engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", probe_time_ms: 14.1, bytes_read: 1048576, measured_at: "2026-03-15T14:30:25Z" },
-  { id: 4, storage_location: "s3://delta-router/tpcds/", engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", probe_time_ms: 10.5, bytes_read: 1048576, measured_at: "2026-03-16T11:00:28Z" },
-];
-
-let engineCatalog: EngineCatalogEntry[] = [
-  { id: 1, engine_type: "databricks_sql", display_name: "Serverless 2X-Small", config: { cluster_size: "2XS" }, is_default: true, enabled: true, runtime_state: "running", created_at: "2026-03-01T00:00:00Z", updated_at: "2026-03-01T00:00:00Z" },
-  { id: 2, engine_type: "databricks_sql", display_name: "Serverless Medium", config: { cluster_size: "M" }, is_default: true, enabled: true, runtime_state: "stopped", created_at: "2026-03-01T00:00:00Z", updated_at: "2026-03-01T00:00:00Z" },
-  { id: 3, engine_type: "databricks_sql", display_name: "Serverless Large", config: { cluster_size: "L" }, is_default: true, enabled: true, runtime_state: "starting", created_at: "2026-03-01T00:00:00Z", updated_at: "2026-03-01T00:00:00Z" },
-  { id: 4, engine_type: "duckdb", display_name: "DuckDB 2GB/2CPU", config: { memory_gb: 2, cpu_count: 2 }, is_default: true, enabled: true, runtime_state: "running", created_at: "2026-03-01T00:00:00Z", updated_at: "2026-03-01T00:00:00Z" },
-  { id: 5, engine_type: "duckdb", display_name: "DuckDB 8GB/4CPU", config: { memory_gb: 8, cpu_count: 4 }, is_default: true, enabled: true, runtime_state: "running", created_at: "2026-03-01T00:00:00Z", updated_at: "2026-03-01T00:00:00Z" },
-  { id: 6, engine_type: "duckdb", display_name: "DuckDB 16GB/8CPU", config: { memory_gb: 16, cpu_count: 8 }, is_default: true, enabled: true, runtime_state: "running", created_at: "2026-03-01T00:00:00Z", updated_at: "2026-03-01T00:00:00Z" },
-];
-const defaultEngineCatalog = JSON.parse(JSON.stringify(engineCatalog));
 
 let routingRules: RoutingRule[] = [
   { id: 1, priority: 1, condition_type: "table_type", condition_value: "VIEW", target_engine: "databricks", is_system: true, enabled: true },
@@ -80,35 +64,13 @@ let models: Model[] = [
     id: 1,
     linked_engines: ["duckdb:2gb-2cpu", "databricks:serverless-2xs", "duckdb:8gb-4cpu"],
     latency_model: { r_squared: 0.87, mae_ms: 45, model_path: "/models/bundle_001_latency.joblib" },
-    cost_model: { r_squared: 0.91, mae_usd: 0.0012, model_path: "/models/bundle_001_cost.joblib" },
     is_active: false, created_at: "2026-03-10T14:30:00Z", benchmark_count: 12, training_queries: 99,
   },
   {
     id: 2,
     linked_engines: ["duckdb:2gb-2cpu", "duckdb:8gb-4cpu"],
     latency_model: { r_squared: 0.79, mae_ms: 62, model_path: "/models/bundle_002_latency.joblib" },
-    cost_model: { r_squared: 0.83, mae_usd: 0.0018, model_path: "/models/bundle_002_cost.joblib" },
     is_active: false, created_at: "2026-03-12T10:00:00Z", benchmark_count: 8, training_queries: 45,
-  },
-];
-
-let collections: CollectionWithQueries[] = [
-  {
-    id: 1, name: "TPC-DS Benchmark", description: "Standard TPC-DS queries for benchmarking", created_at: "2026-03-10T10:00:00Z", updated_at: "2026-03-14T15:00:00Z",
-    queries: [
-      { id: 1, collection_id: 1, query_text: "SELECT c_customer_sk, c_first_name, c_last_name FROM delta_router_dev.tpcds.customer WHERE c_birth_country = 'UNITED STATES' LIMIT 100", sequence_number: 1 },
-      { id: 2, collection_id: 1, query_text: "SELECT ss_sold_date_sk, SUM(ss_net_profit) AS total_profit FROM delta_router_dev.tpcds.store_sales GROUP BY ss_sold_date_sk ORDER BY total_profit DESC LIMIT 20", sequence_number: 2 },
-      { id: 3, collection_id: 1, query_text: "SELECT cs_sold_date_sk, cs_item_sk, cs_quantity FROM delta_router_dev.tpcds.catalog_sales WHERE cs_quantity > 50 LIMIT 100", sequence_number: 3 },
-      { id: 4, collection_id: 1, query_text: "SELECT cd_gender, cd_education_status, COUNT(*) AS cnt FROM delta_router_dev.tpcds.customer_demographics GROUP BY cd_gender, cd_education_status", sequence_number: 4 },
-      { id: 5, collection_id: 1, query_text: "SELECT d_date_sk, d_year, d_quarter_name FROM delta_router_dev.tpcds.date_dim WHERE d_year = 2024", sequence_number: 5 },
-    ],
-  },
-  {
-    id: 2, name: "Ad-hoc Queries", description: "Quick exploratory queries", created_at: "2026-03-12T08:00:00Z", updated_at: "2026-03-14T12:00:00Z",
-    queries: [
-      { id: 6, collection_id: 2, query_text: "SELECT * FROM delta_router_dev.analytics.revenue_summary LIMIT 50", sequence_number: 1 },
-      { id: 7, collection_id: 2, query_text: "SELECT * FROM delta_router_dev.tpcds.customer WHERE c_customer_sk < 100", sequence_number: 2 },
-    ],
   },
 ];
 
@@ -123,70 +85,6 @@ let queryLogs: LogEntry[] = [
   { correlation_id: "log-8", timestamp: "2026-03-15 10:36:45", query_text: "INSERT INTO delta_router_dev.tpcds.customer VALUES (...)", engine: "databricks:serverless-2xs", engine_display_name: "Databricks 2X-Small", status: "error", latency_ms: 150 },
   { correlation_id: "log-9", timestamp: "2026-03-15 10:35:30", query_text: "SELECT COUNT(*) FROM delta_router_dev.tpcds.store_sales", engine: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", status: "success", latency_ms: 22 },
   { correlation_id: "log-10", timestamp: "2026-03-15 10:34:00", query_text: "SELECT * FROM delta_router_dev.tpcds.customer WHERE c_customer_sk = 1", engine: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", status: "success", latency_ms: 55 },
-];
-
-let benchmarks: BenchmarkDetail[] = [
-  {
-    id: 1, collection_id: 1, status: "complete", engine_count: 3, created_at: "2026-03-14T09:00:00Z", updated_at: "2026-03-14T09:05:00Z",
-    warmups: [
-      { engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", cold_start_time_ms: 120, started_at: "2026-03-14T09:00:00Z" },
-      { engine_id: "databricks:serverless-2xs", engine_display_name: "Serverless 2X-Small", cold_start_time_ms: 2400, started_at: "2026-03-14T09:00:00Z" },
-      { engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", cold_start_time_ms: 180, started_at: "2026-03-14T09:00:00Z" },
-    ],
-    storage_probes: [
-      { id: 1, storage_location: "s3://delta-router/tpcds/", engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", probe_time_ms: 12.3, bytes_read: 1048576, measured_at: "2026-03-14T09:00:30Z" },
-      { id: 2, storage_location: "s3://delta-router/tpcds/", engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", probe_time_ms: 11.8, bytes_read: 1048576, measured_at: "2026-03-14T09:00:30Z" },
-    ],
-    results: [
-      { engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", query_id: 1, execution_time_ms: 45, data_scanned_bytes: 1200000, io_latency_ms: 12 },
-      { engine_id: "databricks:serverless-2xs", engine_display_name: "Serverless 2X-Small", query_id: 1, execution_time_ms: 180, data_scanned_bytes: 1200000 },
-      { engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", query_id: 1, execution_time_ms: 38, data_scanned_bytes: 1200000, io_latency_ms: 11 },
-      { engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", query_id: 2, execution_time_ms: 890, data_scanned_bytes: 52000000, io_latency_ms: 85 },
-      { engine_id: "databricks:serverless-2xs", engine_display_name: "Serverless 2X-Small", query_id: 2, execution_time_ms: 320, data_scanned_bytes: 52000000 },
-      { engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", query_id: 2, execution_time_ms: 450, data_scanned_bytes: 52000000, io_latency_ms: 78 },
-      { engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", query_id: 3, execution_time_ms: 1200, data_scanned_bytes: 85000000, io_latency_ms: 140 },
-      { engine_id: "databricks:serverless-2xs", engine_display_name: "Serverless 2X-Small", query_id: 3, execution_time_ms: 410, data_scanned_bytes: 85000000 },
-      { engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", query_id: 3, execution_time_ms: 620, data_scanned_bytes: 85000000, io_latency_ms: 125 },
-      { engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", query_id: 4, execution_time_ms: 65, data_scanned_bytes: 3000000, io_latency_ms: 8 },
-      { engine_id: "databricks:serverless-2xs", engine_display_name: "Serverless 2X-Small", query_id: 4, execution_time_ms: 195, data_scanned_bytes: 3000000 },
-      { engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", query_id: 4, execution_time_ms: 52, data_scanned_bytes: 3000000, io_latency_ms: 7 },
-      { engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", query_id: 5, execution_time_ms: 30, data_scanned_bytes: 800000, io_latency_ms: 5 },
-      { engine_id: "databricks:serverless-2xs", engine_display_name: "Serverless 2X-Small", query_id: 5, execution_time_ms: 160, data_scanned_bytes: 800000 },
-      { engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", query_id: 5, execution_time_ms: 25, data_scanned_bytes: 800000, io_latency_ms: 4 },
-    ],
-  },
-  {
-    id: 2, collection_id: 2, status: "complete", engine_count: 2, created_at: "2026-03-15T14:30:00Z", updated_at: "2026-03-15T14:33:00Z",
-    warmups: [
-      { engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", cold_start_time_ms: 110, started_at: "2026-03-15T14:30:00Z" },
-      { engine_id: "databricks:serverless-2xs", engine_display_name: "Serverless 2X-Small", cold_start_time_ms: 2100, started_at: "2026-03-15T14:30:00Z" },
-    ],
-    storage_probes: [
-      { id: 3, storage_location: "s3://delta-router/analytics/", engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", probe_time_ms: 14.1, bytes_read: 1048576, measured_at: "2026-03-15T14:30:25Z" },
-    ],
-    results: [
-      { engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", query_id: 6, execution_time_ms: 55, data_scanned_bytes: 2400000, io_latency_ms: 14 },
-      { engine_id: "databricks:serverless-2xs", engine_display_name: "Serverless 2X-Small", query_id: 6, execution_time_ms: 210, data_scanned_bytes: 2400000 },
-      { engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", query_id: 7, execution_time_ms: 38, data_scanned_bytes: 1800000, io_latency_ms: 10 },
-      { engine_id: "databricks:serverless-2xs", engine_display_name: "Serverless 2X-Small", query_id: 7, execution_time_ms: 165, data_scanned_bytes: 1800000 },
-    ],
-  },
-  {
-    id: 3, collection_id: 1, status: "complete", engine_count: 2, created_at: "2026-03-16T11:00:00Z", updated_at: "2026-03-16T11:04:00Z",
-    warmups: [
-      { engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", cold_start_time_ms: 150, started_at: "2026-03-16T11:00:00Z" },
-      { engine_id: "databricks:serverless-2xs", engine_display_name: "Serverless 2X-Small", cold_start_time_ms: 2250, started_at: "2026-03-16T11:00:00Z" },
-    ],
-    storage_probes: [
-      { id: 4, storage_location: "s3://delta-router/tpcds/", engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", probe_time_ms: 10.5, bytes_read: 1048576, measured_at: "2026-03-16T11:00:28Z" },
-    ],
-    results: [
-      { engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", query_id: 1, execution_time_ms: 35, data_scanned_bytes: 1200000, io_latency_ms: 10 },
-      { engine_id: "databricks:serverless-2xs", engine_display_name: "Serverless 2X-Small", query_id: 1, execution_time_ms: 175, data_scanned_bytes: 1200000 },
-      { engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", query_id: 2, execution_time_ms: 420, data_scanned_bytes: 52000000, io_latency_ms: 72 },
-      { engine_id: "databricks:serverless-2xs", engine_display_name: "Serverless 2X-Small", query_id: 2, execution_time_ms: 310, data_scanned_bytes: 52000000 },
-    ],
-  },
 ];
 
 // ---- Table data ----
@@ -234,64 +132,33 @@ export const mockApi = {
     return tableData[`${catalog}.${schema}`] || [];
   },
 
-  // Collections
+  // Collections (real — wired to /api/collections)
   async getCollections(): Promise<Collection[]> {
-    // TODO: Replace with real API call — GET /api/collections
-    await delay(200);
-    return collections.map(({ queries: _q, ...rest }) => rest);
+    return api.get<Collection[]>('/api/collections');
   },
 
   async getCollection(id: number): Promise<CollectionWithQueries> {
-    // TODO: Replace with real API call — GET /api/collections/:id
-    await delay(200);
-    const c = collections.find(c => c.id === id);
-    if (!c) throw new Error("Collection not found");
-    return JSON.parse(JSON.stringify(c));
+    return api.get<CollectionWithQueries>(`/api/collections/${id}`);
   },
 
   async createCollection(name: string, description: string): Promise<Collection> {
-    // TODO: Replace with real API call — POST /api/collections
-    await delay(300);
-    const c: CollectionWithQueries = { id: nextCollectionId++, name, description, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), queries: [] };
-    collections.push(c);
-    const { queries: _q, ...rest } = c;
-    return rest;
+    return api.post<Collection>('/api/collections', { name, description });
   },
 
   async updateCollection(id: number, data: Partial<Collection>): Promise<Collection> {
-    // TODO: Replace with real API call — PUT /api/collections/:id
-    await delay(200);
-    const c = collections.find(c => c.id === id);
-    if (!c) throw new Error("Not found");
-    Object.assign(c, data, { updated_at: new Date().toISOString() });
-    const { queries: _q, ...rest } = c;
-    return rest;
+    return api.put<Collection>(`/api/collections/${id}`, data);
   },
 
   async deleteCollection(id: number): Promise<void> {
-    // TODO: Replace with real API call — DELETE /api/collections/:id
-    await delay(200);
-    collections = collections.filter(c => c.id !== id);
+    await api.del(`/api/collections/${id}`);
   },
 
   async addQuery(collectionId: number, queryText: string): Promise<Query> {
-    // TODO: Replace with real API call — POST /api/collections/:id/queries
-    await delay(200);
-    const c = collections.find(c => c.id === collectionId);
-    if (!c) throw new Error("Not found");
-    const seq = c.queries.length + 1;
-    const q: Query = { id: nextQueryId++, collection_id: collectionId, query_text: queryText, sequence_number: seq };
-    c.queries.push(q);
-    return q;
+    return api.post<Query>(`/api/collections/${collectionId}/queries`, { query_text: queryText });
   },
 
   async deleteQuery(collectionId: number, queryId: number): Promise<void> {
-    // TODO: Replace with real API call — DELETE /api/collections/:collectionId/queries/:queryId
-    await delay(200);
-    const c = collections.find(c => c.id === collectionId);
-    if (!c) throw new Error("Not found");
-    c.queries = c.queries.filter(q => q.id !== queryId);
-    c.queries.forEach((q, i) => q.sequence_number = i + 1);
+    await api.del(`/api/collections/${collectionId}/queries/${queryId}`);
   },
 
   // Query Execution
@@ -451,74 +318,27 @@ export const mockApi = {
     return {
       correlation_id: correlationId,
       routing_decision: routingDecision,
-      execution: { execution_time_ms: execTime, data_scanned_bytes: 1200000 },
+      execution: { execution_time_ms: execTime },
       columns, rows,
     };
   },
 
-  // Benchmarks
+  // Benchmarks (real — wired to /api/benchmarks)
   async getBenchmarks(collectionId?: number): Promise<BenchmarkSummary[]> {
-    // TODO: Replace with real API call — GET /api/benchmarks
-    await delay(200);
-    const filtered = collectionId != null ? benchmarks.filter(b => b.collection_id === collectionId) : benchmarks;
-    return filtered.map(({ warmups: _w, results: _r, storage_probes: _s, ...rest }) => rest);
+    const params = collectionId != null ? `?collection_id=${collectionId}` : '';
+    return api.get<BenchmarkSummary[]>(`/api/benchmarks${params}`);
   },
 
   async getBenchmark(id: number): Promise<BenchmarkDetail> {
-    // TODO: Replace with real API call — GET /api/benchmarks/:id
-    await delay(300);
-    const b = benchmarks.find(b => b.id === id);
-    if (!b) throw new Error("Not found");
-    return JSON.parse(JSON.stringify(b));
+    return api.get<BenchmarkDetail>(`/api/benchmarks/${id}`);
   },
 
-  async createBenchmark(collectionId: number, _catalogEngineIds: number[]): Promise<BenchmarkSummary> {
-    // TODO: Replace with real API call — POST /api/benchmarks
-    await delay(500);
-    const b: BenchmarkDetail = {
-      id: nextBenchmarkId++, collection_id: collectionId, status: "complete", engine_count: 3,
-      created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-      warmups: [
-        { engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", cold_start_time_ms: 115, started_at: new Date().toISOString() },
-        { engine_id: "databricks:serverless-2xs", engine_display_name: "Serverless 2X-Small", cold_start_time_ms: 2350, started_at: new Date().toISOString() },
-      ],
-      results: [
-        { engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", query_id: 1, execution_time_ms: 42, data_scanned_bytes: 1200000 },
-        { engine_id: "databricks:serverless-2xs", engine_display_name: "Serverless 2X-Small", query_id: 1, execution_time_ms: 185, data_scanned_bytes: 1200000 },
-      ],
-    };
-    benchmarks.push(b);
-    const { warmups: _w, results: _r, storage_probes: _s, ...rest } = b;
-    return rest;
+  async createBenchmark(collectionId: number, engineIds: string[]): Promise<BenchmarkSummary> {
+    return api.post<BenchmarkSummary>('/api/benchmarks', { collection_id: collectionId, engine_ids: engineIds });
   },
 
   async deleteBenchmark(id: number): Promise<void> {
-    // TODO: Replace with real API call — DELETE /api/benchmarks/:id
-    await delay(200);
-    benchmarks = benchmarks.filter(b => b.id !== id);
-  },
-
-  // Engine Catalog
-  async getEngineCatalog(): Promise<EngineCatalogEntry[]> {
-    // TODO: Replace with real API call — GET /api/engines
-    // No delay — DuckDB engines are local data, avoid flash of empty state
-    return JSON.parse(JSON.stringify(engineCatalog));
-  },
-
-  async toggleEngineCatalogEntry(id: number, enabled: boolean): Promise<EngineCatalogEntry> {
-    // TODO: Replace with real API call — PUT /api/engines/:id
-    await delay(200);
-    const e = engineCatalog.find(e => e.id === id);
-    if (!e) throw new Error("Not found");
-    e.enabled = enabled;
-    return { ...e };
-  },
-
-  async resetEngineCatalog(): Promise<EngineCatalogEntry[]> {
-    // TODO: Replace with real API call — POST /api/engines/reset
-    await delay(300);
-    engineCatalog = JSON.parse(JSON.stringify(defaultEngineCatalog));
-    return JSON.parse(JSON.stringify(engineCatalog));
+    await api.del(`/api/benchmarks/${id}`);
   },
 
   // Routing Rules
@@ -589,11 +409,6 @@ export const mockApi = {
         mae_ms: 30 + Math.floor(Math.random() * 30),
         model_path: `/models/bundle_${String(nextModelId - 1).padStart(3, "0")}_latency.joblib`,
       },
-      cost_model: {
-        r_squared: 0.80 + Math.random() * 0.12,
-        mae_usd: 0.001 + Math.random() * 0.002,
-        model_path: `/models/bundle_${String(nextModelId - 1).padStart(3, "0")}_cost.joblib`,
-      },
       is_active: false, created_at: new Date().toISOString(),
       benchmark_count: benchmarkCount,
       training_queries: benchmarkCount * 5,
@@ -636,37 +451,14 @@ export const mockApi = {
     return logs.slice(0, 20);
   },
 
-  // Utility: count benchmark runs for given engines
-  async getBenchmarkCountForEngines(engineIds: string[]): Promise<number> {
-    // TODO: Replace with real API call — GET /api/benchmarks/count
-    await delay(100);
-    // Count unique benchmark results that involve any of the given engine IDs
-    let count = 0;
-    for (const b of benchmarks) {
-      const hasEngine = b.results.some(r => engineIds.includes(r.engine_id));
-      if (hasEngine) count += b.results.filter(r => engineIds.includes(r.engine_id)).length;
-    }
-    return count;
-  },
-
-  // Storage Latency Probes (ODQ-9)
+  // Storage Latency Probes (real — wired to /api/latency-probes)
   async getStorageLatencyProbes(): Promise<StorageLatencyProbe[]> {
-    // TODO: Replace with real API call — GET /api/storage/probes
-    await delay(200);
-    return JSON.parse(JSON.stringify(storageLatencyProbes));
+    return api.get<StorageLatencyProbe[]>('/api/latency-probes');
   },
 
   async runStorageLatencyProbes(): Promise<StorageLatencyProbe[]> {
-    // TODO: Replace with real API call — POST /api/storage/probes/run
-    await delay(2000); // Simulate probe execution time
-    const now = new Date().toISOString();
-    const newProbes: StorageLatencyProbe[] = [
-      { id: storageLatencyProbes.length + 1, storage_location: "s3://delta-router/tpcds/", engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", probe_time_ms: 11.5 + Math.random() * 3, bytes_read: 1048576, measured_at: now },
-      { id: storageLatencyProbes.length + 2, storage_location: "s3://delta-router/tpcds/", engine_id: "duckdb:8gb-4cpu", engine_display_name: "DuckDB 8GB/4CPU", probe_time_ms: 10.2 + Math.random() * 3, bytes_read: 1048576, measured_at: now },
-      { id: storageLatencyProbes.length + 3, storage_location: "s3://delta-router/analytics/", engine_id: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", probe_time_ms: 13.0 + Math.random() * 3, bytes_read: 1048576, measured_at: now },
-    ];
-    storageLatencyProbes.push(...newProbes);
-    return JSON.parse(JSON.stringify(newProbes));
+    const resp = await api.post<{ probes: StorageLatencyProbe[] }>('/api/latency-probes/run', {});
+    return resp.probes;
   },
 
   // Routing Settings

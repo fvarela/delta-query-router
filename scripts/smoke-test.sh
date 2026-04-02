@@ -261,6 +261,184 @@ else
 fi
 echo
 
+# =============================================================================
+# Phase 10 — Benchmark Lifecycle (Steps 13-21)
+# =============================================================================
+# These steps test the full benchmark lifecycle: engines, collections,
+# benchmark execution, storage probes, and cascade delete.
+# They require running DuckDB workers for the benchmark to succeed.
+# =============================================================================
+
+# --- Step 13: List engines ---------------------------------------------------
+
+echo "[Step 13] List engines"
+resp=$(call GET /api/engines)
+parse_resp "$resp"
+if [[ "$HTTP_STATUS" == "200" ]]; then
+  ENGINE_COUNT=$(echo "$HTTP_BODY" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+  ENGINE_IDS=$(echo "$HTTP_BODY" | python3 -c "import sys,json; print(','.join(e['id'] for e in json.load(sys.stdin)))" 2>/dev/null || echo "")
+  pass "GET /api/engines -> 200 ($ENGINE_COUNT engines: $ENGINE_IDS)"
+else
+  fail "GET /api/engines -> $HTTP_STATUS" "$HTTP_BODY"
+  ENGINE_IDS=""
+fi
+echo
+
+# --- Step 14: Create collection ----------------------------------------------
+
+COLLECTION_ID=""
+echo "[Step 14] Create collection"
+resp=$(call POST /api/collections '{"name":"Smoke Test Collection","description":"Created by smoke-test.sh"}')
+parse_resp "$resp"
+if [[ "$HTTP_STATUS" == "201" ]]; then
+  COLLECTION_ID=$(echo "$HTTP_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null || echo "")
+  if [[ -n "$COLLECTION_ID" ]]; then
+    pass "POST /api/collections -> 201 (id=$COLLECTION_ID)"
+  else
+    fail "POST /api/collections -> 201 but no id in body" "$HTTP_BODY"
+  fi
+else
+  fail "POST /api/collections -> $HTTP_STATUS" "$HTTP_BODY"
+fi
+echo
+
+# --- Step 15: Add queries to collection --------------------------------------
+
+echo "[Step 15] Add queries to collection"
+if [[ -n "$COLLECTION_ID" ]]; then
+  resp=$(call POST "/api/collections/${COLLECTION_ID}/queries" '{"sql":"SELECT 1 AS benchmark_q1","name":"Q1 - trivial"}')
+  parse_resp "$resp"
+  if [[ "$HTTP_STATUS" == "201" ]]; then
+    pass "POST query 1 -> 201"
+  else
+    fail "POST query 1 -> $HTTP_STATUS" "$HTTP_BODY"
+  fi
+
+  resp=$(call POST "/api/collections/${COLLECTION_ID}/queries" '{"sql":"SELECT 2 AS benchmark_q2","name":"Q2 - trivial"}')
+  parse_resp "$resp"
+  if [[ "$HTTP_STATUS" == "201" ]]; then
+    pass "POST query 2 -> 201"
+  else
+    fail "POST query 2 -> $HTTP_STATUS" "$HTTP_BODY"
+  fi
+else
+  skip "No collection ID — skipping add queries"
+fi
+echo
+
+# --- Step 16: Run benchmark --------------------------------------------------
+
+BENCHMARK_ID=""
+echo "[Step 16] Run benchmark"
+if [[ -n "$COLLECTION_ID" && -n "$ENGINE_IDS" ]]; then
+  # Build engine_ids JSON array from comma-separated list
+  ENGINE_JSON=$(echo "$ENGINE_IDS" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip().split(',')))" 2>/dev/null || echo '[]')
+  resp=$(call POST /api/benchmarks "{\"collection_id\":$COLLECTION_ID,\"engine_ids\":$ENGINE_JSON,\"warmup_runs\":1}")
+  parse_resp "$resp"
+  if [[ "$HTTP_STATUS" == "200" || "$HTTP_STATUS" == "201" ]]; then
+    BENCHMARK_ID=$(echo "$HTTP_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null || echo "")
+    BM_STATUS=$(echo "$HTTP_BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','?'))" 2>/dev/null || echo "?")
+    if [[ -n "$BENCHMARK_ID" ]]; then
+      pass "POST /api/benchmarks -> $HTTP_STATUS (id=$BENCHMARK_ID, status=$BM_STATUS)"
+    else
+      fail "POST /api/benchmarks -> $HTTP_STATUS but no id" "$HTTP_BODY"
+    fi
+  else
+    fail "POST /api/benchmarks -> $HTTP_STATUS" "$HTTP_BODY"
+  fi
+else
+  skip "No collection or engines — skipping benchmark run"
+fi
+echo
+
+# --- Step 17: Get benchmark detail -------------------------------------------
+
+echo "[Step 17] Get benchmark detail"
+if [[ -n "$BENCHMARK_ID" ]]; then
+  resp=$(call GET "/api/benchmarks/${BENCHMARK_ID}")
+  parse_resp "$resp"
+  if [[ "$HTTP_STATUS" == "200" ]]; then
+    WARMUP_COUNT=$(echo "$HTTP_BODY" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('warmups',[])))" 2>/dev/null || echo "0")
+    RESULT_COUNT=$(echo "$HTTP_BODY" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('results',[])))" 2>/dev/null || echo "0")
+    pass "GET /api/benchmarks/$BENCHMARK_ID -> 200 ($WARMUP_COUNT warmups, $RESULT_COUNT results)"
+  else
+    fail "GET /api/benchmarks/$BENCHMARK_ID -> $HTTP_STATUS" "$HTTP_BODY"
+  fi
+else
+  skip "No benchmark ID — skipping detail check"
+fi
+echo
+
+# --- Step 18: List benchmarks for collection ---------------------------------
+
+echo "[Step 18] List benchmarks for collection"
+if [[ -n "$COLLECTION_ID" ]]; then
+  resp=$(call GET "/api/benchmarks?collection_id=${COLLECTION_ID}")
+  parse_resp "$resp"
+  if [[ "$HTTP_STATUS" == "200" ]]; then
+    BM_LIST_COUNT=$(echo "$HTTP_BODY" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+    pass "GET /api/benchmarks?collection_id=$COLLECTION_ID -> 200 ($BM_LIST_COUNT benchmarks)"
+  else
+    fail "GET /api/benchmarks?collection_id=$COLLECTION_ID -> $HTTP_STATUS" "$HTTP_BODY"
+  fi
+else
+  skip "No collection ID — skipping benchmark list"
+fi
+echo
+
+# --- Step 19: Run storage probes ---------------------------------------------
+
+echo "[Step 19] Run storage probes"
+resp=$(call POST /api/latency-probes/run)
+parse_resp "$resp"
+if [[ "$HTTP_STATUS" == "200" ]]; then
+  PROBE_COUNT=$(echo "$HTTP_BODY" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+  pass "POST /api/latency-probes/run -> 200 ($PROBE_COUNT probes)"
+else
+  fail "POST /api/latency-probes/run -> $HTTP_STATUS" "$HTTP_BODY"
+fi
+echo
+
+# --- Step 20: List storage probes --------------------------------------------
+
+echo "[Step 20] List storage probes"
+resp=$(call GET /api/latency-probes)
+parse_resp "$resp"
+if [[ "$HTTP_STATUS" == "200" ]]; then
+  PROBE_LIST_COUNT=$(echo "$HTTP_BODY" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+  pass "GET /api/latency-probes -> 200 ($PROBE_LIST_COUNT probes)"
+else
+  fail "GET /api/latency-probes -> $HTTP_STATUS" "$HTTP_BODY"
+fi
+echo
+
+# --- Step 21: Delete collection + verify cascade -----------------------------
+
+echo "[Step 21] Delete collection (cascade)"
+if [[ -n "$COLLECTION_ID" ]]; then
+  resp=$(call DELETE "/api/collections/${COLLECTION_ID}")
+  parse_resp "$resp"
+  if [[ "$HTTP_STATUS" == "200" || "$HTTP_STATUS" == "204" ]]; then
+    pass "DELETE /api/collections/$COLLECTION_ID -> $HTTP_STATUS"
+  else
+    fail "DELETE /api/collections/$COLLECTION_ID -> $HTTP_STATUS" "$HTTP_BODY"
+  fi
+
+  # Verify cascade: benchmark should be gone
+  if [[ -n "$BENCHMARK_ID" ]]; then
+    resp=$(call GET "/api/benchmarks/${BENCHMARK_ID}")
+    parse_resp "$resp"
+    if [[ "$HTTP_STATUS" == "404" ]]; then
+      pass "GET /api/benchmarks/$BENCHMARK_ID -> 404 (cascade confirmed)"
+    else
+      fail "GET /api/benchmarks/$BENCHMARK_ID -> $HTTP_STATUS (expected 404 after cascade)" "$HTTP_BODY"
+    fi
+  fi
+else
+  skip "No collection ID — skipping delete + cascade check"
+fi
+echo
+
 # --- Summary ----------------------------------------------------------------
 
 echo "============================================"

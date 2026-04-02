@@ -288,7 +288,6 @@ const ResultsView: React.FC<{ result: QueryExecutionResult }> = ({ result }) => 
     {/* Metrics */}
     <div className="flex gap-4 text-[12px]">
       <span className={latencyColor(result.execution.execution_time_ms)}>Time: {result.execution.execution_time_ms}ms</span>
-      <span className="text-foreground">Scanned: {(result.execution.data_scanned_bytes / 1024 / 1024).toFixed(1)} MB</span>
     </div>
 
     {/* Results Table (max 10 rows, horizontally scrollable) */}

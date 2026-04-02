@@ -1,0 +1,147 @@
+"""Collections CRUD — query collections and their queries."""
+
+import logging
+
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import Response
+from pydantic import BaseModel
+
+import db
+
+logger = logging.getLogger("routing-service.collections")
+
+router = APIRouter(prefix="/api/collections", tags=["collections"])
+
+
+# --- Pydantic models ---
+
+
+class CreateCollection(BaseModel):
+    name: str
+    description: str | None = None
+
+
+class UpdateCollection(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
+
+class AddQuery(BaseModel):
+    query_text: str
+    sequence_number: int | None = None
+
+
+class UpdateQuery(BaseModel):
+    query_text: str | None = None
+    sequence_number: int | None = None
+
+
+# --- Collection endpoints ---
+
+
+@router.get("")
+async def list_collections():
+    """List all collections with query count."""
+    return db.fetch_all(
+        """
+        SELECT c.*, COUNT(q.id) AS query_count
+        FROM collections c
+        LEFT JOIN collection_queries q ON q.collection_id = c.id
+        GROUP BY c.id
+        ORDER BY c.created_at DESC
+        """
+    )
+
+
+@router.get("/{collection_id}")
+async def get_collection(collection_id: int):
+    """Get a collection with its queries."""
+    collection = db.fetch_one(
+        "SELECT * FROM collections WHERE id = %s", (collection_id,)
+    )
+    if not collection:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    queries = db.fetch_all(
+        "SELECT * FROM collection_queries WHERE collection_id = %s ORDER BY sequence_number",
+        (collection_id,),
+    )
+    return {**collection, "queries": queries}
+
+
+@router.post("", status_code=201)
+async def create_collection(body: CreateCollection):
+    """Create a new collection."""
+    return db.fetch_one(
+        "INSERT INTO collections (name, description) VALUES (%s, %s) RETURNING *",
+        (body.name, body.description),
+    )
+
+
+@router.put("/{collection_id}")
+async def update_collection(collection_id: int, body: UpdateCollection):
+    """Update a collection's name or description."""
+    existing = db.fetch_one("SELECT * FROM collections WHERE id = %s", (collection_id,))
+    if not existing:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    fields: dict = {}
+    if body.name is not None:
+        fields["name"] = body.name
+    if body.description is not None:
+        fields["description"] = body.description
+    if not fields:
+        return existing
+    set_parts = [f"{k} = %s" for k in fields]
+    set_parts.append("updated_at = NOW()")
+    values = list(fields.values()) + [collection_id]
+    return db.fetch_one(
+        f"UPDATE collections SET {', '.join(set_parts)} WHERE id = %s RETURNING *",
+        tuple(values),
+    )
+
+
+@router.delete("/{collection_id}", status_code=204)
+async def delete_collection(collection_id: int):
+    """Delete a collection and all its queries (CASCADE)."""
+    existing = db.fetch_one("SELECT * FROM collections WHERE id = %s", (collection_id,))
+    if not existing:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    db.execute("DELETE FROM collections WHERE id = %s", (collection_id,))
+    return Response(status_code=204)
+
+
+# --- Query endpoints ---
+
+
+@router.post("/{collection_id}/queries", status_code=201)
+async def add_query(collection_id: int, body: AddQuery):
+    """Add a query to a collection."""
+    existing = db.fetch_one("SELECT * FROM collections WHERE id = %s", (collection_id,))
+    if not existing:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    if body.sequence_number is not None:
+        seq = body.sequence_number
+    else:
+        result = db.fetch_one(
+            "SELECT COALESCE(MAX(sequence_number), 0) + 1 AS next_seq "
+            "FROM collection_queries WHERE collection_id = %s",
+            (collection_id,),
+        )
+        seq = result["next_seq"]
+    return db.fetch_one(
+        "INSERT INTO collection_queries (collection_id, query_text, sequence_number) "
+        "VALUES (%s, %s, %s) RETURNING *",
+        (collection_id, body.query_text, seq),
+    )
+
+
+@router.delete("/{collection_id}/queries/{query_id}", status_code=204)
+async def delete_query(collection_id: int, query_id: int):
+    """Delete a query from a collection."""
+    existing = db.fetch_one(
+        "SELECT * FROM collection_queries WHERE id = %s AND collection_id = %s",
+        (query_id, collection_id),
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Query not found")
+    db.execute("DELETE FROM collection_queries WHERE id = %s", (query_id,))
+    return Response(status_code=204)
