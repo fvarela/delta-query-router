@@ -340,7 +340,7 @@ export const TrainModePanel: React.FC = () => {
                       {!compatible && <span className="text-[9px] text-status-warning">Incompatible</span>}
                     </div>
                     <div className="text-[10px] text-muted-foreground">
-                      {m.linked_engines.length} engines · R²={m.accuracy_metrics.r_squared.toFixed(2)} · {m.benchmark_count ?? 0} benchmarks
+                      {m.linked_engines.length} engines · R²={m.latency_model.r_squared.toFixed(2)} · {m.benchmark_count ?? 0} benchmarks
                     </div>
                   </div>
                 );

@@ -507,7 +507,6 @@ class TestResponseStructure:
         # execution fields
         ex = data["execution"]
         assert "execution_time_ms" in ex
-        assert "data_scanned_bytes" in ex
 
 
 # ---------------------------------------------------------------------------

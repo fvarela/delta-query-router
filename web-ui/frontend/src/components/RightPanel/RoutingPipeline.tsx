@@ -895,16 +895,6 @@ export const RoutingPipeline: React.FC = () => {
                 <p className="text-muted-foreground text-[10px]">Path: {detailModel.latency_model.model_path}</p>
               </div>
             </div>
-            <div>
-              <h4 className="font-semibold text-foreground mb-1.5 flex items-center gap-1.5">
-                <span className="text-[9px] px-1.5 py-0.5 rounded font-medium bg-emerald-500/15 text-emerald-500">Cost</span> Sub-model
-              </h4>
-              <div className="bg-muted/30 rounded p-2.5 space-y-1 text-[11px]">
-                <p className="text-foreground">R²: <span className="font-medium">{detailModel.cost_model.r_squared.toFixed(3)}</span></p>
-                {detailModel.cost_model.mae_usd != null && <p className="text-foreground">MAE: <span className="font-medium">${detailModel.cost_model.mae_usd.toFixed(4)}</span></p>}
-                <p className="text-muted-foreground text-[10px]">Path: {detailModel.cost_model.model_path}</p>
-              </div>
-            </div>
           </div>
           <div className="px-4 py-3 border-t border-border flex justify-end shrink-0">
             <button onClick={() => setDetailModelId(null)} className="px-3 py-1.5 border border-border rounded text-[11px] text-foreground">Close</button>

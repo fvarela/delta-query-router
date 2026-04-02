@@ -64,14 +64,12 @@ let models: Model[] = [
     id: 1,
     linked_engines: ["duckdb:2gb-2cpu", "databricks:serverless-2xs", "duckdb:8gb-4cpu"],
     latency_model: { r_squared: 0.87, mae_ms: 45, model_path: "/models/bundle_001_latency.joblib" },
-    cost_model: { r_squared: 0.91, mae_usd: 0.0012, model_path: "/models/bundle_001_cost.joblib" },
     is_active: false, created_at: "2026-03-10T14:30:00Z", benchmark_count: 12, training_queries: 99,
   },
   {
     id: 2,
     linked_engines: ["duckdb:2gb-2cpu", "duckdb:8gb-4cpu"],
     latency_model: { r_squared: 0.79, mae_ms: 62, model_path: "/models/bundle_002_latency.joblib" },
-    cost_model: { r_squared: 0.83, mae_usd: 0.0018, model_path: "/models/bundle_002_cost.joblib" },
     is_active: false, created_at: "2026-03-12T10:00:00Z", benchmark_count: 8, training_queries: 45,
   },
 ];
@@ -320,7 +318,7 @@ export const mockApi = {
     return {
       correlation_id: correlationId,
       routing_decision: routingDecision,
-      execution: { execution_time_ms: execTime, data_scanned_bytes: 1200000 },
+      execution: { execution_time_ms: execTime },
       columns, rows,
     };
   },
@@ -410,11 +408,6 @@ export const mockApi = {
         r_squared: 0.82 + Math.random() * 0.1,
         mae_ms: 30 + Math.floor(Math.random() * 30),
         model_path: `/models/bundle_${String(nextModelId - 1).padStart(3, "0")}_latency.joblib`,
-      },
-      cost_model: {
-        r_squared: 0.80 + Math.random() * 0.12,
-        mae_usd: 0.001 + Math.random() * 0.002,
-        model_path: `/models/bundle_${String(nextModelId - 1).padStart(3, "0")}_cost.joblib`,
       },
       is_active: false, created_at: new Date().toISOString(),
       benchmark_count: benchmarkCount,

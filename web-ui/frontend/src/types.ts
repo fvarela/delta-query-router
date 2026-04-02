@@ -140,7 +140,6 @@ export interface QueryExecutionResult {
   };
   execution: {
     execution_time_ms: number;
-    data_scanned_bytes: number;
   };
   columns: string[];
   rows: any[][];
@@ -177,11 +176,10 @@ export interface BenchmarkResult {
   error_message?: string | null;
 }
 
-// --- ML Models (bundle: latency + cost trained together) ---
+// --- ML Models (latency prediction only — cost uses static engine tiers per ODQ-14) ---
 export interface SubModelMetrics {
   r_squared: number;
-  mae_ms?: number;  // latency model: MAE in milliseconds
-  mae_usd?: number; // cost model: MAE in USD
+  mae_ms?: number;
   model_path: string;
 }
 
@@ -189,11 +187,10 @@ export interface Model {
   id: number;
   linked_engines: string[];
   latency_model: SubModelMetrics;
-  cost_model: SubModelMetrics;
   is_active: boolean;
   created_at: string;
   benchmark_count?: number;
-  training_queries?: number; // total queries used in training
+  training_queries?: number;
 }
 
 // --- Storage Latency Probes (ODQ-9) ---

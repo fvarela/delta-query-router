@@ -825,7 +825,6 @@ async def execute_query(
         },
         "execution": {
             "execution_time_ms": execution_time_ms,
-            "data_scanned_bytes": 0,  # Not available yet
         },
         "columns": result["columns"],
         "rows": result["rows"],
