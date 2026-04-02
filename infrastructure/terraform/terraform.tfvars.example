@@ -1,0 +1,19 @@
+# Copy to terraform.tfvars and fill in real values
+# terraform.tfvars is gitignored — never commit secrets
+subscription_id = "00000000-0000-0000-0000-000000000000"
+# Azure region (default: eastus2)
+# location = "eastus2"
+# Resource names (defaults are fine for dev)
+# resource_group_name = "rg-delta-router"
+# aks_cluster_name    = "aks-delta-router"
+# acr_name            = "acrdeltarouter"  # must be globally unique, alphanumeric only
+# AKS node pool (default: Standard_B2ms, 1-3 nodes)
+# aks_node_vm_size   = "Standard_B2ms"
+# aks_node_count_min = 1
+# aks_node_count_max = 3
+# Application secrets — CHANGE THESE
+admin_username    = "admin"
+admin_password    = "CHANGE-ME"
+postgres_user     = "delta"
+postgres_password = "CHANGE-ME"
+postgres_database = "deltarouter"
