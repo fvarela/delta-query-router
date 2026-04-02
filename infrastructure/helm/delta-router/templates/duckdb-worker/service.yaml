@@ -1,0 +1,22 @@
+{{- range $tierName, $tier := .Values.duckdbWorker.tiers }}
+{{- if $tier.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: duckdb-worker-{{ $tierName }}
+  labels:
+    {{- include "delta-router.labels" $ | nindent 4 }}
+    app: duckdb-worker-{{ $tierName }}
+    duckdb-tier: {{ $tierName }}
+spec:
+  type: ClusterIP
+  ports:
+  - port: {{ $.Values.duckdbWorker.port }}
+    targetPort: {{ $.Values.duckdbWorker.port }}
+    protocol: TCP
+    name: http
+  selector:
+    app: duckdb-worker-{{ $tierName }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,49 @@
+{{- range $tierName, $tier := .Values.duckdbWorker.tiers }}
+{{- if $tier.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: duckdb-worker-{{ $tierName }}
+  labels:
+    {{- include "delta-router.labels" $ | nindent 4 }}
+    app: duckdb-worker-{{ $tierName }}
+    duckdb-tier: {{ $tierName }}
+spec:
+  replicas: {{ $tier.replicas }}
+  selector:
+    matchLabels:
+      app: duckdb-worker-{{ $tierName }}
+  template:
+    metadata:
+      labels:
+        {{- include "delta-router.labels" $ | nindent 8 }}
+        app: duckdb-worker-{{ $tierName }}
+        duckdb-tier: {{ $tierName }}
+    spec:
+      containers:
+      - name: duckdb-worker
+        image: "{{ $.Values.duckdbWorker.image.repository }}:{{ $.Values.duckdbWorker.image.tag }}"
+        imagePullPolicy: {{ $.Values.duckdbWorker.image.pullPolicy }}
+        ports:
+        - containerPort: {{ $.Values.duckdbWorker.port }}
+          name: http
+        resources:
+          {{- toYaml $tier.resources | nindent 10 }}
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: {{ $.Values.duckdbWorker.port }}
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: {{ $.Values.duckdbWorker.port }}
+          initialDelaySeconds: 15
+          periodSeconds: 20
+          timeoutSeconds: 10
+          failureThreshold: 5
+{{- end }}
+{{- end }}
