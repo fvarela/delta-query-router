@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "delta-router.webUi.fullname" . }}
+  labels:
+    {{- include "delta-router.labels" . | nindent 4 }}
+    app: web-ui
+spec:
+  replicas: {{ .Values.webUi.replicas }}
+  selector:
+    matchLabels:
+      app: web-ui
+  template:
+    metadata:
+      labels:
+        {{- include "delta-router.labels" . | nindent 8 }}
+        app: web-ui
+    spec:
+      containers:
+      - name: web-ui
+        image: "{{ .Values.webUi.image.repository }}:{{ .Values.webUi.image.tag }}"
+        imagePullPolicy: {{ .Values.webUi.image.pullPolicy }}
+        envFrom:
+        - configMapRef:
+            name: {{ include "delta-router.webUi.fullname" . }}-config
+        ports:
+        - containerPort: {{ .Values.webUi.port }}
+          name: http
+        resources:
+          {{- toYaml .Values.webUi.resources | nindent 10 }}
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: {{ .Values.webUi.port }}
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: {{ .Values.webUi.port }}
+          initialDelaySeconds: 15
+          periodSeconds: 20
