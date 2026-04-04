@@ -3,23 +3,21 @@
 // =============================================================================
 //
 // REAL (wired to backend):
-//   - catalog:       Unity Catalog browsing (catalogs, schemas, tables) — CatalogBrowser.tsx uses api.get() directly
-//   - query:         SQL execution via POST /api/query — CenterPanel.tsx uses api.post() directly
-//   - query logs:    query history via GET /api/logs — CenterPanel.tsx uses api.get() directly
-//   - query detail:  GET /api/query/{id} — CenterPanel.tsx uses api.get() directly
-//   - workspaces:    workspace connect/disconnect via POST /api/settings/databricks — WorkspaceManager.tsx uses api directly
-//   - warehouses:    warehouse list + selection via GET /api/databricks/warehouses + PUT /api/settings/warehouse — AppContext + WorkspaceManager
-//   - routing rules: GET/POST/DELETE /api/routing/rules — wired in Phase 8
-//   - routing settings: GET/PUT /api/routing/settings — wired in Phase 8
-//   - collections:   CRUD + query management via /api/collections — wired in Phase 10
-//   - engines:       engine catalog + runtime status via /api/engines — wired in Phase 10
+//   - catalog:          Unity Catalog browsing — CatalogBrowser.tsx uses api.get() directly
+//   - query:            SQL execution via POST /api/query — CenterPanel.tsx
+//   - query logs:       query history via GET /api/logs — CenterPanel.tsx
+//   - query detail:     GET /api/query/{id} — CenterPanel.tsx
+//   - workspaces:       workspace connect/disconnect — WorkspaceManager.tsx
+//   - warehouses:       warehouse list + selection — AppContext + WorkspaceManager
+//   - routing rules:    GET/POST/DELETE /api/routing/rules — Phase 8
+//   - routing settings: GET/PUT /api/routing/settings — Phase 8
+//   - collections:      CRUD + query management via /api/collections — Phase 10
+//   - engines:          engine catalog + runtime status via /api/engines — Phase 10
+//   - benchmarks:       CRUD + execution via /api/benchmarks — Phase 10
+//   - probes:           storage latency probes via /api/latency-probes — Phase 10
 //
 // MOCKED (backend endpoints not yet implemented):
-//   - models:        ML model listing, activation, training wizard
-//
-// REAL (wired to backend):
-//   - benchmarks:    CRUD + execution via /api/benchmarks — wired in Phase 10
-//   - probes:        storage latency probes via /api/latency-probes — wired in Phase 10
+//   - models:           ML model listing, activation, training wizard
 //
 // All components import exclusively from this file via `mockApi`.
 // When a real endpoint is available, replace the corresponding mock function
@@ -30,7 +28,7 @@ import type {
   Collection, CollectionWithQueries, Query,
   RoutingRule, RoutingSettings,
   QueryExecutionResult, BenchmarkSummary, BenchmarkDetail,
-  Model, CatalogInfo, SchemaInfo, TableInfo, LogEntry,
+  Model, LogEntry,
   RoutingLogEvent, RoutingLogLevel, StorageLatencyProbe,
 } from "../types";
 
@@ -87,51 +85,8 @@ let queryLogs: LogEntry[] = [
   { correlation_id: "log-10", timestamp: "2026-03-15 10:34:00", query_text: "SELECT * FROM delta_router_dev.tpcds.customer WHERE c_customer_sk = 1", engine: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", status: "success", latency_ms: 55 },
 ];
 
-// ---- Table data ----
-const tableData: Record<string, TableInfo[]> = {
-  "delta_router_dev.tpcds": [
-    { name: "customer", full_name: "delta_router_dev.tpcds.customer", table_type: "MANAGED", data_source_format: "DELTA", size_bytes: 47185920, row_count: 100000, storage_location: "abfss://tpcds@deltarouter.dfs.core.windows.net/customer", external_engine_read_support: true, columns: [{ name: "c_customer_sk", type_text: "INT" }, { name: "c_customer_id", type_text: "STRING" }, { name: "c_first_name", type_text: "STRING" }, { name: "c_last_name", type_text: "STRING" }, { name: "c_birth_country", type_text: "STRING" }, { name: "c_email_address", type_text: "STRING" }] },
-    { name: "store_sales", full_name: "delta_router_dev.tpcds.store_sales", table_type: "MANAGED", data_source_format: "DELTA", size_bytes: 2254857830, row_count: 28000000, storage_location: "abfss://tpcds@deltarouter.dfs.core.windows.net/store_sales", external_engine_read_support: true, columns: [{ name: "ss_sold_date_sk", type_text: "INT" }, { name: "ss_item_sk", type_text: "INT" }, { name: "ss_customer_sk", type_text: "INT" }, { name: "ss_net_profit", type_text: "DECIMAL(7,2)" }, { name: "ss_quantity", type_text: "INT" }] },
-    { name: "catalog_sales", full_name: "delta_router_dev.tpcds.catalog_sales", table_type: "MANAGED", data_source_format: "DELTA", size_bytes: 3650722202, row_count: 43000000, storage_location: "abfss://secure@securedatalake.dfs.core.windows.net/catalog_sales", external_engine_read_support: true, columns: [{ name: "cs_sold_date_sk", type_text: "INT" }, { name: "cs_item_sk", type_text: "INT" }, { name: "cs_quantity", type_text: "INT" }, { name: "cs_net_profit", type_text: "DECIMAL(7,2)" }] },
-    { name: "customer_demographics", full_name: "delta_router_dev.tpcds.customer_demographics", table_type: "MANAGED", data_source_format: "DELTA", size_bytes: 12582912, row_count: 1920000, storage_location: "abfss://secure@securedatalake.dfs.core.windows.net/customer_demographics", external_engine_read_support: true, columns: [{ name: "cd_demo_sk", type_text: "INT" }, { name: "cd_gender", type_text: "STRING" }, { name: "cd_education_status", type_text: "STRING" }, { name: "cd_credit_rating", type_text: "STRING" }] },
-    { name: "date_dim", full_name: "delta_router_dev.tpcds.date_dim", table_type: "MANAGED", data_source_format: "DELTA", size_bytes: 5242880, row_count: 73049, storage_location: "abfss://private@privatestore.dfs.core.windows.net/date_dim", external_engine_read_support: true, columns: [{ name: "d_date_sk", type_text: "INT" }, { name: "d_date_id", type_text: "STRING" }, { name: "d_year", type_text: "INT" }, { name: "d_quarter_name", type_text: "STRING" }, { name: "d_month_seq", type_text: "INT" }] },
-    { name: "web_sales", full_name: "delta_router_dev.tpcds.web_sales", table_type: "EXTERNAL", data_source_format: "ICEBERG", size_bytes: 1890000000, row_count: 18000000, storage_location: "abfss://private@privatestore.dfs.core.windows.net/web_sales", external_engine_read_support: true, columns: [{ name: "ws_sold_date_sk", type_text: "INT" }, { name: "ws_item_sk", type_text: "INT" }, { name: "ws_bill_customer_sk", type_text: "INT" }, { name: "ws_net_profit", type_text: "DECIMAL(7,2)" }, { name: "ws_quantity", type_text: "INT" }] },
-  ],
-  "delta_router_dev.analytics": [
-    { name: "revenue_summary", full_name: "delta_router_dev.analytics.revenue_summary", table_type: "VIEW", data_source_format: null, size_bytes: null, row_count: null, storage_location: null, external_engine_read_support: false, read_support_reason: "View — must execute on Databricks", columns: [{ name: "year", type_text: "INT" }, { name: "quarter", type_text: "STRING" }, { name: "total_revenue", type_text: "DECIMAL(12,2)" }, { name: "total_cost", type_text: "DECIMAL(12,2)" }] },
-    { name: "customer_pii", full_name: "delta_router_dev.analytics.customer_pii", table_type: "MANAGED", data_source_format: "DELTA", size_bytes: 241172480, row_count: 1000000, storage_location: "abfss://analytics@analyticsstore.dfs.core.windows.net/customer_pii", external_engine_read_support: false, read_support_reason: "Has row-level security filter", columns: [{ name: "customer_id", type_text: "INT" }, { name: "ssn", type_text: "STRING" }, { name: "full_name", type_text: "STRING" }, { name: "email", type_text: "STRING" }, { name: "phone", type_text: "STRING" }] },
-  ],
-  "delta_router_dev.external": [
-    { name: "sqlserver_orders", full_name: "delta_router_dev.external.sqlserver_orders", table_type: "FOREIGN", data_source_format: "SQLSERVER", size_bytes: null, row_count: null, storage_location: null, external_engine_read_support: false, read_support_reason: "Foreign table (SQL Server) — must route via Databricks", columns: [{ name: "order_id", type_text: "INT" }, { name: "customer_id", type_text: "INT" }, { name: "order_date", type_text: "DATE" }, { name: "total_amount", type_text: "DECIMAL(10,2)" }, { name: "status", type_text: "VARCHAR(50)" }] },
-    { name: "snowflake_inventory", full_name: "delta_router_dev.external.snowflake_inventory", table_type: "FOREIGN", data_source_format: "SNOWFLAKE", size_bytes: null, row_count: null, storage_location: null, external_engine_read_support: false, read_support_reason: "Foreign table (Snowflake) — must route via Databricks", columns: [{ name: "product_id", type_text: "INT" }, { name: "warehouse_id", type_text: "INT" }, { name: "quantity", type_text: "INT" }, { name: "last_updated", type_text: "TIMESTAMP" }] },
-  ],
-};
-
 // ---- Mock API ----
 export const mockApi = {
-  // Catalog browser
-  async getCatalogs(): Promise<CatalogInfo[]> {
-    // TODO: Replace with real API call — GET /api/catalog/catalogs
-    await delay(300);
-    return [{ name: "delta_router_dev" }];
-  },
-
-  async getSchemas(_catalog: string): Promise<SchemaInfo[]> {
-    // TODO: Replace with real API call — GET /api/catalog/:catalog/schemas
-    await delay(300);
-    return [
-      { name: "tpcds", catalog_name: "delta_router_dev" },
-      { name: "analytics", catalog_name: "delta_router_dev" },
-      { name: "external", catalog_name: "delta_router_dev" },
-    ];
-  },
-
-  async getTables(catalog: string, schema: string): Promise<TableInfo[]> {
-    // TODO: Replace with real API call — GET /api/catalog/:catalog/:schema/tables
-    await delay(400);
-    return tableData[`${catalog}.${schema}`] || [];
-  },
-
   // Collections (real — wired to /api/collections)
   async getCollections(): Promise<Collection[]> {
     return api.get<Collection[]>('/api/collections');

@@ -8,6 +8,7 @@ import db
 import catalog_service
 import query_analyzer
 import routing_engine
+import permissions
 import query_logger
 import auth
 import collections_api
@@ -239,8 +240,10 @@ def _patch_k8s_secret(key: str, value: str):
 
 @app.post("/api/settings/databricks")
 async def save_databricks_settings(
-    creds: DatabricksCredentials, username: str = Depends(verify_token)
+    creds: DatabricksCredentials, user: auth.UserContext = Depends(verify_token)
 ):
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
     global _workspace_client, _databricks_host, _databricks_token, _databricks_username
     try:
         if creds.token:
@@ -270,7 +273,9 @@ async def save_databricks_settings(
 
 
 @app.get("/api/settings/databricks")
-async def get_databricks_settings(username: str = Depends(verify_token)):
+async def get_databricks_settings(user: auth.UserContext = Depends(verify_token)):
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
     if _workspace_client is None:
         return {"configured": False}
     return {
@@ -319,7 +324,9 @@ async def health_backends():
 
 
 @app.get("/api/databricks/warehouses")
-async def list_warehouses(username: str = Depends(verify_token)):
+async def list_warehouses(user: auth.UserContext = Depends(verify_token)):
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
     if _workspace_client is None:
         raise HTTPException(status_code=400, detail="Databricks not configured")
     try:
@@ -351,8 +358,10 @@ class QueryExecutionRequest(BaseModel):
 
 @app.put("/api/settings/warehouse")
 async def save_warehouse(
-    body: WarehouseSelection, username: str = Depends(verify_token)
+    body: WarehouseSelection, user: auth.UserContext = Depends(verify_token)
 ):
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
     global _warehouse_id
     _warehouse_id = body.warehouse_id
     try:
@@ -364,7 +373,7 @@ async def save_warehouse(
 
 
 @app.get("/api/databricks/catalogs")
-async def list_catalogs(username: str = Depends(verify_token)):
+async def list_catalogs(user: auth.UserContext = Depends(verify_token)):
     if _workspace_client is None:
         raise HTTPException(status_code=400, detail="No Databricks workspace connected")
     try:
@@ -375,7 +384,7 @@ async def list_catalogs(username: str = Depends(verify_token)):
 
 
 @app.get("/api/databricks/catalogs/{catalog}/schemas")
-async def list_schemas(catalog: str, username: str = Depends(verify_token)):
+async def list_schemas(catalog: str, user: auth.UserContext = Depends(verify_token)):
     if _workspace_client is None:
         raise HTTPException(status_code=400, detail="No Databricks workspace connected")
     try:
@@ -413,7 +422,9 @@ async def list_schemas(catalog: str, username: str = Depends(verify_token)):
 
 
 @app.get("/api/databricks/catalogs/{catalog}/schemas/{schema}/tables")
-async def list_tables(catalog: str, schema: str, username: str = Depends(verify_token)):
+async def list_tables(
+    catalog: str, schema: str, user: auth.UserContext = Depends(verify_token)
+):
     if _workspace_client is None:
         raise HTTPException(status_code=400, detail="No Databricks workspace connected")
     try:
@@ -570,24 +581,31 @@ async def _execute_on_duckdb(sql: str, tables: list[str] | None = None) -> dict:
         }
 
 
-def _execute_on_databricks(sql: str) -> dict:
-    """Execute SQL on Databricks via the SDK (synchronous)."""
-    if _workspace_client is None:
+def _execute_on_databricks(
+    sql: str,
+    workspace_client: WorkspaceClient | None = None,
+    warehouse_id: str | None = None,
+) -> dict:
+    """Execute SQL on Databricks via the SDK (synchronous).
+    Uses the provided workspace_client/warehouse_id if given,
+    otherwise falls back to the system identity.
+    """
+    wc = workspace_client or _workspace_client
+    wh_id = warehouse_id or _warehouse_id
+    if wc is None:
         raise HTTPException(status_code=400, detail="No Databricks workspace connected")
-    if not _warehouse_id:
+    if not wh_id:
         raise HTTPException(status_code=400, detail="No SQL warehouse selected")
-
     from databricks.sdk.service.sql import StatementState
 
     try:
-        response = _workspace_client.statement_execution.execute_statement(
+        response = wc.statement_execution.execute_statement(
             statement=sql,
-            warehouse_id=_warehouse_id,
+            warehouse_id=wh_id,
             wait_timeout="30s",
         )
     except Exception as e:
         raise _databricks_error_to_http(e)
-
     state = response.status.state if response.status else None
     if state == StatementState.FAILED:
         error_msg = "Unknown error"
@@ -604,7 +622,6 @@ def _execute_on_databricks(sql: str) -> dict:
         raise HTTPException(
             status_code=502, detail=f"Databricks execution in unexpected state: {state}"
         )
-
     # Extract columns from manifest
     columns = []
     if (
@@ -613,16 +630,13 @@ def _execute_on_databricks(sql: str) -> dict:
         and response.manifest.schema.columns
     ):
         columns = [col.name for col in response.manifest.schema.columns]
-
     # Extract rows from result
     rows = []
     if response.result and response.result.data_array:
         rows = response.result.data_array[:MAX_RESULT_ROWS]
-
     row_count = len(rows)
     if response.manifest and response.manifest.total_row_count is not None:
         row_count = response.manifest.total_row_count
-
     return {
         "columns": columns,
         "rows": rows,
@@ -633,7 +647,7 @@ def _execute_on_databricks(sql: str) -> dict:
 
 @app.post("/api/query")
 async def execute_query(
-    body: QueryExecutionRequest, username: str = Depends(verify_token)
+    body: QueryExecutionRequest, user: auth.UserContext = Depends(verify_token)
 ):
     correlation_id = str(uuid.uuid4())
 
@@ -651,6 +665,17 @@ async def execute_query(
             status_code=400,
             detail=f"Only SELECT statements are supported, got {analysis.statement_type}",
         )
+
+    # 2b. User table-level permission check (SDK users only)
+    if not user.is_admin and analysis.tables:
+        denied = permissions.check_user_table_access(
+            analysis.tables, user.session.workspace_client
+        )
+        if denied:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Access denied to table(s): {', '.join(denied)}",
+            )
 
     # 3. Fetch table metadata
     try:
@@ -729,7 +754,14 @@ async def execute_query(
         if decision.engine == "duckdb":
             result = await _execute_on_duckdb(body.sql, analysis.tables)
         else:
-            result = _execute_on_databricks(body.sql)
+            if not user.is_admin:
+                result = _execute_on_databricks(
+                    body.sql,
+                    workspace_client=user.session.workspace_client,
+                    warehouse_id=_warehouse_id,
+                )
+            else:
+                result = _execute_on_databricks(body.sql)
     except Exception as e:
         exec_error = e
     wall_ms = round((time.monotonic() - wall_start) * 1000, 2)
@@ -747,9 +779,7 @@ async def execute_query(
         ]
         query_logger.submit_log(
             correlation_id=correlation_id,
-            user_id=username,
-            sql=body.sql,
-            status="error",
+            user_id=user.username,
             engine=decision.engine,
             reason=decision.reason,
             complexity_score=decision.complexity_score,
@@ -801,7 +831,7 @@ async def execute_query(
     # 6. Log (fire-and-forget, never blocks the response)
     query_logger.submit_log(
         correlation_id=correlation_id,
-        user_id=username,
+        user_id=user.username,
         sql=body.sql,
         status="success",
         engine=decision.engine,
@@ -833,7 +863,9 @@ async def execute_query(
 
 
 @app.get("/api/query/{correlation_id}")
-async def get_query(correlation_id: str, username: str = Depends(verify_token)):
+async def get_query(
+    correlation_id: str, user: auth.UserContext = Depends(verify_token)
+):
     row = db.fetch_one(
         """SELECT q.correlation_id, q.query_text, q.status, q.submitted_at, q.completed_at,
                     q.execution_time_ms, q.routing_log_events,
@@ -867,7 +899,9 @@ async def get_query(correlation_id: str, username: str = Depends(verify_token)):
 
 
 @app.get("/api/logs")
-async def get_logs(engine: str | None = None, username: str = Depends(verify_token)):
+async def get_logs(
+    engine: str | None = None, user: auth.UserContext = Depends(verify_token)
+):
     base_sql = """ SELECT q.correlation_id, q.query_text, q.status, q.submitted_at,
                         q.execution_time_ms,
                         r.engine, r.reason, r.complexity_score
@@ -917,14 +951,14 @@ class UpdateRoutingRule(BaseModel):
 
 
 @app.get("/api/routing/rules")
-async def list_routing_rules(username: str = Depends(verify_token)):
+async def list_routing_rules(user: auth.UserContext = Depends(verify_token)):
     rows = db.fetch_all("SELECT * FROM routing_rules ORDER BY priority")
     return rows
 
 
 @app.post("/api/routing/rules", status_code=201)
 async def create_routing_rule(
-    body: CreateRoutingRule, username: str = Depends(verify_token)
+    body: CreateRoutingRule, user: auth.UserContext = Depends(verify_token)
 ):
     row = db.fetch_one(
         """INSERT INTO routing_rules (priority, condition_type, condition_value, target_engine, is_system, enabled)
@@ -937,7 +971,9 @@ async def create_routing_rule(
 
 @app.put("/api/routing/rules/{rule_id}")
 async def update_routing_rule(
-    rule_id: int, body: UpdateRoutingRule, username: str = Depends(verify_token)
+    rule_id: int,
+    body: UpdateRoutingRule,
+    user: auth.UserContext = Depends(verify_token),
 ):
     existing = db.fetch_one("SELECT * FROM routing_rules WHERE id = %s", (rule_id,))
     if not existing:
@@ -966,7 +1002,9 @@ async def update_routing_rule(
 
 
 @app.delete("/api/routing/rules/{rule_id}", status_code=204)
-async def delete_routing_rule(rule_id: int, username: str = Depends(verify_token)):
+async def delete_routing_rule(
+    rule_id: int, user: auth.UserContext = Depends(verify_token)
+):
     existing = db.fetch_one("SELECT * FROM routing_rules WHERE id = %s", (rule_id,))
     if not existing:
         raise HTTPException(status_code=404, detail="Rule not found")
@@ -977,7 +1015,9 @@ async def delete_routing_rule(rule_id: int, username: str = Depends(verify_token
 
 
 @app.put("/api/routing/rules/{rule_id}/toggle")
-async def toggle_routing_rule(rule_id: int, username: str = Depends(verify_token)):
+async def toggle_routing_rule(
+    rule_id: int, user: auth.UserContext = Depends(verify_token)
+):
     existing = db.fetch_one("SELECT * FROM routing_rules WHERE id = %s", (rule_id,))
     if not existing:
         raise HTTPException(status_code=404, detail="Rule not found")
@@ -989,7 +1029,7 @@ async def toggle_routing_rule(rule_id: int, username: str = Depends(verify_token
 
 
 @app.post("/api/routing/rules/reset")
-async def reset_routing_rules(username: str = Depends(verify_token)):
+async def reset_routing_rules(user: auth.UserContext = Depends(verify_token)):
     db.execute("DELETE FROM routing_rules WHERE is_system = false")
     db.execute(
         """INSERT INTO routing_rules (id, priority, condition_type, condition_value, target_engine, is_system)
@@ -1017,7 +1057,7 @@ class UpdateRoutingSettings(BaseModel):
 
 
 @app.get("/api/routing/settings")
-async def get_routing_settings(username: str = Depends(verify_token)):
+async def get_routing_settings(user: auth.UserContext = Depends(verify_token)):
     row = db.fetch_one("SELECT * FROM routing_settings WHERE id = 1")
     if not row:
         raise HTTPException(status_code=500, detail="Routing settings not initialized")
@@ -1031,7 +1071,7 @@ async def get_routing_settings(username: str = Depends(verify_token)):
 
 @app.put("/api/routing/settings")
 async def update_routing_settings(
-    body: UpdateRoutingSettings, username: str = Depends(verify_token)
+    body: UpdateRoutingSettings, user: auth.UserContext = Depends(verify_token)
 ):
     # Validate bonus values are non-negative
     if body.running_bonus_duckdb is not None and body.running_bonus_duckdb < 0:
@@ -1067,7 +1107,7 @@ async def update_routing_settings(
         fields["running_bonus_databricks"] = body.running_bonus_databricks
     if not fields:
         # Nothing to update, return current settings
-        return await get_routing_settings(username)
+        return await get_routing_settings(user)
     fields["updated_at"] = "NOW()"
     set_parts = []
     values = []

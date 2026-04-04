@@ -350,6 +350,83 @@ final_score = weighted_score                   (if stopped / starting / unknown)
 
 ---
 
+### ODQ-15: End-User Authentication & SDK Design — DECIDED
+
+**Decision (2026-04-03):** End users interact with Delta Router through a Python SDK that mirrors the `databricks-sql-connector` interface (DB-API 2.0 / PEP 249). Users authenticate with their existing Databricks PAT + workspace URL — no separate Delta Router credentials needed. The system uses a two-level credential model: a **system identity** (admin-configured PAT, later service principal) for infrastructure operations, and **user identity** (per-session PAT) for access control and Databricks-routed query execution.
+
+**SDK interface:**
+The SDK is a pip-installable Python library (`delta-router-sdk`) providing a DB-API 2.0 compatible interface modeled after `databricks-sql-connector`. Users migrate with minimal code changes:
+
+```python
+# Before (databricks-sql-connector)
+from databricks import sql
+conn = sql.connect(server_hostname="workspace.cloud.databricks.com",
+                   http_path="/sql/1.0/warehouses/abc123",
+                   access_token="dapi...")
+
+# After (delta-router SDK)
+from delta_router import sql
+conn = sql.connect(server_hostname="delta-router.example.com",
+                   access_token="dapi...",
+                   databricks_host="workspace.cloud.databricks.com")
+```
+
+- `server_hostname` — Delta Router endpoint URL
+- `access_token` — user's Databricks PAT (used for authentication, not stored permanently)
+- `databricks_host` — Databricks workspace URL (needed for PAT validation and workspace identification)
+
+**DB-API 2.0 methods:** `connect()` → `connection.cursor()` → `cursor.execute(sql)` → `cursor.fetchall()` / `fetchone()` / `fetchmany()` / `description` (column metadata).
+
+**Delta Router extensions (beyond DB-API 2.0):**
+- `cursor.execute(sql, engine="duckdb")` — routing override, maps to existing `routing_mode` on `POST /api/query`
+- `cursor.routing_decision` — after execution, exposes which engine was chosen, why, and latency breakdown
+- `conn.list_engines()` — list available engines and their runtime status
+
+**Authentication flow:**
+1. SDK calls `POST /api/auth/token` with `databricks_host` + `access_token` (user's PAT)
+2. Routing-service validates the PAT by calling `WorkspaceClient(host, token).current_user.me()`
+3. On success: generates a Delta Router session token (opaque hex, server-side TTL of 1 hour), stores user PAT + workspace client in an in-memory session dict keyed by the token. Returns the session token + user identity (username, email) to the SDK
+4. On failure: returns 401
+5. Subsequent SDK calls use the Delta Router token in `Authorization: Bearer` header
+6. On 401 (token expired): SDK automatically re-authenticates using the PAT — transparent to the user, no prompt
+
+**User PAT is not persisted.** It lives only in server memory for the session duration. Pod restart invalidates all sessions — users re-authenticate automatically via the SDK's retry logic.
+
+**Two-level credential model:**
+
+| Operation | Identity used | Rationale |
+|---|---|---|
+| Validate user identity | User PAT (`current_user.me()`) | Proves user is a valid workspace member |
+| Check table access permissions | User PAT (`tables.get()`) | Ensures user can access the tables in their query — Delta Router does not grant broader access than the user already has |
+| UC metadata for routing (size, format, governance flags) | System identity | Cached metadata, routing pipeline needs broad read access |
+| Credential vending for DuckDB (`EXTERNAL USE SCHEMA`) | System identity | Requires schema-level privilege that only the system identity holds |
+| Databricks query execution | User PAT | Preserves user identity on the Databricks audit trail |
+| DuckDB query execution | System identity (credential vending) + DuckDB worker | User identity not relevant — DuckDB reads from cloud storage via vended credentials |
+
+**System identity:** Currently the admin-configured PAT stored in K8s Secret (`databricks-credentials`). Designed to be swappable to a Databricks service principal without architectural changes. The system identity needs: workspace-level read access to UC metadata, `EXTERNAL USE SCHEMA` on relevant schemas for credential vending, and `SELECT` on tables for DuckDB execution paths. These are one-time admin configuration tasks.
+
+**Permission check flow:**
+1. User submits SQL via SDK
+2. Routing-service extracts table names from SQL (sqlglot)
+3. Routing-service checks user access: calls `tables.get(table_name)` with the user's PAT for each table
+4. If any table returns 403/404 → reject query with clear error ("access denied to table X")
+5. If all tables accessible → proceed to routing pipeline using system identity for metadata and execution
+6. Edge case: user has access but system identity doesn't → surface error ("Delta Router service identity cannot access table X — contact admin")
+
+**Admin web-ui flow (unchanged):**
+- Admin logs in with admin credentials (K8s Secret `admin-credentials`) — existing flow
+- Admin configures the system identity (workspace URL + PAT) via the web-ui settings — existing flow
+- Admin manages routing rules, engines, and system configuration — existing flow
+- The admin login endpoint (`POST /api/auth/login`) remains separate from the SDK auth endpoint (`POST /api/auth/token`)
+
+**REST API note:** The SDK is a thin client over the existing routing-service API (`POST /api/query`, `GET /api/engines`, etc.). Any HTTP client can call these endpoints directly with a Bearer token obtained from `POST /api/auth/token`. The Python SDK adds DB-API 2.0 convenience but is not required.
+
+**Service principal readiness:** The auth design uses the system identity as an abstraction. Migrating from admin PAT to a Databricks service principal requires: (1) configuring SP credentials in the K8s Secret instead of a PAT, (2) initializing `WorkspaceClient` with `client_id` + `client_secret` instead of `token`. No changes to the permission model, session management, or SDK interface.
+
+**Schema changes:** None. The existing `query_logs.user_id` field (currently always "admin") will store the authenticated user's Databricks username. The existing in-memory token store in routing-service is extended to hold per-user sessions (PAT + workspace client) instead of a single admin token.
+
+---
+
 ### Execution Engines
 
 **Databricks SQL Warehouse**
@@ -431,14 +508,19 @@ final_score = weighted_score                   (if stopped / starting / unknown)
 
 ### Authentication
 
-**Admin Login (local development scope)**
+**Admin Login (system configuration)**
 - Single admin username and password stored in a K8s Secret (`admin-credentials`)
 - Web-UI shows a login form; backend validates against the Secret and returns a session token
-- Routing-service API requires a Bearer token in the Authorization header (same token)
-- No user management, no registration, no roles — just one admin account
-- The `user_id` field on queries is always "admin" for now; the field exists for forward compatibility
+- Routing-service API requires a Bearer token in the Authorization header
+- No user management, no registration, no roles — just one admin account for system configuration
+- Endpoint: `POST /api/auth/login`
 
-This is sufficient for local development on Minikube where access is via port-forward. It demonstrates that the system is access-controlled without introducing cloud identity dependencies.
+**End-User Authentication (SDK / API)**
+- End users authenticate with their Databricks PAT + workspace URL via `POST /api/auth/token`
+- The routing-service validates the PAT against the Databricks workspace, then issues a Delta Router session token
+- User PAT is held in server memory per-session (not persisted) — used for permission checks and Databricks query execution
+- System identity (admin PAT or service principal) handles UC metadata, credential vending, and DuckDB execution paths
+- See ODQ-15 for full design
 
 ### Core Libraries
 
@@ -582,6 +664,18 @@ Dedicated to routing configuration — no tabs (collections moved to left panel)
 
 **Tech Stack:** Python, DuckDB (tpcds extension), deltalake-python, databricks-sdk
 
+### delta-router-sdk (Python SDK)
+**Purpose:** Pip-installable Python client providing DB-API 2.0 compatible interface for end users to submit queries through Delta Router with minimal code changes from `databricks-sql-connector`  
+**Status:** Not started (designed in ODQ-15)  
+**Requirements:**
+- DB-API 2.0 interface: `connect()`, `cursor()`, `execute()`, `fetchall()`, `fetchone()`, `fetchmany()`, `description`
+- Authentication via Databricks PAT + workspace URL, transparent token refresh on 401
+- Routing overrides via `engine` parameter on `execute()`
+- Routing decision introspection via `cursor.routing_decision`
+- Engine listing via `conn.list_engines()`
+
+**Tech Stack:** Python, httpx (or requests)
+
 ### infrastructure (IaC)
 **Purpose:** Provision all new cloud resources and deploy all applications via a single `terraform apply`, connecting to an existing Azure tenant with a pre-existing Unity Catalog metastore  
 **Status:** Not started  
@@ -642,6 +736,10 @@ The routing-service is the single API backend. The web-ui proxies all calls thro
 **Health & probes:**
 - `GET /health` — K8s liveness/readiness probe
 - `GET /health/backends` — connectivity status for PostgreSQL, DuckDB worker, Databricks
+
+**Authentication:**
+- `POST /api/auth/login` — admin login (username + password → session token)
+- `POST /api/auth/token` — SDK/API user authentication (databricks_host + access_token → Delta Router session token + user identity). See ODQ-15
 
 **Settings:**
 - `POST /api/settings/databricks` — save Databricks credentials (PAT or service principal) to K8s Secret
@@ -776,6 +874,7 @@ Open threads from planning sessions. Resolved items are checked off and their co
 - [x] **Phase ordering — benchmarks vs. AKS (2026-03-31):** Resolved. Phase 10 = Benchmark Infrastructure, Phase 11 = Azure AKS Deployment. Benchmarks first because: (a) training data needed before ML model, (b) system is simpler now per ODQ-14, (c) ODQ-9 storage probes make benchmark data portable across deployments.
 - [x] **Phase 10 scope definition (2026-04-02):** Resolved. Phase 10 delivered: collections CRUD, engine registry (DB-backed, replacing hardcoded tiers), benchmark execution, storage latency probes, full frontend wiring (replaced mock API calls with real endpoints), type cleanup per ODQ-14. ML model training deferred to a future phase. PRD: `.taskmaster/docs/phase10-benchmark-infrastructure.md`.
 - [x] **Phase 11 scope definition (2026-04-02):** Resolved. Azure AKS deployment via Terraform + Helm. Key decisions: (1) Terraform creates Resource Group, AKS, ACR, VNet — cloud-agnostic IaC, not Bicep/az CLI. (2) Single umbrella Helm chart for all 4 services, `values.yaml` + `values-azure.yaml`. (3) Single standard node pool (Standard_B2ms, autoscaler 1-3), no spot instances — thesis demo scale doesn't justify spot complexity; mentioned as production recommendation. (4) NGINX ingress controller with one Azure LB/public IP, two ports: 80→web-ui, 8000→routing-service (both need external access — web-ui is the dashboard, routing-service is the production API for future SDK clients). (5) Secrets via Terraform `kubernetes_secret` from `.tfvars` (gitignored), Key Vault mentioned as production recommendation. (6) PostgreSQL stays StatefulSet with Azure Disk PV. (7) Databricks workspace pre-existing, referenced by host URL. (8) No CI/CD pipeline in GitHub repo (enterprise uses Azure DevOps); deployment triggered manually via Makefile. (9) Existing `k8s/` raw manifests preserved for minikube workflow.
+- [x] **End-user authentication & SDK (2026-04-03):** Resolved. Designed (ODQ-15), scheduled as Phase 12. Two-level credential model (system identity + user identity), DB-API 2.0 compatible Python SDK mirroring `databricks-sql-connector`. PRD: `.taskmaster/docs/phase12-end-user-auth-sdk.md`.
 
 ---
 
@@ -801,6 +900,7 @@ Speculative concepts worth capturing but with no timeline or commitment. Unlike 
 - [x] **Phase 9 - Databricks Integration Validation:** Connect to a real Databricks workspace and validate all existing integration code end-to-end. Fix bugs discovered in Phase 8 code (health endpoint, K8s Secret persistence), wire remaining mock frontend components (WorkspaceManager, CatalogBrowser gate) to real backend APIs, and validate the full flow: credential save → catalog browse → query execute → routing → logging. **DuckDB credential vending implemented:** duckdb-worker reads Delta tables from Unity Catalog via credential vending (UC REST API → SAS token → deltalake for Delta log parsing → DuckDB read_parquet via httpfs). See taskmaster phase9 tag for detailed task breakdown (13 tasks). PRD: `.taskmaster/docs/phase9-databricks-integration-validation.md`.
 - [x] **Phase 10 - Benchmark Infrastructure:** Collections CRUD (7 endpoints), engine registry (DB-backed, 5 endpoints, replacing hardcoded `DUCKDB_TIERS`), benchmark execution (run each query on each enabled engine, capture execution_time_ms per ODQ-14), results storage in PostgreSQL, storage latency probes (ODQ-9, 2 endpoints), type cleanup (removed `data_scanned_bytes` and `cost_model` per ODQ-14). Frontend fully wired — replaced mock API calls in `src/mocks/api.ts` with real backend endpoints for collections, engines, benchmarks, and probes. Auth extracted to `auth.py` module. 8 new PostgreSQL tables, 88 backend tests, 21-step smoke test. PRD: `.taskmaster/docs/phase10-benchmark-infrastructure.md`.
 - [ ] **Phase 11 - Azure AKS Deployment:** Deploy the full Delta Router stack to Azure using Terraform + Helm. **Motivation:** DuckDB worker latency is ~10x Databricks when running locally — co-locating workers in the same Azure region as the data eliminates network round-trip overhead, which is the core value proposition of the project. **Terraform:** Resource Group, AKS cluster (single Standard_B2ms node pool, autoscaler 1-3), ACR (attached to AKS via managed identity), VNet/subnet. Databricks workspace is pre-existing, referenced by host URL. **Helm:** Single umbrella chart (`infrastructure/helm/delta-router/`) with templates for all 4 services (routing-service, web-ui, duckdb-worker, postgresql). `values.yaml` for defaults, `values-azure.yaml` for AKS-specific config (ACR image paths, resource limits, ingress). **Ingress:** NGINX ingress controller → single Azure Load Balancer → one public IP. Port 80 → web-ui (dashboard), port 8000 → routing-service (production API for external clients/SDK). **Secrets:** Terraform `kubernetes_secret` resources, values from `.tfvars` (gitignored). Azure Key Vault mentioned as production recommendation. **PostgreSQL:** Stays as StatefulSet with Azure Disk PV. **No CI/CD in repo** — enterprise uses Azure DevOps; deployment triggered manually via Makefile targets (`make tf-init`, `make tf-plan`, `make tf-apply`, `make build-push`). Existing `k8s/` raw manifests preserved for minikube workflow.
+- [ ] **Phase 12 - End-User Authentication & Python SDK:** Implement ODQ-15. **Backend:** `POST /api/auth/token` endpoint for SDK/API user authentication (Databricks PAT + workspace URL → session token), in-memory session store with TTL, user permission checks (`tables.get()` with user PAT before routing), refactor query execution to use user PAT for Databricks execution and system identity for DuckDB/UC metadata. **SDK:** New `delta-router-sdk/` package with DB-API 2.0 interface (PEP 249) mirroring `databricks-sql-connector` — `connect()`, `cursor()`, `execute()`, `fetchall()`/`fetchone()`/`fetchmany()`, `description`. Routing overrides via `engine` parameter on `execute()`. Routing decision introspection via `cursor.routing_decision`. Engine listing via `conn.list_engines()`. Transparent token refresh on 401. **Cleanup (folded in):** Remove ODQ-12 mock UI (StorageAccountsManager, storage access indicators, SP credential modal), clean up orphaned frontend files. **Testing:** SDK integration tests against routing-service, permission check unit tests, session lifecycle tests. PRD: `.taskmaster/docs/phase12-end-user-auth-sdk.md`.
 
 ---
 
