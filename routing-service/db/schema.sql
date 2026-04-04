@@ -173,6 +173,20 @@ ON CONFLICT DO NOTHING;
 
 
 
+-- =============================================================================
+-- Phase 13: ML Model Training Pipeline
+-- =============================================================================
+-- Trained ML models for latency prediction
+CREATE TABLE IF NOT EXISTS models (
+    id               SERIAL PRIMARY KEY,
+    linked_engines   JSONB NOT NULL DEFAULT '[]',
+    latency_model    JSONB NOT NULL DEFAULT '{}',
+    training_queries INTEGER NOT NULL DEFAULT 0,
+    is_active        BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_api_keys_key_prefix ON api_keys(key_prefix);
 -- Indexes for common query patterns
 CREATE INDEX IF NOT EXISTS idx_query_logs_submitted_at ON query_logs(submitted_at);

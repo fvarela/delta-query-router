@@ -189,6 +189,7 @@ export interface Model {
   latency_model: SubModelMetrics;
   is_active: boolean;
   created_at: string;
+  updated_at?: string;
   benchmark_count?: number;
   training_queries?: number;
 }

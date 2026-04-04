@@ -15,6 +15,7 @@ import collections_api
 import engines_api
 import benchmarks_api
 import probes_api
+import models_api
 from auth import verify_token
 from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.responses import Response
@@ -42,6 +43,7 @@ app.include_router(collections_api.router, dependencies=[Depends(verify_token)])
 app.include_router(engines_api.router, dependencies=[Depends(verify_token)])
 app.include_router(benchmarks_api.router, dependencies=[Depends(verify_token)])
 app.include_router(probes_api.router, dependencies=[Depends(verify_token)])
+app.include_router(models_api.router, dependencies=[Depends(verify_token)])
 
 
 def _databricks_error_to_http(e: Exception) -> HTTPException:

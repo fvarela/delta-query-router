@@ -15,9 +15,10 @@
 //   - engines:          engine catalog + runtime status via /api/engines — Phase 10
 //   - benchmarks:       CRUD + execution via /api/benchmarks — Phase 10
 //   - probes:           storage latency probes via /api/latency-probes — Phase 10
+//   - models:           ML model listing, activation, training via /api/models — Phase 13
 //
 // MOCKED (backend endpoints not yet implemented):
-//   - models:           ML model listing, activation, training wizard
+//   (none currently — all endpoints wired to backend)
 //
 // All components import exclusively from this file via `mockApi`.
 // When a real endpoint is available, replace the corresponding mock function
@@ -47,7 +48,6 @@ const mkLog = (level: RoutingLogLevel, stage: string, message: string): RoutingL
 
 // ---- Mutable state ----
 let nextRuleId = 100;
-let nextModelId = 3;
 
 let routingRules: RoutingRule[] = [
   { id: 1, priority: 1, condition_type: "table_type", condition_value: "VIEW", target_engine: "databricks", is_system: true, enabled: true },
@@ -56,21 +56,6 @@ let routingRules: RoutingRule[] = [
 ];
 
 let routingSettings: RoutingSettings = { fit_weight: 0.5, cost_weight: 0.5, running_bonus_duckdb: 0.05, running_bonus_databricks: 0.15 };
-
-let models: Model[] = [
-  {
-    id: 1,
-    linked_engines: ["duckdb:2gb-2cpu", "databricks:serverless-2xs", "duckdb:8gb-4cpu"],
-    latency_model: { r_squared: 0.87, mae_ms: 45, model_path: "/models/bundle_001_latency.joblib" },
-    is_active: false, created_at: "2026-03-10T14:30:00Z", benchmark_count: 12, training_queries: 99,
-  },
-  {
-    id: 2,
-    linked_engines: ["duckdb:2gb-2cpu", "duckdb:8gb-4cpu"],
-    latency_model: { r_squared: 0.79, mae_ms: 62, model_path: "/models/bundle_002_latency.joblib" },
-    is_active: false, created_at: "2026-03-12T10:00:00Z", benchmark_count: 8, training_queries: 45,
-  },
-];
 
 let queryLogs: LogEntry[] = [
   { correlation_id: "log-1", timestamp: "2026-03-15 10:45:12", query_text: "SELECT c_customer_sk, c_first_name, c_last_name FROM delta_router_dev.tpcds.customer WHERE c_birth_country = 'UNITED STATES' LIMIT 100", engine: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", status: "success", latency_ms: 45 },
@@ -345,54 +330,25 @@ export const mockApi = {
     return JSON.parse(JSON.stringify(routingRules));
   },
 
-  // Models
+  // Models (real — wired to /api/models)
   async getModels(): Promise<Model[]> {
-    // TODO: Replace with real API call — GET /api/models
-    await delay(200);
-    return JSON.parse(JSON.stringify(models));
+    return api.get<Model[]>('/api/models');
   },
 
-  async trainModel(enabledEngineIds: string[], _trainingConfig?: { collections?: { id: number; runs: number }[]; benchmarkIds?: number[] }): Promise<Model> {
-    // TODO: Replace with real API call — POST /api/models/train
-    await delay(3000);
-    const benchmarkCount = (_trainingConfig?.benchmarkIds?.length ?? 0) +
-      (_trainingConfig?.collections?.reduce((sum, c) => sum + c.runs, 0) ?? 1);
-    const m: Model = {
-      id: nextModelId++, linked_engines: [...enabledEngineIds],
-      latency_model: {
-        r_squared: 0.82 + Math.random() * 0.1,
-        mae_ms: 30 + Math.floor(Math.random() * 30),
-        model_path: `/models/bundle_${String(nextModelId - 1).padStart(3, "0")}_latency.joblib`,
-      },
-      is_active: false, created_at: new Date().toISOString(),
-      benchmark_count: benchmarkCount,
-      training_queries: benchmarkCount * 5,
-    };
-    models.push(m);
-    return JSON.parse(JSON.stringify(m));
+  async trainModel(_enabledEngineIds?: string[], _trainingConfig?: { collections?: { id: number; runs: number }[]; benchmarkIds?: number[] }): Promise<Model> {
+    return api.post<Model>('/api/models/train');
   },
 
   async activateModel(id: number): Promise<Model> {
-    // TODO: Replace with real API call — POST /api/models/:id/activate
-    await delay(200);
-    models.forEach(m => m.is_active = m.id === id);
-    const m = models.find(m => m.id === id)!;
-    return JSON.parse(JSON.stringify(m));
+    return api.post<Model>(`/api/models/${id}/activate`);
   },
 
   async deactivateModel(id: number): Promise<Model> {
-    // TODO: Replace with real API call — POST /api/models/:id/deactivate
-    await delay(200);
-    const m = models.find(m => m.id === id);
-    if (!m) throw new Error("Not found");
-    m.is_active = false;
-    return JSON.parse(JSON.stringify(m));
+    return api.post<Model>(`/api/models/${id}/deactivate`);
   },
 
   async deleteModel(id: number): Promise<void> {
-    // TODO: Replace with real API call — DELETE /api/models/:id
-    await delay(200);
-    models = models.filter(m => m.id !== id);
+    await api.del(`/api/models/${id}`);
   },
 
   // Query Log

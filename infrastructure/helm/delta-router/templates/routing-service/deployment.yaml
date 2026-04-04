@@ -31,6 +31,9 @@ spec:
         - secretRef:
             name: databricks-credentials
             optional: true
+        env:
+        - name: MODEL_DIR
+          value: /models/
         ports:
         - containerPort: {{ .Values.routingService.port }}
           name: http
@@ -48,3 +51,10 @@ spec:
             port: {{ .Values.routingService.port }}
           initialDelaySeconds: 15
           periodSeconds: 20
+        volumeMounts:
+        - name: model-storage
+          mountPath: /models
+      volumes:
+      - name: model-storage
+        persistentVolumeClaim:
+          claimName: {{ include "delta-router.routingService.fullname" . }}-model-storage
