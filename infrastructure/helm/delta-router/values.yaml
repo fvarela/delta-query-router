@@ -7,6 +7,9 @@ routingService:
   port: 8000
   service:
     type: ClusterIP
+  modelStorage:
+    size: 1Gi
+    storageClass: ""
   resources:
     requests:
       cpu: 100m

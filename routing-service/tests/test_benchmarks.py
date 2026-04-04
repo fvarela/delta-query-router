@@ -485,3 +485,87 @@ class TestExecuteQueryOnDuckdb:
 
         assert result["error_message"] is not None
         assert "Connection refused" in result["error_message"]
+
+
+# ---------------------------------------------------------------------------
+# _lookup_io_latency_ms unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestLookupIoLatencyMs:
+    """_lookup_io_latency_ms — probe lookup for benchmark results."""
+
+    @patch("benchmarks_api.db")
+    def test_no_tables_returns_none(self, mock_db):
+        """SELECT 1 has no tables → None."""
+        result = benchmarks_api._lookup_io_latency_ms("SELECT 1")
+        assert result is None
+        mock_db.fetch_one.assert_not_called()
+
+    @patch("benchmarks_api.db")
+    def test_unparseable_sql_returns_none(self, mock_db):
+        """Garbage SQL → None (graceful fallback)."""
+        result = benchmarks_api._lookup_io_latency_ms("NOT VALID SQL AT ALL !!!")
+        assert result is None
+
+    @patch("benchmarks_api.db")
+    def test_table_not_in_cache_returns_none(self, mock_db):
+        """Table not found in metadata cache → None."""
+        mock_db.fetch_one.return_value = None
+        result = benchmarks_api._lookup_io_latency_ms("SELECT * FROM cat.sch.my_table")
+        assert result is None
+
+    @patch("benchmarks_api.db")
+    def test_no_storage_location_returns_none(self, mock_db):
+        """Cached table has no storage_location → None."""
+        mock_db.fetch_one.return_value = {"storage_location": None}
+        result = benchmarks_api._lookup_io_latency_ms("SELECT * FROM cat.sch.my_table")
+        assert result is None
+
+    @patch("benchmarks_api.db")
+    def test_no_probe_returns_none(self, mock_db):
+        """Table has storage_location but no probe data → None."""
+        mock_db.fetch_one.side_effect = [
+            {"storage_location": "s3://bucket/table"},  # metadata cache
+            None,  # no probe
+        ]
+        result = benchmarks_api._lookup_io_latency_ms("SELECT * FROM cat.sch.my_table")
+        assert result is None
+
+    @patch("benchmarks_api.db")
+    def test_single_table_with_probe(self, mock_db):
+        """One table with probe data → returns probe_time_ms."""
+        mock_db.fetch_one.side_effect = [
+            {"storage_location": "s3://bucket/table"},  # metadata cache
+            {"probe_time_ms": 42.5},  # probe
+        ]
+        result = benchmarks_api._lookup_io_latency_ms("SELECT * FROM cat.sch.my_table")
+        assert result == 42.5
+
+    @patch("benchmarks_api.db")
+    def test_multiple_tables_returns_max(self, mock_db):
+        """Multiple tables → returns worst-case (max) probe_time_ms."""
+        mock_db.fetch_one.side_effect = [
+            {"storage_location": "s3://bucket/t1"},  # meta for t1
+            {"probe_time_ms": 10.0},  # probe for t1
+            {"storage_location": "s3://bucket/t2"},  # meta for t2
+            {"probe_time_ms": 75.0},  # probe for t2
+        ]
+        result = benchmarks_api._lookup_io_latency_ms(
+            "SELECT * FROM cat.sch.t1 JOIN cat.sch.t2 ON t1.id = t2.id"
+        )
+        assert result == 75.0
+
+    @patch("benchmarks_api.db")
+    def test_mixed_tables_some_without_probes(self, mock_db):
+        """Two tables, one has probe, one doesn't → returns the one that has it."""
+        mock_db.fetch_one.side_effect = [
+            {"storage_location": "s3://bucket/t1"},  # meta for t1
+            None,  # no probe for t1
+            {"storage_location": "s3://bucket/t2"},  # meta for t2
+            {"probe_time_ms": 30.0},  # probe for t2
+        ]
+        result = benchmarks_api._lookup_io_latency_ms(
+            "SELECT * FROM cat.sch.t1 JOIN cat.sch.t2 ON t1.id = t2.id"
+        )
+        assert result == 30.0

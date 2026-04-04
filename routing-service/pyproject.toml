@@ -9,6 +9,7 @@ dependencies = [
     "httpx>=0.28.1",
     "kubernetes>=35.0.0",
     "psycopg2-binary>=2.9.11",
+    "scikit-learn>=1.6.0",
     "sqlglot>=30.0.3",
     "uvicorn>=0.40.0",
 ]

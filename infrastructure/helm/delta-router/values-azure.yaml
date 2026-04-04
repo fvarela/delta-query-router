@@ -4,6 +4,8 @@ routingService:
   image:
     repository: <acr-name>.azurecr.io/delta-router/routing-service
     pullPolicy: Always
+  modelStorage:
+    storageClass: managed-csi
 webUi:
   image:
     repository: <acr-name>.azurecr.io/delta-router/web-ui

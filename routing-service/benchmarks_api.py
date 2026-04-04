@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 import db
 import engines_api
+from query_analyzer import analyze_query
 
 logger = logging.getLogger("routing-service.benchmarks")
 
@@ -135,6 +136,50 @@ def _execute_query_on_databricks(
         return {"execution_time_ms": wall_ms, "error_message": str(e)}
 
 
+def _lookup_io_latency_ms(query_text: str) -> float | None:
+    """Look up worst-case I/O latency for all tables in a query.
+
+    Parses the SQL to extract table names, looks up their storage_location
+    from the table_metadata_cache, then finds the latest storage probe for
+    each location. Returns the maximum probe_time_ms, or None if no
+    probe data exists for any table.
+    """
+    try:
+        analysis = analyze_query(query_text)
+    except Exception:
+        return None
+
+    if not analysis.tables:
+        return None
+
+    max_io: float | None = None
+    for table_name in analysis.tables:
+        # Look up storage_location from cached metadata
+        meta_row = db.fetch_one(
+            "SELECT storage_location FROM table_metadata_cache WHERE table_name = %s",
+            (table_name,),
+        )
+        if not meta_row or not meta_row.get("storage_location"):
+            continue
+
+        # Look up latest probe for this location
+        probe_row = db.fetch_one(
+            """
+            SELECT probe_time_ms FROM storage_latency_probes
+            WHERE storage_location = %s
+            ORDER BY measured_at DESC
+            LIMIT 1
+            """,
+            (meta_row["storage_location"],),
+        )
+        if probe_row and probe_row.get("probe_time_ms") is not None:
+            probe_ms = float(probe_row["probe_time_ms"])
+            if max_io is None or probe_ms > max_io:
+                max_io = probe_ms
+
+    return max_io
+
+
 # --- Endpoints ---
 
 
@@ -255,14 +300,18 @@ async def create_benchmark(body: CreateBenchmark):
             except Exception as e:
                 result = {"execution_time_ms": None, "error_message": str(e)}
 
+            # Look up I/O latency from storage probes
+            io_latency = _lookup_io_latency_ms(query["query_text"])
+
             db.execute(
-                "INSERT INTO benchmark_results (benchmark_id, engine_id, query_id, execution_time_ms, error_message) "
-                "VALUES (%s, %s, %s, %s, %s)",
+                "INSERT INTO benchmark_results (benchmark_id, engine_id, query_id, execution_time_ms, io_latency_ms, error_message) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
                 (
                     benchmark_id,
                     eid,
                     query["id"],
                     result.get("execution_time_ms"),
+                    io_latency,
                     result.get("error_message"),
                 ),
             )

@@ -6,6 +6,9 @@ import time
 from dataclasses import dataclass, field
 
 import db
+import model_inference
+import engine_state
+import engines_api
 from catalog_service import TableMetadata
 from query_analyzer import QueryAnalysis
 
@@ -46,6 +49,7 @@ class RoutingDecision:
     reason: str
     complexity_score: float
     rule_id: int | None = None
+    ml_predictions: dict[str, float] | None = None  # {engine_id: predicted_compute_ms}
 
 
 @dataclass
@@ -225,6 +229,168 @@ def _score_engines(
     return {"duckdb": duckdb_total, "databricks": databricks_total}
 
 
+# ── Default cold-start estimates (ms) when no warmup data exists ──────────
+_DEFAULT_COLD_START: dict[str, float] = {
+    "duckdb": 0.0,
+    "databricks": 5000.0,
+    "databricks_sql": 5000.0,
+}
+
+
+def _get_cold_start_ms(engine_id: str, engine_type: str) -> float:
+    """Estimate cold-start latency for an engine.
+
+    Returns 0 for running engines, historical warmup time for stopped/unknown,
+    or a default if no warmup data exists (REQ-012).
+    """
+    state = engine_state.get_engine_state(engine_id)
+    if state == "running":
+        return 0.0
+
+    # Look up latest warmup record for this engine
+    row = db.fetch_one(
+        """
+        SELECT cold_start_time_ms
+        FROM benchmark_engine_warmups
+        WHERE engine_id = %s
+        ORDER BY started_at DESC
+        LIMIT 1
+        """,
+        (engine_id,),
+    )
+    if row and row["cold_start_time_ms"] is not None:
+        return float(row["cold_start_time_ms"])
+
+    return _DEFAULT_COLD_START.get(engine_type, 0.0)
+
+
+def _get_io_latency_ms(table_metadata: dict[str, TableMetadata]) -> float:
+    """Get the worst-case I/O latency across all tables in the query.
+
+    Looks up the latest storage latency probe for each table's storage_location.
+    Returns 0 if no probe data exists.
+    """
+    max_io = 0.0
+    for tm in table_metadata.values():
+        if not tm.storage_location:
+            continue
+        row = db.fetch_one(
+            """
+            SELECT probe_time_ms
+            FROM storage_latency_probes
+            WHERE storage_location = %s
+            ORDER BY measured_at DESC
+            LIMIT 1
+            """,
+            (tm.storage_location,),
+        )
+        if row and row["probe_time_ms"] is not None:
+            max_io = max(max_io, float(row["probe_time_ms"]))
+    return max_io
+
+
+def _normalize(values: list[float]) -> list[float]:
+    """Min-max normalize a list of values to [0, 1]. Returns all zeros if constant."""
+    if not values:
+        return []
+    lo, hi = min(values), max(values)
+    span = hi - lo
+    if span == 0:
+        return [0.0] * len(values)
+    return [(v - lo) / span for v in values]
+
+
+def _score_with_ml(
+    predictions: dict[str, float],
+    active_engines: list[dict],
+    table_metadata: dict[str, TableMetadata],
+    settings: RoutingSettings,
+    events: list[RoutingLogEvent],
+) -> tuple[str, dict[str, float]]:
+    """Full ODQ-10 weighted scoring using ML predictions.
+
+    For each engine:
+        total_latency = predicted_compute + io_latency + cold_start
+    Then normalize latency and cost, apply running bonus, pick lowest score.
+
+    Returns (winning_engine_id, {engine_id: weighted_score}).
+    """
+    engine_map = {e["id"]: e for e in active_engines}
+    io_latency_ms = _get_io_latency_ms(table_metadata)
+
+    # Build per-engine scoring components
+    engine_ids = list(predictions.keys())
+    latencies = []
+    cost_tiers = []
+    cold_starts = []
+
+    for eid in engine_ids:
+        eng = engine_map.get(eid, {})
+        compute_ms = predictions[eid]
+        cold_ms = _get_cold_start_ms(eid, eng.get("engine_type", ""))
+        total = compute_ms + io_latency_ms + cold_ms
+
+        latencies.append(total)
+        cost_tiers.append(float(eng.get("cost_tier", 5)))
+        cold_starts.append(cold_ms)
+
+        events.append(
+            RoutingLogEvent(
+                _ts(),
+                "info",
+                "ml_scoring",
+                f"{eid}: compute={compute_ms:.0f}ms io={io_latency_ms:.0f}ms "
+                f"cold_start={cold_ms:.0f}ms → total={total:.0f}ms (cost_tier={eng.get('cost_tier', '?')})",
+            )
+        )
+
+    # Normalize
+    norm_lat = _normalize(latencies)
+    norm_cost = _normalize(cost_tiers)
+
+    # Weighted scores (lower is better for latency; lower cost_tier is also better)
+    fw = settings.fit_weight  # latency weight
+    cw = settings.cost_weight
+
+    scores: dict[str, float] = {}
+    for i, eid in enumerate(engine_ids):
+        eng = engine_map.get(eid, {})
+        etype = eng.get("engine_type", "")
+        state = engine_state.get_engine_state(eid)
+
+        # Running bonus: subtract from score (lower = better)
+        running_bonus = 0.0
+        if state == "running":
+            if etype == "duckdb":
+                running_bonus = settings.running_bonus_duckdb
+            elif etype.startswith("databricks"):
+                running_bonus = settings.running_bonus_databricks
+
+        weighted = fw * norm_lat[i] + cw * norm_cost[i] - running_bonus
+        scores[eid] = weighted
+
+        events.append(
+            RoutingLogEvent(
+                _ts(),
+                "info",
+                "ml_scoring",
+                f"{eid}: norm_lat={norm_lat[i]:.3f} norm_cost={norm_cost[i]:.3f} "
+                f"bonus={running_bonus:.3f} → score={weighted:.3f}",
+            )
+        )
+
+    winner = min(scores, key=scores.get)  # type: ignore[arg-type]
+    events.append(
+        RoutingLogEvent(
+            _ts(),
+            "info",
+            "ml_scoring",
+            f"Winner: {winner} (score={scores[winner]:.3f})",
+        )
+    )
+    return winner, scores
+
+
 def route_query(
     analysis: QueryAnalysis,
     table_metadata: dict[str, TableMetadata],
@@ -351,16 +517,74 @@ def route_query(
                 )
             )
     events.append(RoutingLogEvent(_ts(), "info", "rules", "No user rules matched"))
-    # 4. ML model stub
-    events.append(
-        RoutingLogEvent(
-            _ts(), "info", "ml_model", "ML model evaluation (stub — no model loaded)"
-        )
-    )
-    events.append(
-        RoutingLogEvent(_ts(), "warn", "ml_model", "No ML model available, skipping")
-    )
+    # 4. ML model inference + weighted scoring
+    events.append(RoutingLogEvent(_ts(), "info", "ml_model", "Evaluating ML model"))
+    _settings = settings or RoutingSettings()
     ml_decision = None
+    try:
+        # Get registered engines for ML prediction
+        all_engines = engines_api.get_all_engines()
+        active_engines = [e for e in all_engines if e.get("is_active", True)]
+        if active_engines:
+            predictions = model_inference.predict_for_engines(
+                analysis, table_metadata, active_engines
+            )
+            if predictions:
+                events.append(
+                    RoutingLogEvent(
+                        _ts(),
+                        "info",
+                        "ml_model",
+                        f"ML predictions: {', '.join(f'{eid}={ms:.0f}ms' for eid, ms in predictions.items())}",
+                    )
+                )
+                # Full ODQ-10 weighted scoring
+                winner_id, ml_scores = _score_with_ml(
+                    predictions, active_engines, table_metadata, _settings, events
+                )
+                winner_engine = next(
+                    (e for e in active_engines if e["id"] == winner_id), None
+                )
+                if winner_engine:
+                    engine_type = winner_engine["engine_type"]
+                    if engine_type.startswith("databricks"):
+                        engine_type = "databricks"
+                    ml_decision = RoutingDecision(
+                        engine=engine_type,
+                        stage="ML_MODEL",
+                        reason=f"ML scoring: {winner_id} scored {ml_scores[winner_id]:.3f} "
+                        f"(best of {len(ml_scores)} engines)",
+                        complexity_score=score,
+                        ml_predictions=predictions,
+                    )
+                    events.append(
+                        RoutingLogEvent(
+                            _ts(),
+                            "decision",
+                            "engine",
+                            f"Selected engine: {ml_decision.engine} (stage={ml_decision.stage})",
+                        )
+                    )
+            else:
+                events.append(
+                    RoutingLogEvent(
+                        _ts(), "warn", "ml_model", "No ML model available, skipping"
+                    )
+                )
+        else:
+            events.append(
+                RoutingLogEvent(
+                    _ts(),
+                    "warn",
+                    "ml_model",
+                    "No active engines registered, skipping ML",
+                )
+            )
+    except Exception as e:
+        logger.warning("ML inference failed: %s", e, exc_info=True)
+        events.append(
+            RoutingLogEvent(_ts(), "warn", "ml_model", f"ML inference error: {e}")
+        )
     if ml_decision is not None:
         return RoutingResult(decision=ml_decision, events=events)
     # 5. Scoring
