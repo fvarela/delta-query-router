@@ -187,6 +187,25 @@ CREATE TABLE IF NOT EXISTS models (
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- =============================================================================
+-- Phase 14: TPC-DS Benchmark Data & External Access Management
+-- =============================================================================
+-- Track system-created TPC-DS catalogs for lifecycle management and progress
+CREATE TABLE IF NOT EXISTS tpcds_catalogs (
+    id              SERIAL PRIMARY KEY,
+    catalog_name    TEXT UNIQUE NOT NULL,
+    schema_name     TEXT NOT NULL,
+    scale_factor    INTEGER NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'creating'
+                        CHECK (status IN ('creating', 'ready', 'failed', 'deleting')),
+    job_run_id      TEXT,              -- Databricks Job run ID for SF10/SF100, NULL for SF1
+    error_message   TEXT,              -- error details if status=failed
+    tables_created  INTEGER DEFAULT 0, -- progress: how many tables created so far
+    total_tables    INTEGER DEFAULT 25,-- total TPC-DS tables to create
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_api_keys_key_prefix ON api_keys(key_prefix);
 -- Indexes for common query patterns
 CREATE INDEX IF NOT EXISTS idx_query_logs_submitted_at ON query_logs(submitted_at);

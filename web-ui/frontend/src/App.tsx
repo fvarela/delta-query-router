@@ -6,11 +6,12 @@ import { TopBar } from "./components/TopBar/TopBar";
 import { WorkspaceManager } from "./components/RightPanel/WorkspaceManager";
 import { CatalogBrowser } from "./components/LeftPanel/CatalogBrowser";
 import { CollectionsPanel } from "./components/LeftPanel/CollectionsPanel";
+import { TpcdsWizard } from "./components/LeftPanel/TpcdsWizard";
 import { CenterPanel } from "./components/CenterPanel/CenterPanel";
 import { RightPanel } from "./components/RightPanel/RightPanel";
 
 const LeftPanel = () => {
-  const [tab, setTab] = useState<"catalog" | "collections">("catalog");
+  const [tab, setTab] = useState<"catalog" | "collections" | "tpcds">("catalog");
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -30,10 +31,16 @@ const LeftPanel = () => {
         >
           Collections
         </button>
+        <button
+          onClick={() => setTab("tpcds")}
+          className={`flex-1 px-3 py-1.5 text-[12px] font-medium ${tab === "tpcds" ? "border-b-2 border-primary text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+        >
+          TPC-DS
+        </button>
       </div>
       {/* Tab content */}
       <div className="flex-1 min-h-0 overflow-hidden">
-        {tab === "catalog" ? <CatalogBrowser /> : <CollectionsPanel />}
+        {tab === "catalog" ? <CatalogBrowser /> : tab === "collections" ? <CollectionsPanel /> : <TpcdsWizard />}
       </div>
     </div>
   );

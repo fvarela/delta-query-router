@@ -2,9 +2,9 @@ import React, { useState, useEffect } from "react";
 import { api } from "@/lib/api";
 import { useApp } from "@/contexts/AppContext";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
-import type { CatalogInfo, SchemaInfo, TableInfo } from "@/types";
+import type { CatalogInfo, SchemaInfo, TableInfo, MetastoreAccessStatus } from "@/types";
 import { FOREIGN_FORMATS } from "@/types";
-import { ChevronRight, ChevronDown, Folder, Table2, Database, ShieldCheck, ShieldOff } from "lucide-react";
+import { ChevronRight, ChevronDown, Folder, Table2, Database, ShieldCheck, ShieldOff, AlertTriangle, Globe, Lock, Unlock } from "lucide-react";
 
 /** Three-color classification for the catalog tree indicator bar.
  *  Green  = DuckDB-readable (Delta / Iceberg with external access flags)
@@ -43,6 +43,64 @@ export const CatalogBrowser: React.FC = () => {
   const [selectedTable, setSelectedTable] = useState<TableInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [treeErrors, setTreeErrors] = useState<Record<string, string>>({});
+
+  // Metastore external access state (T87)
+  const [metastoreAccess, setMetastoreAccess] = useState<MetastoreAccessStatus | null>(null);
+  const [metastoreLoading, setMetastoreLoading] = useState(false);
+
+  // EUS grant/revoke loading state (T88)
+  const [eusLoading, setEusLoading] = useState<Set<string>>(new Set());
+
+  // Fetch metastore external access on workspace connect
+  useEffect(() => {
+    if (!connectedWorkspace) {
+      setMetastoreAccess(null);
+      return;
+    }
+    setMetastoreLoading(true);
+    api.get<MetastoreAccessStatus>("/api/metastore/external-access")
+      .then(setMetastoreAccess)
+      .catch(() => setMetastoreAccess(null))
+      .finally(() => setMetastoreLoading(false));
+  }, [connectedWorkspace]);
+
+  // EUS grant/revoke handlers
+  const handleGrantEus = async (catalog: string, schema: string) => {
+    const key = `${catalog}.${schema}`;
+    setEusLoading(prev => new Set(prev).add(key));
+    try {
+      await api.post(`/api/databricks/catalogs/${catalog}/schemas/${schema}/external-use`);
+      // Update local schema state
+      setSchemas(prev => ({
+        ...prev,
+        [catalog]: prev[catalog]?.map(s =>
+          s.name === schema ? { ...s, external_use_schema: true } : s
+        ) ?? [],
+      }));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to grant";
+      setTreeErrors(prev => ({ ...prev, [key]: msg }));
+    }
+    setEusLoading(prev => { const n = new Set(prev); n.delete(key); return n; });
+  };
+
+  const handleRevokeEus = async (catalog: string, schema: string) => {
+    const key = `${catalog}.${schema}`;
+    setEusLoading(prev => new Set(prev).add(key));
+    try {
+      await api.del(`/api/databricks/catalogs/${catalog}/schemas/${schema}/external-use`);
+      setSchemas(prev => ({
+        ...prev,
+        [catalog]: prev[catalog]?.map(s =>
+          s.name === schema ? { ...s, external_use_schema: false } : s
+        ) ?? [],
+      }));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to revoke";
+      setTreeErrors(prev => ({ ...prev, [key]: msg }));
+    }
+    setEusLoading(prev => { const n = new Set(prev); n.delete(key); return n; });
+  };
 
   useEffect(() => {
     if (!connectedWorkspace) {
@@ -137,8 +195,29 @@ export const CatalogBrowser: React.FC = () => {
     <div className="flex flex-col h-full">
       <div className="px-3 py-1.5 border-b border-panel-border flex items-center gap-1.5 text-[12px]">
         <Database size={14} className="text-primary" />
-        <span className="font-semibold text-foreground">Catalog Browser</span>
+        <span className="font-semibold text-foreground flex-1">Catalog Browser</span>
+        {/* Metastore external access indicator (T87) */}
+        {metastoreLoading && <LoadingSpinner size={12} />}
+        {metastoreAccess != null && (
+          metastoreAccess.external_access_enabled
+            ? <span className="flex items-center gap-0.5 text-status-success" title={`External access enabled on ${metastoreAccess.metastore_name}`}>
+                <Globe size={12} />
+              </span>
+            : <span className="flex items-center gap-0.5 text-status-error" title={`External access disabled on ${metastoreAccess.metastore_name}`}>
+                <AlertTriangle size={12} />
+              </span>
+        )}
       </div>
+      {/* Warning banner when external access is disabled */}
+      {metastoreAccess != null && !metastoreAccess.external_access_enabled && (
+        <div className="px-3 py-2 bg-amber-500/10 border-b border-amber-500/30 text-[11px] text-amber-200 flex items-start gap-1.5">
+          <AlertTriangle size={12} className="shrink-0 mt-0.5 text-amber-400" />
+          <span>
+            Metastore external access is disabled. DuckDB cannot read managed tables.
+            A metastore admin must enable this in the Databricks workspace.
+          </span>
+        </div>
+      )}
       <div className="flex-1 overflow-y-auto text-[12px]">
         {loadingKeys.has("catalogs") && <div className="p-3"><LoadingSpinner /></div>}
         {error && <div className="p-3 text-muted-foreground">{error}</div>}
@@ -151,10 +230,12 @@ export const CatalogBrowser: React.FC = () => {
             </button>
             {loadingKeys.has(cat.name) && <div className="pl-8 py-1"><LoadingSpinner size={12} /></div>}
             {treeErrors[cat.name] && <div className="pl-8 py-1 text-red-400 text-[11px]">{treeErrors[cat.name]}</div>}
-            {expanded[cat.name] && schemas[cat.name]?.map(sch => (
+            {expanded[cat.name] && schemas[cat.name]?.map(sch => {
+              const schKey = `${cat.name}.${sch.name}`;
+              return (
               <div key={sch.name}>
                 <button onClick={() => toggleSchema(cat.name, sch.name)} className="flex items-center gap-1 w-full pl-6 pr-3 py-1 hover:bg-muted text-left text-foreground">
-                  {expanded[`${cat.name}.${sch.name}`] ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  {expanded[schKey] ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                   <Folder size={12} className="text-primary" />
                   <span className="flex-1">{sch.name}</span>
                   {sch.external_use_schema != null && (
@@ -163,6 +244,35 @@ export const CatalogBrowser: React.FC = () => {
                       : <ShieldOff size={12} className="text-muted-foreground/50 shrink-0" title="No external access grant" />
                   )}
                 </button>
+                {/* EUS grant/revoke controls (T88) — shown when schema is expanded */}
+                {expanded[schKey] && sch.external_use_schema != null && (
+                  <div className="pl-10 pr-3 py-1 flex items-center gap-2 text-[10px]">
+                    {eusLoading.has(schKey) ? (
+                      <LoadingSpinner size={10} />
+                    ) : sch.external_use_schema ? (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleRevokeEus(cat.name, sch.name); }}
+                        className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-status-warning hover:border-status-warning transition-colors"
+                        title="Revoke EXTERNAL USE SCHEMA"
+                      >
+                        <Lock size={10} />
+                        <span>Revoke External Use</span>
+                      </button>
+                    ) : (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleGrantEus(cat.name, sch.name); }}
+                        className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-status-success hover:border-status-success transition-colors"
+                        title="Grant EXTERNAL USE SCHEMA"
+                      >
+                        <Unlock size={10} />
+                        <span>Grant External Use</span>
+                      </button>
+                    )}
+                    <span className="text-muted-foreground/60 italic" title="Only this permission is managed by Delta Router. All other permissions are managed in the Databricks workspace.">
+                      Only permission managed by Delta Router
+                    </span>
+                  </div>
+                )}
                 {loadingKeys.has(`${cat.name}.${sch.name}`) && <div className="pl-12 py-1"><LoadingSpinner size={12} /></div>}
                 {treeErrors[`${cat.name}.${sch.name}`] && <div className="pl-12 py-1 text-red-400 text-[11px]">{treeErrors[`${cat.name}.${sch.name}`]}</div>}
                 {expanded[`${cat.name}.${sch.name}`] && tables[`${cat.name}.${sch.name}`]?.map(tbl => (
@@ -179,7 +289,8 @@ export const CatalogBrowser: React.FC = () => {
                   </button>
                 ))}
               </div>
-            ))}
+              );
+            })}
           </div>
         ))}
       </div>

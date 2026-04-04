@@ -261,3 +261,53 @@ export interface LogEntry {
 
 // --- Kept for backwards compat but no longer used for routing toggle ---
 export type RoutingMode = "smart" | "duckdb" | "databricks";
+
+// --- Metastore external access (Phase 14 / REQ-001) ---
+export interface MetastoreAccessStatus {
+  external_access_enabled: boolean;
+  metastore_name: string;
+}
+
+// --- TPC-DS (Phase 14 / REQ-004–REQ-012) ---
+export type TpcdsStatus = "creating" | "ready" | "failed" | "deleting";
+
+export interface TpcdsPreFlight {
+  samples_available: boolean;
+  metastore_external_access: boolean;
+  warehouse_configured: boolean;
+}
+
+export interface TpcdsCreateRequest {
+  catalog_name: string;
+  schema_name: string;
+  scale_factor: number;
+}
+
+export interface TpcdsCreateResponse {
+  id: number;
+  catalog_name: string;
+  schema_name: string;
+  scale_factor: number;
+  status: TpcdsStatus;
+  method: "ctas" | "job";
+  job_run_id?: string;
+}
+
+export interface TpcdsCatalog {
+  id: number;
+  catalog_name: string;
+  schema_name: string;
+  scale_factor: number;
+  status: TpcdsStatus;
+  tables_created: number;
+  total_tables: number;
+  error_message: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface TpcdsStatusResponse extends TpcdsCatalog {
+  job_run_id: string | null;
+  job_state?: string;
+  elapsed_time_seconds?: number;
+}
