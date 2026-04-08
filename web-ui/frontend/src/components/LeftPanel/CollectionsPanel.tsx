@@ -1,14 +1,19 @@
 import React, { useState, useEffect } from "react";
 import { mockApi } from "@/mocks/api";
 import { useApp } from "@/contexts/AppContext";
+import { isMockMode } from "@/lib/mockMode";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { StatusBadge } from "@/components/shared/StatusBadge";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
+import { MOCK_COLLECTIONS_WITH_QUERIES, MOCK_TPCDS_CONFIGURED } from "@/mocks/engineSetupData";
 import type { CollectionWithQueries, BenchmarkSummary, BenchmarkDetail } from "@/types";
-import { ArrowLeft, Plus, Trash2, X } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, X, Database, AlertTriangle, Lock } from "lucide-react";
 
 export const CollectionsPanel: React.FC = () => {
-  const { setEditorSql, setCollectionContext, refreshCollections, setActiveCollectionId, engines, enabledEngineIds } = useApp();
+  const {
+    setEditorSql, setCollectionContext, refreshCollections, activeCollectionId, setActiveCollectionId,
+    engines, enabledEngineIds, selectedBenchmarkEngineIds, selectedBenchmarkCollectionId,
+  } = useApp();
   const [collections, setCollections] = useState<CollectionWithQueries[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeCollection, setActiveCollectionLocal] = useState<CollectionWithQueries | null>(null);
@@ -25,6 +30,11 @@ export const CollectionsPanel: React.FC = () => {
   const [runningBenchmark, setRunningBenchmark] = useState(false);
   const [benchmarkError, setBenchmarkError] = useState<string | null>(null);
 
+  // TPC-DS dataset configured check
+  const tpcdsConfigured = MOCK_TPCDS_CONFIGURED; // TODO: fetch from backend in non-mock mode
+
+  const mock = isMockMode();
+
   // Sync activeCollectionId to context for "Add to Collection" button in CenterPanel
   const setActiveCollection = (c: CollectionWithQueries | null) => {
     setActiveCollectionLocal(c);
@@ -33,33 +43,82 @@ export const CollectionsPanel: React.FC = () => {
 
   useEffect(() => {
     setLoading(true);
-    mockApi.getCollections().then(async (cols) => {
-      const full = await Promise.all(cols.map(c => mockApi.getCollection(c.id)));
-      setCollections(full);
+    if (mock) {
+      // In mock mode, use local mock data directly
+      setCollections(MOCK_COLLECTIONS_WITH_QUERIES);
       setLoading(false);
-    });
-  }, [refreshCollections]);
+    } else {
+      mockApi.getCollections().then(async (cols) => {
+        const full = await Promise.all(cols.map(c => mockApi.getCollection(c.id)));
+        setCollections(full);
+        setLoading(false);
+      });
+    }
+  }, [refreshCollections, mock]);
 
   // Reload active collection when refreshCollections changes (e.g. after "Add to Collection")
   useEffect(() => {
     if (!activeCollection) return;
-    mockApi.getCollection(activeCollection.id).then(c => setActiveCollectionLocal(c));
+    if (mock) {
+      const c = MOCK_COLLECTIONS_WITH_QUERIES.find(c => c.id === activeCollection.id);
+      if (c) setActiveCollectionLocal(c);
+    } else {
+      mockApi.getCollection(activeCollection.id).then(c => setActiveCollectionLocal(c));
+    }
   }, [refreshCollections]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Auto-open collection when activeCollectionId is set from center panel (benchmark collection selector)
+  useEffect(() => {
+    if (activeCollectionId === null) return;
+    // Don't re-open if already viewing this collection
+    if (activeCollection?.id === activeCollectionId) return;
+    // Find collection in loaded list and open it
+    const col = collections.find(c => c.id === activeCollectionId);
+    if (col) {
+      setActiveCollectionLocal(col);
+      setSelectedQueryId(null);
+      if (!mock) {
+        mockApi.getBenchmarks(activeCollectionId).then(b => setBenchmarks(b));
+      } else {
+        setBenchmarks([]);
+      }
+      setBenchmarkDetail(null);
+    }
+  }, [activeCollectionId, collections]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const openCollection = async (id: number) => {
-    const c = await mockApi.getCollection(id);
+    let c: CollectionWithQueries;
+    if (mock) {
+      c = MOCK_COLLECTIONS_WITH_QUERIES.find(col => col.id === id)!;
+    } else {
+      c = await mockApi.getCollection(id);
+    }
     setActiveCollection(c);
     setSelectedQueryId(null);
-    const b = await mockApi.getBenchmarks(id);
-    setBenchmarks(b);
+    if (!mock) {
+      const b = await mockApi.getBenchmarks(id);
+      setBenchmarks(b);
+    } else {
+      setBenchmarks([]);
+    }
     setBenchmarkDetail(null);
   };
 
   const handleCreate = async () => {
     if (!newName) return;
-    const created = await mockApi.createCollection(newName, newDesc);
-    const full = await mockApi.getCollection(created.id);
-    setCollections(prev => [...prev, full]);
+    if (mock) {
+      const newId = Math.max(...collections.map(c => c.id)) + 1;
+      const newCol: CollectionWithQueries = {
+        id: newId, name: newName, description: newDesc,
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+        tag: "user", queries: [],
+      };
+      setCollections(prev => [...prev, newCol]);
+    } else {
+      const created = await mockApi.createCollection(newName, newDesc);
+      const full = await mockApi.getCollection(created.id);
+      setCollections(prev => [...prev, full]);
+    }
     setShowCreate(false);
     setNewName("");
     setNewDesc("");
@@ -67,7 +126,9 @@ export const CollectionsPanel: React.FC = () => {
 
   const handleDeleteCollection = async () => {
     if (deleteCollectionId === null) return;
-    await mockApi.deleteCollection(deleteCollectionId);
+    if (!mock) {
+      await mockApi.deleteCollection(deleteCollectionId);
+    }
     setCollections(prev => prev.filter(c => c.id !== deleteCollectionId));
     if (activeCollection?.id === deleteCollectionId) setActiveCollection(null);
     setDeleteCollectionId(null);
@@ -85,17 +146,27 @@ export const CollectionsPanel: React.FC = () => {
 
   const handleDeleteQuery = async () => {
     if (!activeCollection || deleteQueryId === null) return;
-    await mockApi.deleteQuery(activeCollection.id, deleteQueryId);
-    const c = await mockApi.getCollection(activeCollection.id);
-    setActiveCollection(c);
+    if (!mock) {
+      await mockApi.deleteQuery(activeCollection.id, deleteQueryId);
+      const c = await mockApi.getCollection(activeCollection.id);
+      setActiveCollection(c);
+    }
     setDeleteQueryId(null);
   };
 
   const handleRunBenchmark = async () => {
     if (!activeCollection) return;
-    const engineIds = engines.filter(e => enabledEngineIds.has(e.id)).map(e => e.id);
+    // Use center-panel engine selection when a benchmark collection is selected; fall back to right-panel enabled engines
+    const isBenchmarkCollection = selectedBenchmarkCollectionId === activeCollection.id;
+    const engineIds = isBenchmarkCollection && selectedBenchmarkEngineIds.size > 0
+      ? [...selectedBenchmarkEngineIds]
+      : engines.filter(e => enabledEngineIds.has(e.id)).map(e => e.id);
     if (engineIds.length === 0) {
-      setBenchmarkError("No engines enabled. Enable at least one engine in the right panel.");
+      setBenchmarkError(
+        isBenchmarkCollection
+          ? "No engines selected. Select at least one engine in the Runs section of the Benchmarks tab."
+          : "No engines enabled. Enable at least one engine in the right panel."
+      );
       return;
     }
     setRunningBenchmark(true);
@@ -117,6 +188,10 @@ export const CollectionsPanel: React.FC = () => {
   };
 
   if (loading) return <div className="p-3"><LoadingSpinner /></div>;
+
+  const isTpcds = (c: CollectionWithQueries) => c.tag === "tpcds";
+  const tpcdsCollections = collections.filter(isTpcds);
+  const userCollections = collections.filter(c => !isTpcds(c));
 
   // Benchmark Detail View
   if (benchmarkDetail) {
@@ -179,7 +254,6 @@ export const CollectionsPanel: React.FC = () => {
                             </td>
                           );
                         }
-                        // Color: best/worst per query (column)
                         const colTimes = engineNames.map(e => benchmarkDetail.results.find(res => res.query_id === qId && res.engine_display_name === e)?.execution_time_ms).filter((t): t is number => t != null);
                         const min = Math.min(...colTimes);
                         const max = Math.max(...colTimes);
@@ -204,18 +278,39 @@ export const CollectionsPanel: React.FC = () => {
 
   // Collection Detail View
   if (activeCollection) {
+    const readOnly = isTpcds(activeCollection);
+    const tpcdsNotConfigured = readOnly && !tpcdsConfigured;
+
     return (
       <div className="flex flex-col h-full text-[12px]">
         <div className="px-3 py-2 border-b border-panel-border flex items-center justify-between">
           <div className="flex items-center gap-2">
             <button onClick={() => { setActiveCollection(null); setCollectionContext(null); }}><ArrowLeft size={14} /></button>
             <span className="font-semibold text-foreground">{activeCollection.name}</span>
+            {readOnly && (
+              <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[9px] font-medium flex items-center gap-0.5">
+                <Lock size={8} /> TPC-DS
+              </span>
+            )}
           </div>
-          <button onClick={() => setDeleteCollectionId(activeCollection.id)} className="text-muted-foreground hover:text-status-error">
-            <Trash2 size={13} />
-          </button>
+          {!readOnly && (
+            <button onClick={() => setDeleteCollectionId(activeCollection.id)} className="text-muted-foreground hover:text-status-error">
+              <Trash2 size={13} />
+            </button>
+          )}
         </div>
         <p className="px-3 py-1 text-[11px] text-muted-foreground">{activeCollection.description}</p>
+
+        {/* TPC-DS dataset not configured warning */}
+        {tpcdsNotConfigured && (
+          <div className="mx-3 mt-1 mb-1 p-2 rounded border border-amber-200 bg-amber-50 flex items-start gap-2">
+            <AlertTriangle size={13} className="text-amber-500 shrink-0 mt-0.5" />
+            <div className="text-[11px]">
+              <span className="font-medium text-amber-700">TPC-DS dataset not configured.</span>
+              <span className="text-amber-600"> Configure the TPC-DS dataset to run benchmarks with this collection.</span>
+            </div>
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto">
           <div className="px-3 space-y-1 py-2">
@@ -231,34 +326,59 @@ export const CollectionsPanel: React.FC = () => {
                   <span className="font-medium text-muted-foreground shrink-0">Q{q.sequence_number}</span>
                   <span className="truncate font-mono text-[11px] text-foreground">{q.query_text.slice(0, 60)}</span>
                 </div>
-                <button onClick={e => { e.stopPropagation(); setDeleteQueryId(q.id); }} className="text-muted-foreground hover:text-status-error shrink-0 ml-1">
-                  <X size={12} />
-                </button>
+                {!readOnly && (
+                  <button onClick={e => { e.stopPropagation(); setDeleteQueryId(q.id); }} className="text-muted-foreground hover:text-status-error shrink-0 ml-1">
+                    <X size={12} />
+                  </button>
+                )}
               </div>
             ))}
           </div>
 
-          {/* Benchmark section */}
-          <div className="px-3 py-2 border-t border-panel-border">
-            {runningBenchmark ? (
-              <div className="space-y-2">
-                <LoadingSpinner />
-                <p className="text-[11px] text-muted-foreground">Running benchmark...</p>
-              </div>
-            ) : (
-              <>
-                <button
-                  onClick={handleRunBenchmark}
-                  className="px-3 py-1.5 bg-primary text-primary-foreground rounded-md text-[11px] font-medium w-full"
-                >
-                  Run Benchmark
-                </button>
-                {benchmarkError && (
-                  <p className="text-[11px] text-status-error mt-1">{benchmarkError}</p>
-                )}
-              </>
-            )}
-          </div>
+          {/* Benchmark section — only if not TPC-DS without dataset */}
+          {!tpcdsNotConfigured && (
+            <div className="px-3 py-2 border-t border-panel-border">
+              {runningBenchmark ? (
+                <div className="space-y-2">
+                  <LoadingSpinner />
+                  <p className="text-[11px] text-muted-foreground">Running benchmark...</p>
+                </div>
+              ) : (
+                <>
+                  {(() => {
+                    const isBenchmarkCollection = selectedBenchmarkCollectionId === activeCollection.id;
+                    const hasEnginesSelected = isBenchmarkCollection
+                      ? selectedBenchmarkEngineIds.size > 0
+                      : enabledEngineIds.size > 0;
+                    const isDisabled = isBenchmarkCollection && selectedBenchmarkEngineIds.size === 0;
+                    return (
+                      <>
+                        <button
+                          onClick={handleRunBenchmark}
+                          disabled={isDisabled}
+                          className={`px-3 py-1.5 rounded-md text-[11px] font-medium w-full ${
+                            isDisabled
+                              ? "bg-muted text-muted-foreground cursor-not-allowed"
+                              : "bg-primary text-primary-foreground"
+                          }`}
+                        >
+                          Run Benchmark
+                        </button>
+                        {isDisabled && (
+                          <p className="text-[10px] text-muted-foreground mt-1">
+                            Select engines in Benchmarks &gt; Runs to enable.
+                          </p>
+                        )}
+                      </>
+                    );
+                  })()}
+                  {benchmarkError && (
+                    <p className="text-[11px] text-status-error mt-1">{benchmarkError}</p>
+                  )}
+                </>
+              )}
+            </div>
+          )}
 
           {benchmarks.length > 0 && (
             <div className="px-3 py-2 border-t border-panel-border">
@@ -280,8 +400,12 @@ export const CollectionsPanel: React.FC = () => {
           )}
         </div>
 
-        <ConfirmDialog open={deleteCollectionId !== null} title="Delete Collection" description={`Delete collection '${activeCollection.name}' and all its queries? This cannot be undone.`} onConfirm={handleDeleteCollection} onCancel={() => setDeleteCollectionId(null)} destructive />
-        <ConfirmDialog open={deleteQueryId !== null} title="Remove Query" description="Remove this query from the collection?" onConfirm={handleDeleteQuery} onCancel={() => setDeleteQueryId(null)} destructive />
+        {!readOnly && (
+          <>
+            <ConfirmDialog open={deleteCollectionId !== null} title="Delete Collection" description={`Delete collection '${activeCollection.name}' and all its queries? This cannot be undone.`} onConfirm={handleDeleteCollection} onCancel={() => setDeleteCollectionId(null)} destructive />
+            <ConfirmDialog open={deleteQueryId !== null} title="Remove Query" description="Remove this query from the collection?" onConfirm={handleDeleteQuery} onCancel={() => setDeleteQueryId(null)} destructive />
+          </>
+        )}
       </div>
     );
   }
@@ -290,12 +414,12 @@ export const CollectionsPanel: React.FC = () => {
   return (
     <div className="flex flex-col h-full text-[12px]">
       <div className="px-3 py-2 border-b border-panel-border flex items-center justify-between">
-        <span className="font-semibold text-foreground">Query Collections</span>
-        <button onClick={() => setShowCreate(true)} className="text-primary hover:text-primary/80"><Plus size={14} /></button>
+        <span className="font-semibold text-foreground">Collections</span>
+        <button onClick={() => setShowCreate(true)} className="text-primary hover:text-primary/80" title="New collection"><Plus size={14} /></button>
       </div>
 
       <div className="px-3 py-2 text-[10px] text-muted-foreground border-b border-border">
-        Group queries into collections, then run benchmarks to measure engine performance. Benchmark data is used to train ML routing models.
+        Group queries into collections, then run benchmarks to measure engine performance.
       </div>
 
       {showCreate && (
@@ -310,21 +434,68 @@ export const CollectionsPanel: React.FC = () => {
       )}
 
       <div className="flex-1 overflow-y-auto">
-        {collections.map(c => (
-          <button
-            key={c.id}
-            onClick={() => openCollection(c.id)}
-            className="flex flex-col w-full px-3 py-2 hover:bg-muted text-left border-b border-border gap-0.5"
-          >
-            <div className="flex items-center justify-between w-full">
-              <span className="text-foreground font-medium">{c.name}</span>
-              <span className="text-[10px] text-muted-foreground">{c.queries.length} queries</span>
+        {/* TPC-DS Collections */}
+        {tpcdsCollections.length > 0 && (
+          <>
+            <div className="px-3 py-1.5 flex items-center gap-1.5 bg-muted/30 border-b border-border">
+              <Database size={11} className="text-amber-500" />
+              <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">TPC-DS Benchmarks</span>
+              {!tpcdsConfigured && (
+                <span className="ml-auto flex items-center gap-0.5 text-[9px] text-amber-600">
+                  <AlertTriangle size={9} /> Not configured
+                </span>
+              )}
             </div>
-            {c.description && (
-              <span className="text-[10px] text-muted-foreground truncate">{c.description}</span>
-            )}
-          </button>
-        ))}
+            {tpcdsCollections.map(c => (
+              <button
+                key={c.id}
+                onClick={() => openCollection(c.id)}
+                className={`flex flex-col w-full px-3 py-2 hover:bg-muted text-left border-b border-border gap-0.5 ${!tpcdsConfigured ? "opacity-60" : ""}`}
+              >
+                <div className="flex items-center justify-between w-full">
+                  <div className="flex items-center gap-1.5">
+                    <Lock size={9} className="text-amber-500" />
+                    <span className="text-foreground font-medium">{c.name}</span>
+                  </div>
+                  <span className="text-[10px] text-muted-foreground">{c.queries.length} queries</span>
+                </div>
+                {c.description && (
+                  <span className="text-[10px] text-muted-foreground truncate pl-[18px]">{c.description}</span>
+                )}
+              </button>
+            ))}
+          </>
+        )}
+
+        {/* User Collections */}
+        {userCollections.length > 0 && (
+          <>
+            <div className="px-3 py-1.5 flex items-center gap-1.5 bg-muted/30 border-b border-border">
+              <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">User Collections</span>
+            </div>
+            {userCollections.map(c => (
+              <button
+                key={c.id}
+                onClick={() => openCollection(c.id)}
+                className="flex flex-col w-full px-3 py-2 hover:bg-muted text-left border-b border-border gap-0.5"
+              >
+                <div className="flex items-center justify-between w-full">
+                  <span className="text-foreground font-medium">{c.name}</span>
+                  <span className="text-[10px] text-muted-foreground">{c.queries.length} queries</span>
+                </div>
+                {c.description && (
+                  <span className="text-[10px] text-muted-foreground truncate">{c.description}</span>
+                )}
+              </button>
+            ))}
+          </>
+        )}
+
+        {tpcdsCollections.length === 0 && userCollections.length === 0 && (
+          <div className="px-3 py-6 text-center text-muted-foreground text-[11px]">
+            No collections yet. Create one or configure TPC-DS datasets.
+          </div>
+        )}
       </div>
     </div>
   );

@@ -52,6 +52,8 @@ export interface Collection {
   description: string;
   created_at: string;
   updated_at: string;
+  /** "tpcds" for built-in TPC-DS collections, "user" for user-created */
+  tag?: "tpcds" | "user";
 }
 
 export interface CollectionWithQueries extends Collection {
@@ -68,16 +70,22 @@ export interface Query {
 // --- Engine catalog ---
 export type EngineRuntimeState = "running" | "stopped" | "starting" | "unknown";
 
+export type EngineScalePolicy = "always_on" | "scale_to_zero";
+
 export interface EngineCatalogEntry {
   id: string;
   engine_type: "databricks_sql" | "duckdb";
   display_name: string;
   config: Record<string, any>;
   is_default: boolean;
+  /** Enabled for benchmarking and routing (set in Manage Engines catalog) */
   enabled: boolean;
   cost_tier: number;
   runtime_state: EngineRuntimeState;
+  scale_policy: EngineScalePolicy;
   scalable?: boolean;
+  /** Number of routing profiles currently using this engine (Round 16 — DuckDB lock) */
+  profile_usage_count?: number;
   created_at?: string;
   updated_at?: string;
 }
@@ -110,6 +118,9 @@ export interface RoutingSettings {
 
 // --- Run mode ---
 export type RunMode = "single" | "multi";
+
+// --- Routing mode (user-selected) ---
+export type RoutingMode = "single" | "smart";
 
 // --- Panel mode (Run vs Train) ---
 export type PanelMode = "run" | "train";
@@ -260,7 +271,88 @@ export interface LogEntry {
 }
 
 // --- Kept for backwards compat but no longer used for routing toggle ---
-export type RoutingMode = "smart" | "duckdb" | "databricks";
+export type LegacyRoutingMode = "smart" | "duckdb" | "databricks";
+
+// --- Benchmark Definitions & Runs (Phase 15 revised data model) ---
+// A benchmark definition = collection × engine (1:1 immutable pair)
+export interface BenchmarkDefinition {
+  id: number;
+  collection_id: number;
+  collection_name: string;
+  engine_id: string;
+  engine_display_name: string;
+  created_at: string;
+  run_count: number;
+  latest_run?: BenchmarkRunSummary;
+}
+
+// A benchmark run = single execution of a definition
+export interface BenchmarkRunSummary {
+  id: number;
+  definition_id: number;
+  status: "warming_up" | "running" | "complete" | "failed";
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BenchmarkRunDetail extends BenchmarkRunSummary {
+  warmups: BenchmarkWarmup[];
+  results: BenchmarkResult[];
+}
+
+// --- Center panel view mode ---
+export type CenterPanelTab = "query" | "engine-setup";
+
+// --- Left panel tab ---
+export type LeftPanelTab = "catalog" | "collections";
+
+// --- Databricks warehouse mapping (Round 16) ---
+// Maps a catalog engine type (e.g. "databricks:serverless-medium") to an actual warehouse in a workspace
+export interface WarehouseMapping {
+  engineId: string;           // catalog engine ID (e.g. "databricks:serverless-medium")
+  warehouseId: string | null; // actual warehouse ID in the workspace (null = not mapped)
+  warehouseName: string | null; // display name of the mapped warehouse
+}
+
+// --- Workspace binding (Round 16) ---
+// A profile can be bound to a specific Databricks workspace
+export interface WorkspaceBinding {
+  workspaceId: string;        // references Workspace.id
+  workspaceName: string;      // display label
+  workspaceUrl: string;       // Databricks host URL
+}
+
+// --- Routing configuration snapshot (saved state) ---
+export interface RoutingConfig {
+  routingMode: RoutingMode;        // User-selected: "single" or "smart"
+  singleEngineId: string | null;   // Selected engine in single mode
+  activeModelId: number | null;    // Active ML model ID (smart mode)
+  enabledEngineIds: string[];      // IDs of enabled engines (smart mode — subset of model's linked_engines)
+  routingPriority: number;         // cost_weight value (0 | 0.5 | 1)
+  workspaceBinding: WorkspaceBinding | null; // Databricks workspace for this profile (Round 16)
+  warehouseMappings: WarehouseMapping[];     // Databricks engine → warehouse mappings (Round 16)
+}
+
+// --- Routing Profiles (persistent named configs — Round 13) ---
+export interface RoutingProfile {
+  id: number;
+  name: string;
+  is_default: boolean;
+  config: RoutingConfig;
+  created_at: string;
+  updated_at: string;
+}
+
+// --- Discovered warehouses for a connected workspace (Round 16) ---
+// Grouped by engine type for the UI to show "2 warehouses found" etc.
+export interface DiscoveredWarehouse {
+  id: string;
+  name: string;
+  state: string;
+  cluster_size: string;
+  warehouse_type: string;         // "PRO", "CLASSIC", "SERVERLESS"
+  matchingEngineId: string | null; // which catalog engine type this matches (null if no match)
+}
 
 // --- Metastore external access (Phase 14 / REQ-001) ---
 export interface MetastoreAccessStatus {

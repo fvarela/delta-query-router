@@ -1,7 +1,9 @@
-import React, { createContext, useContext, useState, useCallback, useEffect } from "react";
-import type { RunMode, PanelMode, QueryExecutionResult, Workspace, Warehouse, DatabricksSettings, EngineCatalogEntry, Model, RoutingSettings, StorageLatencyProbe } from "../types";
+import React, { createContext, useContext, useState, useCallback, useEffect, useMemo } from "react";
+import type { RunMode, RoutingMode, PanelMode, CenterPanelTab, LeftPanelTab, RoutingConfig, RoutingProfile, WorkspaceBinding, WarehouseMapping, DiscoveredWarehouse, QueryExecutionResult, Workspace, Warehouse, DatabricksSettings, EngineCatalogEntry, Model, RoutingSettings, StorageLatencyProbe, BenchmarkDefinition } from "../types";
 import { mockApi } from "@/mocks/api";
 import { api } from "@/lib/api";
+import { isMockMode } from "@/lib/mockMode";
+import { MOCK_ENGINES, MOCK_MODELS, MOCK_BENCHMARK_DEFINITIONS, MOCK_ROUTING_PROFILES, MOCK_DISCOVERED_WAREHOUSES, MOCK_WORKSPACES, computeProfileUsageCounts } from "@/mocks/engineSetupData";
 
 // ---- App Context ----
 interface AppContextType {
@@ -36,11 +38,11 @@ interface AppContextType {
   // Engines
   engines: EngineCatalogEntry[];
   reloadEngines: () => Promise<void>;
-  /** IDs of engines selected for multi-engine routing (checkboxes) */
+  /** IDs of engines selected for multi-engine routing (checkboxes in Smart Routing mode) */
   enabledEngineIds: Set<string>;
   toggleEngineEnabled: (id: string) => void;
   setAllEnginesEnabled: (ids: string[]) => void;
-  /** ID of the single engine selected via radio button */
+  /** ID of the single engine selected in Single Engine mode */
   singleEngineId: string | null;
   setSingleEngineId: (id: string | null) => void;
 
@@ -48,7 +50,11 @@ interface AppContextType {
   scaleEngine: (engineId: string, replicas: number) => Promise<void>;
   scalingEngineIds: Set<string>;
 
-  // Run mode (derived from engine selection count — not settable directly)
+  // Routing mode (user-selected: "single" or "smart")
+  routingMode: RoutingMode;
+  setRoutingMode: (mode: RoutingMode) => void;
+
+  // Run mode (derived from routing mode + selection — kept for backward compat)
   runMode: RunMode;
 
   // Panel mode (Run vs Train)
@@ -70,11 +76,70 @@ interface AppContextType {
   reloadStorageProbes: () => Promise<void>;
   runStorageProbes: () => Promise<void>;
   probesRunning: boolean;
+
+  // Center panel tab
+  centerTab: CenterPanelTab;
+  setCenterTab: (tab: CenterPanelTab) => void;
+
+  // Benchmark definitions (Phase 15 — Engine Setup view)
+  benchmarkDefinitions: BenchmarkDefinition[];
+  reloadBenchmarkDefinitions: () => Promise<void>;
+
+  // Left panel tab (lifted so center panel can switch it)
+  leftPanelTab: LeftPanelTab;
+  setLeftPanelTab: (tab: LeftPanelTab) => void;
+
+  // Benchmark collection & engine selection (center panel ↔ left panel coordination)
+  selectedBenchmarkCollectionId: number | null;
+  setSelectedBenchmarkCollectionId: (id: number | null) => void;
+  selectedBenchmarkEngineIds: Set<string>;
+  toggleBenchmarkEngineId: (id: string) => void;
+  setBenchmarkEngineIds: (ids: Set<string>) => void;
+
+  // Saved routing config (persistent settings — Round 8)
+  savedRoutingConfig: RoutingConfig;
+  hasUnsavedChanges: boolean;
+  saveRoutingConfig: () => void;
+  rollbackRoutingConfig: () => void;
+
+  // Routing profiles (persistent named configs — Round 13)
+  routingProfiles: RoutingProfile[];
+  activeProfileId: number | null;
+  activeProfileName: string | null;
+  loadProfile: (id: number) => void;
+  saveProfile: () => void;
+  saveProfileAs: (name: string) => void;
+  deleteProfile: (id: number) => void;
+  setDefaultProfile: (id: number) => void;
+  clearActiveProfile: () => void;
+
+  // Workspace binding for current profile (Round 16 → Round 17: implicit, derived from warehouse mappings)
+  profileWorkspaceBinding: WorkspaceBinding | null;
+  /** Clear workspace binding and all warehouse mappings (unlink from workspace) */
+  unlinkProfileWorkspace: () => void;
+
+  // Warehouse mappings for current routing config (Round 16)
+  warehouseMappings: WarehouseMapping[];
+  setWarehouseMapping: (engineId: string, warehouseId: string | null, warehouseName: string | null) => void;
+
+  // Discovered warehouses from the bound workspace (Round 16)
+  discoveredWarehouses: DiscoveredWarehouse[];
+  reloadDiscoveredWarehouses: () => Promise<void>;
+
+  // Engine catalog dialog (Round 16)
+  engineCatalogOpen: boolean;
+  setEngineCatalogOpen: (open: boolean) => void;
+  toggleCatalogEngine: (engineId: string, field: "enabled" | "scale_policy", value: any) => void;
+
+  // Profile usage counts for engines (Round 16 — computed from all profiles)
+  engineProfileCounts: Record<string, number>;
 }
 
 const AppContext = createContext<AppContextType>(null!);
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const mock = isMockMode();
+
   // Editor state
   const [editorSql, setEditorSql] = useState("");
   const [queryResult, setQueryResult] = useState<QueryExecutionResult | null>(null);
@@ -103,7 +168,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     localStorage.setItem(WORKSPACES_KEY, JSON.stringify(toStore));
   };
 
-  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>(mock ? [...MOCK_WORKSPACES] : []);
   const connectedWorkspace = workspaces.find(w => w.connected) ?? null;
 
   const reloadWorkspaces = useCallback(async () => {
@@ -190,12 +255,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, []);
 
   // Engines
-  const [engines, setEngines] = useState<EngineCatalogEntry[]>([]);
-  const [enabledEngineIds, setEnabledEngineIds] = useState<Set<string>>(new Set());
-  const [singleEngineId, setSingleEngineId] = useState<string | null>(null);
+  const [engines, setEngines] = useState<EngineCatalogEntry[]>(mock ? MOCK_ENGINES : []);
+  const [enabledEngineIds, setEnabledEngineIds] = useState<Set<string>>(
+    mock ? new Set(MOCK_MODELS[0].linked_engines) : new Set()
+  );
+  const [singleEngineId, setSingleEngineId] = useState<string | null>(
+    mock ? (MOCK_ENGINES.find(e => e.runtime_state === "running")?.id ?? null) : null
+  );
   const [scalingEngineIds, setScalingEngineIds] = useState<Set<string>>(new Set());
 
   const reloadEngines = useCallback(async () => {
+    if (mock) {
+      setEngines(MOCK_ENGINES);
+      setEnabledEngineIds(new Set(MOCK_ENGINES.filter(x => x.enabled).map(x => x.id)));
+      return;
+    }
     // Fetch engines from real backend API (DuckDB worker health + Databricks warehouses)
     try {
       const e = await api.get<EngineCatalogEntry[]>("/api/engines");
@@ -208,7 +282,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch {
       // Fallback: keep whatever engines we have
     }
-  }, [singleEngineId]);
+  }, [mock, singleEngineId]);
 
   const scaleEngine = useCallback(async (engineId: string, replicas: number) => {
     setScalingEngineIds(prev => new Set(prev).add(engineId));
@@ -238,21 +312,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setEnabledEngineIds(new Set(ids));
   }, []);
 
-  // Run mode — derived from how many *visible* engines are selected
-  // (Databricks engines are hidden when no workspace is connected)
-  const visibleEnabledEngines = engines.filter(e => {
-    if (!enabledEngineIds.has(e.id)) return false;
-    if (e.engine_type === "databricks_sql" && !connectedWorkspace) return false;
-    return true;
-  });
-  const visibleEnabledCount = visibleEnabledEngines.length;
-  const runMode: RunMode = visibleEnabledCount > 1 ? "multi" : "single";
+  // Routing mode — user-selected: "single" (no model) or "smart" (model-driven)
+  const [routingMode, setRoutingMode] = useState<RoutingMode>(mock ? "smart" : "single");
 
-  // When exactly one engine is enabled, that's the single engine for forced-mode queries.
-  // This keeps singleEngineId in sync with checkbox toggles.
-  const derivedSingleEngineId = visibleEnabledCount === 1
-    ? visibleEnabledEngines[0].id
-    : singleEngineId;
+  // Run mode — derived from routingMode for backward compat
+  const runMode: RunMode = routingMode === "smart" ? "multi" : "single";
+
+  // In single mode, derive the single engine ID from user selection
+  const derivedSingleEngineId = singleEngineId;
 
   // Panel mode (Run vs Train)
   const [panelMode, setPanelModeRaw] = useState<PanelMode>("run");
@@ -277,23 +344,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [engines, enabledEngineIds, savedEngineIds]);
 
   // Models
-  const [models, setModels] = useState<Model[]>([]);
-  const [activeModelId, setActiveModelId] = useState<number | null>(null);
+  const [models, setModels] = useState<Model[]>(mock ? MOCK_MODELS : []);
+  const [activeModelId, setActiveModelId] = useState<number | null>(mock ? 1 : null);
 
   const reloadModels = useCallback(async () => {
+    if (mock) {
+      setModels(MOCK_MODELS);
+      const active = MOCK_MODELS.find(x => x.is_active);
+      if (active) setActiveModelId(active.id);
+      return;
+    }
     const m = await mockApi.getModels();
     setModels(m);
     const active = m.find(x => x.is_active);
     if (active) setActiveModelId(active.id);
-  }, []);
+  }, [mock]);
 
   // Routing settings (ODQ-10)
   const [routingSettings, setRoutingSettings] = useState<RoutingSettings>({ fit_weight: 0.5, cost_weight: 0.5, running_bonus_duckdb: 0.05, running_bonus_databricks: 0.15 });
 
   const updateRoutingSettings = useCallback(async (settings: Partial<RoutingSettings>) => {
+    if (mock) {
+      setRoutingSettings(prev => ({ ...prev, ...settings }));
+      return;
+    }
     const updated = await api.put<RoutingSettings>("/api/routing/settings", settings);
     setRoutingSettings(updated);
-  }, []);
+  }, [mock]);
 
   // Storage latency probes (ODQ-9)
   const [storageProbes, setStorageProbes] = useState<StorageLatencyProbe[]>([]);
@@ -314,6 +391,323 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [reloadStorageProbes]);
 
+  // Center panel tab (Phase 15)
+  const [centerTab, setCenterTab] = useState<CenterPanelTab>("query");
+
+  // Left panel tab (lifted so center panel can switch it)
+  const [leftPanelTab, setLeftPanelTab] = useState<LeftPanelTab>("catalog");
+
+  // Benchmark collection & engine selection (center panel ↔ left panel coordination)
+  const [selectedBenchmarkCollectionId, setSelectedBenchmarkCollectionIdRaw] = useState<number | null>(null);
+  const [selectedBenchmarkEngineIds, setSelectedBenchmarkEngineIds] = useState<Set<string>>(new Set());
+
+  const setSelectedBenchmarkCollectionId = useCallback((id: number | null) => {
+    setSelectedBenchmarkCollectionIdRaw(id);
+    // Reset engine selection when collection changes
+    setSelectedBenchmarkEngineIds(new Set());
+    if (id !== null) {
+      // Switch left panel to collections and open the selected collection
+      setLeftPanelTab("collections");
+      setActiveCollectionId(id);
+    }
+  }, []);
+
+  const toggleBenchmarkEngineId = useCallback((id: string) => {
+    setSelectedBenchmarkEngineIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const setBenchmarkEngineIds = useCallback((ids: Set<string>) => {
+    setSelectedBenchmarkEngineIds(ids);
+  }, []);
+
+  // Saved routing config (DB-persisted state — Round 8/9/12)
+  // This represents the last configuration persisted to the backend database.
+  // CurrentSettings is a live view of the working state; Save persists to DB,
+  // Rollback reverts to the DB-persisted snapshot.
+  const [savedRoutingConfig, setSavedRoutingConfig] = useState<RoutingConfig>(() => {
+    if (mock) {
+      // Load default profile's config
+      const defaultProfile = MOCK_ROUTING_PROFILES.find(p => p.is_default);
+      if (defaultProfile) return { ...defaultProfile.config };
+      return {
+        routingMode: "smart",
+        singleEngineId: MOCK_ENGINES.find(e => e.enabled)?.id ?? null,
+        activeModelId: 1,
+        enabledEngineIds: MOCK_MODELS[0].linked_engines,
+        routingPriority: 0.5,
+        workspaceBinding: null,
+        warehouseMappings: [],
+      };
+    }
+    return { routingMode: "single", singleEngineId: null, activeModelId: null, enabledEngineIds: [], routingPriority: 0.5, workspaceBinding: null, warehouseMappings: [] };
+  });
+
+  // Routing profiles (persistent named configs — Round 13)
+  const [routingProfiles, setRoutingProfiles] = useState<RoutingProfile[]>(
+    mock ? [...MOCK_ROUTING_PROFILES] : []
+  );
+  const [activeProfileId, setActiveProfileId] = useState<number | null>(() => {
+    if (mock) {
+      const defaultProfile = MOCK_ROUTING_PROFILES.find(p => p.is_default);
+      return defaultProfile?.id ?? null;
+    }
+    return null;
+  });
+
+  const activeProfileName = useMemo(() => {
+    if (activeProfileId === null) return null;
+    return routingProfiles.find(p => p.id === activeProfileId)?.name ?? null;
+  }, [activeProfileId, routingProfiles]);
+
+  // Workspace binding for current profile (Round 16)
+  // MUST be declared before loadProfile/saveProfile/hasUnsavedChanges which reference it
+  const [profileWorkspaceBinding, setProfileWorkspaceBinding] = useState<WorkspaceBinding | null>(() => {
+    if (mock) {
+      const defaultProfile = MOCK_ROUTING_PROFILES.find(p => p.is_default);
+      return defaultProfile?.config.workspaceBinding ?? null;
+    }
+    return null;
+  });
+
+  // Warehouse mappings for current routing config (Round 16)
+  // MUST be declared before loadProfile/saveProfile/hasUnsavedChanges which reference it
+  const [warehouseMappings, setWarehouseMappings] = useState<WarehouseMapping[]>(() => {
+    if (mock) {
+      const defaultProfile = MOCK_ROUTING_PROFILES.find(p => p.is_default);
+      return defaultProfile?.config.warehouseMappings ?? [];
+    }
+    return [];
+  });
+
+  const setWarehouseMapping = useCallback((engineId: string, warehouseId: string | null, warehouseName: string | null) => {
+    setWarehouseMappings(prev => {
+      const existing = prev.findIndex(m => m.engineId === engineId);
+      const newMapping: WarehouseMapping = { engineId, warehouseId, warehouseName };
+      if (existing >= 0) {
+        const next = [...prev];
+        next[existing] = newMapping;
+        return next;
+      }
+      return [...prev, newMapping];
+    });
+    // Round 17: Implicitly bind workspace when a warehouse is mapped
+    // If user maps a Databricks engine to a warehouse, the profile becomes dependent on the current workspace
+    if (warehouseId !== null && connectedWorkspace) {
+      setProfileWorkspaceBinding({
+        workspaceId: connectedWorkspace.id,
+        workspaceName: connectedWorkspace.name,
+        workspaceUrl: connectedWorkspace.url,
+      });
+    }
+  }, [connectedWorkspace]);
+
+  // Round 17: Unlink profile from workspace — clear binding AND all warehouse mappings
+  const unlinkProfileWorkspace = useCallback(() => {
+    setProfileWorkspaceBinding(null);
+    setWarehouseMappings([]);
+  }, []);
+
+  // Discovered warehouses from the connected workspace (Round 16)
+  const [discoveredWarehouses, setDiscoveredWarehouses] = useState<DiscoveredWarehouse[]>(
+    mock ? MOCK_DISCOVERED_WAREHOUSES : []
+  );
+
+  const reloadDiscoveredWarehouses = useCallback(async () => {
+    if (mock) {
+      setDiscoveredWarehouses(MOCK_DISCOVERED_WAREHOUSES);
+      return;
+    }
+    // TODO: fetch from real API — transform warehouse list into DiscoveredWarehouse[]
+    try {
+      const list = await api.get<Warehouse[]>("/api/databricks/warehouses");
+      // Map to DiscoveredWarehouse with engine matching
+      const discovered: DiscoveredWarehouse[] = list.map(w => ({
+        id: w.id,
+        name: w.name,
+        state: w.state,
+        cluster_size: w.cluster_size ?? "Unknown",
+        warehouse_type: w.warehouse_type ?? "UNKNOWN",
+        matchingEngineId: null, // TODO: implement size-based matching
+      }));
+      setDiscoveredWarehouses(discovered);
+    } catch {
+      setDiscoveredWarehouses([]);
+    }
+  }, [mock]);
+
+  // Engine catalog dialog (Round 16)
+  const [engineCatalogOpen, setEngineCatalogOpen] = useState(false);
+
+  const toggleCatalogEngine = useCallback((engineId: string, field: "enabled" | "scale_policy", value: any) => {
+    setEngines(prev => prev.map(e =>
+      e.id === engineId ? { ...e, [field]: value } : e
+    ));
+  }, []);
+
+  // Profile usage counts (Round 16 — derived from all profiles)
+  const engineProfileCounts = useMemo(() => {
+    return computeProfileUsageCounts(routingProfiles);
+  }, [routingProfiles]);
+
+  // Load a profile — apply its config to all working state
+  const loadProfile = useCallback((id: number) => {
+    const profile = routingProfiles.find(p => p.id === id);
+    if (!profile) return;
+    setActiveProfileId(id);
+    setSavedRoutingConfig({ ...profile.config });
+    // Apply config to working state
+    setRoutingMode(profile.config.routingMode);
+    setSingleEngineId(profile.config.singleEngineId);
+    setActiveModelId(profile.config.activeModelId);
+    setEnabledEngineIds(new Set(profile.config.enabledEngineIds));
+    setRoutingSettings(prev => ({
+      ...prev,
+      cost_weight: profile.config.routingPriority,
+      fit_weight: 1 - profile.config.routingPriority,
+    }));
+    // Restore workspace binding and warehouse mappings (Round 16)
+    setProfileWorkspaceBinding(profile.config.workspaceBinding ?? null);
+    setWarehouseMappings(profile.config.warehouseMappings ?? []);
+  }, [routingProfiles]);
+
+  // Save current config to the active profile (update in place)
+  const saveProfile = useCallback(() => {
+    const currentConfig: RoutingConfig = {
+      routingMode,
+      singleEngineId,
+      activeModelId,
+      enabledEngineIds: [...enabledEngineIds],
+      routingPriority: routingSettings.cost_weight,
+      workspaceBinding: profileWorkspaceBinding,
+      warehouseMappings: [...warehouseMappings],
+    };
+    if (activeProfileId !== null) {
+      // Update existing profile
+      setRoutingProfiles(prev => prev.map(p =>
+        p.id === activeProfileId
+          ? { ...p, config: currentConfig, updated_at: new Date().toISOString() }
+          : p
+      ));
+    }
+    setSavedRoutingConfig(currentConfig);
+  }, [routingMode, singleEngineId, enabledEngineIds, routingSettings.cost_weight, activeModelId, activeProfileId, profileWorkspaceBinding, warehouseMappings]);
+
+  // Save As — create a new profile from current config
+  const saveProfileAs = useCallback((name: string) => {
+    const currentConfig: RoutingConfig = {
+      routingMode,
+      singleEngineId,
+      activeModelId,
+      enabledEngineIds: [...enabledEngineIds],
+      routingPriority: routingSettings.cost_weight,
+      workspaceBinding: profileWorkspaceBinding,
+      warehouseMappings: [...warehouseMappings],
+    };
+    const newId = Math.max(0, ...routingProfiles.map(p => p.id)) + 1;
+    const now = new Date().toISOString();
+    const newProfile: RoutingProfile = {
+      id: newId,
+      name,
+      is_default: false,
+      config: currentConfig,
+      created_at: now,
+      updated_at: now,
+    };
+    setRoutingProfiles(prev => [...prev, newProfile]);
+    setActiveProfileId(newId);
+    setSavedRoutingConfig(currentConfig);
+  }, [routingMode, singleEngineId, enabledEngineIds, routingSettings.cost_weight, activeModelId, routingProfiles, profileWorkspaceBinding, warehouseMappings]);
+
+  // Delete a profile
+  const deleteProfile = useCallback((id: number) => {
+    setRoutingProfiles(prev => prev.filter(p => p.id !== id));
+    if (activeProfileId === id) {
+      setActiveProfileId(null);
+    }
+  }, [activeProfileId]);
+
+  // Set a profile as the default (used by API when accessed programmatically)
+  const setDefaultProfile = useCallback((id: number) => {
+    setRoutingProfiles(prev => prev.map(p => ({
+      ...p,
+      is_default: p.id === id,
+    })));
+  }, []);
+
+  // Clear active profile (work with unsaved config)
+  const clearActiveProfile = useCallback(() => {
+    setActiveProfileId(null);
+  }, []);
+
+  // Derive whether current state differs from saved config
+  const hasUnsavedChanges = useMemo(() => {
+    if (routingMode !== savedRoutingConfig.routingMode) return true;
+    if (routingMode === "single") {
+      if (singleEngineId !== savedRoutingConfig.singleEngineId) return true;
+    } else {
+      if (activeModelId !== savedRoutingConfig.activeModelId) return true;
+      const currentIds = [...enabledEngineIds].sort();
+      const savedIds = [...savedRoutingConfig.enabledEngineIds].sort();
+      if (currentIds.length !== savedIds.length || currentIds.some((id, i) => id !== savedIds[i])) return true;
+    }
+    if (Math.abs(routingSettings.cost_weight - savedRoutingConfig.routingPriority) > 0.01) return true;
+    // Check workspace binding (Round 16)
+    const currentWs = profileWorkspaceBinding;
+    const savedWs = savedRoutingConfig.workspaceBinding;
+    if ((currentWs === null) !== (savedWs === null)) return true;
+    if (currentWs && savedWs && currentWs.workspaceId !== savedWs.workspaceId) return true;
+    // Check warehouse mappings (Round 16)
+    const currentMappings = warehouseMappings.filter(m => m.warehouseId !== null);
+    const savedMappings = (savedRoutingConfig.warehouseMappings ?? []).filter(m => m.warehouseId !== null);
+    if (currentMappings.length !== savedMappings.length) return true;
+    for (const cm of currentMappings) {
+      const sm = savedMappings.find(m => m.engineId === cm.engineId);
+      if (!sm || sm.warehouseId !== cm.warehouseId) return true;
+    }
+    return false;
+  }, [routingMode, singleEngineId, enabledEngineIds, routingSettings.cost_weight, activeModelId, savedRoutingConfig, profileWorkspaceBinding, warehouseMappings]);
+
+  const saveRoutingConfig = useCallback(() => {
+    // When a profile is loaded, update it in place
+    saveProfile();
+  }, [saveProfile]);
+
+  const rollbackRoutingConfig = useCallback(() => {
+    // Restore routing mode
+    setRoutingMode(savedRoutingConfig.routingMode);
+    // Restore single engine
+    setSingleEngineId(savedRoutingConfig.singleEngineId);
+    // Restore engines
+    setEnabledEngineIds(new Set(savedRoutingConfig.enabledEngineIds));
+    // Restore routing priority
+    setRoutingSettings(prev => ({
+      ...prev,
+      cost_weight: savedRoutingConfig.routingPriority,
+      fit_weight: 1 - savedRoutingConfig.routingPriority,
+    }));
+    // Restore active model
+    setActiveModelId(savedRoutingConfig.activeModelId);
+    // Restore workspace binding and warehouse mappings (Round 16)
+    setProfileWorkspaceBinding(savedRoutingConfig.workspaceBinding ?? null);
+    setWarehouseMappings(savedRoutingConfig.warehouseMappings ?? []);
+  }, [savedRoutingConfig]);
+
+  // Benchmark definitions (Phase 15 — Engine Setup view)
+  const [benchmarkDefinitions, setBenchmarkDefinitions] = useState<BenchmarkDefinition[]>(
+    mock ? MOCK_BENCHMARK_DEFINITIONS : []
+  );
+  const reloadBenchmarkDefinitions = useCallback(async () => {
+    if (mock) {
+      setBenchmarkDefinitions(MOCK_BENCHMARK_DEFINITIONS);
+      return;
+    }
+    // TODO: fetch from real API when backend is ready
+  }, [mock]);
+
   // Re-load engines when workspace connection changes (backend returns both DuckDB + Databricks)
   useEffect(() => {
     reloadEngines();
@@ -321,6 +715,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Initial data load
   useEffect(() => {
+    if (mock) {
+      // In mock mode, data is already initialized from MOCK_* constants
+      return;
+    }
     reloadWorkspaces().then(() => {
       // Load warehouses after workspaces — needs connected workspace
       reloadWarehouses();
@@ -341,11 +739,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       engines, reloadEngines, enabledEngineIds, toggleEngineEnabled, setAllEnginesEnabled,
       singleEngineId: derivedSingleEngineId, setSingleEngineId,
       scaleEngine, scalingEngineIds,
+      routingMode, setRoutingMode,
       runMode,
       panelMode, setPanelMode,
       activeModelId, setActiveModelId, models, reloadModels,
       routingSettings, updateRoutingSettings,
       storageProbes, reloadStorageProbes, runStorageProbes, probesRunning,
+      centerTab, setCenterTab,
+      benchmarkDefinitions, reloadBenchmarkDefinitions,
+      leftPanelTab, setLeftPanelTab,
+      selectedBenchmarkCollectionId, setSelectedBenchmarkCollectionId,
+      selectedBenchmarkEngineIds, toggleBenchmarkEngineId, setBenchmarkEngineIds,
+      savedRoutingConfig, hasUnsavedChanges, saveRoutingConfig, rollbackRoutingConfig,
+      routingProfiles, activeProfileId, activeProfileName,
+      loadProfile, saveProfile, saveProfileAs, deleteProfile, setDefaultProfile, clearActiveProfile,
+      profileWorkspaceBinding, unlinkProfileWorkspace,
+      warehouseMappings, setWarehouseMapping,
+      discoveredWarehouses, reloadDiscoveredWarehouses,
+      engineCatalogOpen, setEngineCatalogOpen, toggleCatalogEngine,
+      engineProfileCounts,
     }}>
       {children}
     </AppContext.Provider>

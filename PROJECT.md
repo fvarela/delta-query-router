@@ -41,19 +41,23 @@ The routing algorithm that combines multiple decision factors:
 - `collections`: id, name, description, created_at, updated_at
 - `queries`: id, collection_id (FK), query_text, sequence_number
 
-### ODQ-2: Benchmarks as a separate entity — DECIDED
+### ODQ-2: Benchmarks as a separate entity — DECIDED (revised 2026-04-05)
 
-**Decision (2026-03-14):** Benchmarks are a first-class entity with their own DB tables. A benchmark runs all queries in a collection on all available engines, recording results per-engine per-query. A warm-up phase precedes the benchmark: a probe query is sent to each engine to ensure it is warm, and cold-start time is recorded. Engine identity uses a string ID for now; the formal engine registry is deferred to ODQ-4. Benchmarks are triggered from the collection UI on the main page, with a benchmark history list and detail view per collection.
+**Decision (2026-03-14, revised 2026-04-05):** Benchmarks are a first-class entity with their own DB tables. A benchmark **definition** is the combination of a collection and an engine (1:1 immutable pair). A benchmark **run** is a single execution of a definition, capturing cold-start time and per-query timings. Multiple runs per definition are supported to accumulate training data for ML models.
+
+A warm-up phase precedes each benchmark run: a probe query is sent to each engine to ensure it is warm, and cold-start time is recorded. Engine identity uses a string ID in the `engines` table; temporary engines are provisioned fresh for benchmark runs and torn down afterward.
 
 **Design notes:**
-- Engine configurations are portable across workspaces — a SQL Warehouse benchmark result applies to any warehouse with the same config (cluster size, Photon, serverless, region), regardless of workspace. To be formalized in ODQ-4.
-- DuckDB engines should also support configurable deployment modes (always-on vs on-demand) and resource settings. Multiple DuckDB configurations can coexist. Also deferred to ODQ-4.
+- Engine configurations are portable across workspaces — a SQL Warehouse benchmark result applies to any warehouse with the same config (cluster size, Photon, serverless, region), regardless of workspace. Formalized in ODQ-4.
+- DuckDB engines should also support configurable deployment modes (always-on for active engines) and resource settings. Multiple DuckDB configurations can coexist. Formalized in ODQ-4/ODQ-7.
 - Cold-start is measured during warm-up, not during benchmark queries. Results contain only warm-engine performance data.
+- When users select engines that share a common collection benchmark, they can compare results across engines and train a model from the combined data.
 
-**Schema:**
-- `benchmarks`: id, collection_id (FK), status, created_at, updated_at
-- `benchmark_engine_warmups`: id, benchmark_id (FK), engine_id (string), cold_start_time_ms, started_at
-- `benchmark_results`: id, benchmark_id (FK), engine_id (string), query_id (FK to queries), execution_time_ms, data_scanned_bytes, other_metrics (JSONB)
+**Schema (revised):**
+- `benchmark_definitions`: id, collection_id (FK), engine_id (text, FK to engines), created_at. UNIQUE(collection_id, engine_id)
+- `benchmark_runs`: id, definition_id (FK to benchmark_definitions), status, created_at, updated_at
+- `benchmark_engine_warmups`: id, benchmark_run_id (FK), engine_id (string), cold_start_time_ms, started_at
+- `benchmark_results`: id, benchmark_run_id (FK), engine_id (string), query_id (FK to queries), execution_time_ms, io_latency_ms, error_message
 
 ### ODQ-3: ML models for routing predictions — DECIDED (partially superseded by ODQ-10)
 
@@ -82,7 +86,7 @@ The routing algorithm that combines multiple decision factors:
 **Decision (2026-03-14):** Each engine (Databricks SQL Warehouse or DuckDB configuration) is a row in the `engines` table. DuckDB configurations are separate K8s Deployments, each with its own Service and resource limits — Cluster Autoscaler handles node provisioning when pods can't be scheduled. The `engines` table is built with the first feature that needs it (likely benchmarks), not as a standalone migration. Engine IDs in existing benchmark and model tables become FKs once the engines table lands.
 
 **Engine registry schema:**
-- `engines`: id (string PK, e.g. `databricks:small-serverless`, `duckdb:8gb-ram`), engine_type (enum: `databricks_sql` / `duckdb`), display_name, config (JSONB — cluster_size, has_photon, is_serverless, memory_gb, region, etc.), k8s_service_name (for DuckDB engines — the K8s Service the routing-service calls), catalog_id (FK to engine_catalog, nullable — NULL for manually registered engines), is_temporary (bool, default false — true for benchmark-created engines), benchmark_id (FK to benchmarks, nullable — which benchmark created this temporary engine), is_active (boolean), created_at, updated_at
+- `engines`: id (string PK, e.g. `databricks:small-serverless`, `duckdb:8gb-ram`), engine_type (enum: `databricks_sql` / `duckdb`), display_name, config (JSONB — cluster_size, has_photon, is_serverless, memory_gb, region, etc.), k8s_service_name (for DuckDB engines — the K8s Service the routing-service calls), catalog_id (FK to engine_catalog, nullable — NULL for manually registered engines), is_temporary (bool, default false — true for benchmark-created engines), benchmark_run_id (FK to benchmark_runs, nullable — which benchmark run created this temporary engine), is_active (boolean), created_at, updated_at
 - `engine_preferences`: id, engine_id (FK to engines), preference_order (int), created_at — stores user-defined engine ordering for fallback routing when no ML model is available
 
 **DuckDB multi-config deployment model:**
@@ -142,14 +146,60 @@ Per-query mode interaction: `smart` runs the full pipeline; `duckdb` and `databr
 
 8. **No login flow / auth context in current frontend.** Authentication is deferred — the frontend currently operates without a login screen or Bearer token injection. Auth will be added when the frontend is wired to the real backend.
 
-### ODQ-7: Engine catalog & managed benchmark lifecycle — DECIDED
+### ODQ-7: Engine catalog, managed benchmark lifecycle & UI redesign — DECIDED (revised 2026-04-05)
 
-**Decision (2026-03-15):** Predefined catalog of 6 engine configs: 3 Databricks Serverless (2X-Small, Medium, Large) and 3 DuckDB (2GB/2CPU, 8GB/4CPU, 16GB/8CPU). Catalog stored in `engine_catalog` PostgreSQL table, distinct from live `engines` table — describes what can be instantiated, not what currently exists. Predefined configs seeded by migration with `is_default = true`; users can add custom configs, defaults can be disabled but not deleted.
+**Decision (2026-03-15, revised 2026-04-05):** Predefined catalog of 6 engine configs: 3 Databricks Serverless (2X-Small, Medium, Large) and 3 DuckDB (1GB/1CPU, 4GB/2CPU, 8GB/4CPU). Catalog stored in `engine_catalog` PostgreSQL table, distinct from live `engines` table — describes what can be instantiated, not what currently exists. Predefined configs seeded by migration with `is_default = true`; admins can add custom configs, defaults can be disabled but not deleted.
 
-**Benchmark lifecycle:** User selects configs from catalog → confirmation dialog with cost warning → temporary engines created in parallel → wait for ready (timeout 10min Databricks, 2min DuckDB) → warm-up probe → benchmark queries → cleanup all temporary engines. Partial failure: continue with remaining engines, report failures. Cold-start time stored in `benchmark_engine_warmups` (per-benchmark observation). Orphan protection via benchmark ID tags and TTL-based cleanup job.
+**Two-view engine management:**
+- **"All Engines" view:** Shows all declared engine configurations from the catalog. Primary workspace for benchmarking — select engines, run benchmarks, train models, compare results. Bidirectional filtering: select engines → see matching benchmarks/models; select a benchmark → see engines involved; select a model → see engines/benchmarks. Default state shows currently active engines + their benchmarks + active model. Engines can be activated ("approved" for routing) from here.
+- **"Active Engines" view:** Shows engines enabled for production routing. Select one engine → direct routing; select multiple → smart routing. Also shows Databricks warehouses that are provisioned (even if not active, with warning indicator).
+
+**Engine lifecycle:**
+- **DuckDB active engines: always-on (replicas=1).** Scale-to-0 was evaluated and rejected — DuckDB on K8s cold start is ~6-18s (vs Databricks Serverless 2-6s) and requires significant K8s tuning (KEDA, probe optimization, image pre-pull) to be competitive. The operational complexity is not justified. Active DuckDB engines stay running. Only temporary benchmark engines are created/destroyed.
+- **Databricks always-on option:** Admin can set `auto_stop_mins=0` on a linked warehouse to keep it running permanently. Default is NOT always-on. UI shows a cost warning + confirmation dialog before enabling. Databricks warehouses that are not always-on follow their normal auto-stop behavior.
+
+**Benchmark data model (revised):**
+- **Benchmark definition** = collection × engine (1:1 pair, immutable). E.g., "TPC-DS 1GB on DuckDB Small" is one benchmark definition.
+- **Benchmark run** = a single execution of a benchmark definition. Each run captures cold-start time, per-query timings, and error states.
+- Multiple runs per definition are supported — more data improves model training.
+- When the user selects engines that share a common collection benchmark, they can compare results across engines and train a model.
+- Schema: `benchmark_definitions(id, collection_id, engine_id, created_at)` with UNIQUE(collection_id, engine_id). `benchmark_runs(id, definition_id, status, created_at, updated_at)`. Existing `benchmark_engine_warmups` and `benchmark_results` reference run_id instead of benchmark_id.
+
+**Benchmark lifecycle (temporary engines):** User selects engine configurations from catalog → system provisions fresh temporary instances (DuckDB: new K8s Deployment+Service; Databricks: readiness check on linked warehouse) → cold-start time measured → benchmark queries run → temporary engines torn down. Temporary engines are tagged with benchmark labels for orphan identification. Partial failure: continue with remaining engines, report failures. Orphan protection via K8s labels + startup cleanup scan.
+
+**Databricks engine mapping:**
+- "All Engines" view shows engine types + count of actually provisioned warehouses of each type in the Databricks workspace
+- When activating a Databricks engine type, admin sees provisioned warehouses of that type and picks which one to link
+- Option to create a new warehouse of that type (capability exists)
+- An active engine type with no linked provisioned engine shows a gap/warning
+
+**TPC-DS benchmarks:**
+- TPC-DS (1GB, 10GB, 100GB) are hardcoded/pre-seeded benchmark collections
+- TPC-DS datasets use predefined catalog/schema locations tracked in `tpcds_catalogs` table
+- System checks dataset availability; UI warns if datasets are missing + provides a way to populate them (Phase 14 endpoints)
+- Users can also create custom benchmarks with their own queries against their own tables
+
+**Routing mode selection (API change):**
+- `POST /api/query` extended to allow specifying a target engine directly (route to specific engine) or using smart routing
+- From "Active Engines" view: one engine selected → direct routing; multiple engines → smart routing
+
+**Auth simplification:**
+- The web UI has a single access level: admin. No regular user roles in the web UI. All configuration, benchmarking, and routing management is done by the admin.
+
+**UI layout redesign (2026-04-06):**
+- **Center panel gains tabs:** "Query" (existing query editor + results + history) and "Engine Setup" (new engine catalog/benchmarking workspace). The two modes are mutually exclusive — query exploration and engine management are different workflows.
+- **"Engine Setup" tab (center panel):** Engine catalog list (all declared engines, selectable), bidirectional filtering (engines ↔ benchmarks ↔ models, client-side), benchmark results inline (the engine setup view owns its own results display — benchmark results are structurally different from ad-hoc query results), actions (run benchmark, train model, delete benchmarks/models). Model training moves here from the right panel.
+- **Right panel simplified to "Active Engines" view:** Enabled engines with runtime status, routing pipeline stripped to a one-liner ("System rules + ML model + Cost/Performance → Engine Selection"). **Removed:** if-then rules UI, cost vs performance weight slider, TrainModePanel (4-step wizard). **Added:** "Manage Engines" button that navigates to the Engine Setup tab in the center panel.
+- **Left panel unchanged:** Catalog browser, Collections (query groupings CRUD only — no benchmark results), TPC-DS. Collections are a "library" of query sets; benchmark execution and results viewing happen in Engine Setup. TPC-DS collections gated by dataset materialization — "Materialize TPC-DS datasets" button shown when data is missing.
+- **Mode switching:** Tabs at the top of the center panel ("Query" | "Engine Setup") for discoverability, plus "Manage Engines" button in the right panel as a workflow shortcut.
+- **Mock data mode:** URL param `?mock=true` enables frontend iteration without backend. When enabled, `ApiClient` returns mock data for the new data model (engine catalog, benchmark definitions/runs, models). Allows rapid UX prototyping.
 
 **Schema:**
-- `engine_catalog`: id (serial PK), engine_type (enum), display_name, config (JSONB), is_default (bool), enabled (bool), created_at, updated_at
+- `engine_catalog`: id (serial PK), engine_type (text), display_name (text), config (JSONB), is_default (bool), enabled (bool), created_at, updated_at
+- `benchmark_definitions`: id (serial PK), collection_id (FK to collections), engine_id (text, FK to engines), created_at. UNIQUE(collection_id, engine_id)
+- `benchmark_runs`: id (serial PK), definition_id (FK to benchmark_definitions), status (text), created_at, updated_at
+
+**Supersedes:** Original ODQ-7 decision (2026-03-15) — benchmark lifecycle, engine lifecycle, and data model significantly revised based on discussion.
 
 ### ODQ-9: Network latency measurement and portable benchmarks — DECIDED
 
@@ -581,6 +631,8 @@ conn = sql.connect(server_hostname="delta-router.example.com",
 
 **Architecture:** FastAPI backend (server.py) serves Vite-built static assets (index.html + JS/CSS bundles in static/assets/). React source lives in web-ui/frontend/ (development only — not included in production image). The Dockerfile uses a multi-stage build: Node stage runs `npm run build` to produce static assets, Python stage copies the build output and runs FastAPI/uvicorn. Everything is a single-page React app. Most API domains (query execution, routing rules, collections, engines, benchmarks, probes, catalog browsing, auth, ML models) are wired to real backend endpoints. Remaining mock domains: workspaces (multi-workspace management).
 
+**Planned redesign (Phase 15, Stage A — frontend exploration):** Center panel gains "Query" | "Engine Setup" tabs. "Engine Setup" is the engine catalog/benchmarking workspace with bidirectional filtering and inline benchmark results. Right panel simplified to "Active Engines" with one-liner routing pipeline (removed: if-then rules, cost/perf slider, TrainModePanel, vertical timeline). Left panel unchanged. Mock data mode via `?mock=true` URL param. See ODQ-7 for full details.
+
 **Single-Page Layout:**
 
 **Top bar:** "Delta Router" header. Health indicators and Settings modal are not yet implemented — deferred per ODQ-8.
@@ -615,8 +667,10 @@ Dedicated to routing configuration — no tabs (collections moved to left panel)
 
 **Benchmarks** (accessible when a collection is open in the Collections tab):
 - "Run Benchmark" button with progress stages (Provisioning engines → Warming up → Running queries → Cleaning up → Complete)
-- Benchmark history list showing past runs per collection
-- Clicking a benchmark shows details: warm-up times per engine, **transposed results matrix** (engines as rows × queries as "Q1, Q2..." columns) with color highlighting for best/worst times per query. Engine name column is sticky for horizontal scroll. I/O breakdown available on hover.
+- Benchmark history list showing past runs per collection, grouped by benchmark definition (collection × engine)
+- Multiple runs per definition supported — each run is a separate execution
+- Clicking a run shows details: warm-up times per engine, **transposed results matrix** (engines as rows × queries as "Q1, Q2..." columns) with color highlighting for best/worst times per query. Engine name column is sticky for horizontal scroll. I/O breakdown available on hover.
+- Runs can be individually selected and deleted
 
 **Train wizard** (opens from "Train New Model..." button in ML Models pipeline stage detail panel):
 - **Step 1 — Select Engines:** Checkbox table of all engines (same as Routing tab engines). At least 2 required. Databricks engines provisioned ephemerally if no workspace connected.
@@ -767,11 +821,13 @@ The routing-service is the single API backend. The web-ui proxies all calls thro
 - `DELETE /api/collections/{id}/queries/{query_id}` — remove a query
 
 **Benchmarks:**
-- `POST /api/benchmarks` — create and start a benchmark (collection_id, catalog_engine_ids). Temporary engines are created from selected catalog entries, benchmarked, then cleaned up.
-- `GET /api/benchmarks` — list all benchmarks (filterable by collection_id)
-- `GET /api/benchmarks/{id}` — get benchmark details, warmup results, and query results
-- `DELETE /api/benchmarks/{id}` — delete a benchmark and its results
-- `DELETE /api/benchmarks?collection_id={id}` — delete all benchmarks for a collection
+- `POST /api/benchmarks` — create and start a benchmark run (collection_id, catalog_engine_ids). Creates benchmark definitions (collection × engine) if they don't exist, then creates a run for each. Temporary engines are provisioned from selected catalog entries, benchmarked, then cleaned up.
+- `GET /api/benchmarks` — list all benchmark definitions (filterable by collection_id, engine_id)
+- `GET /api/benchmarks/{id}` — get benchmark definition with all runs
+- `GET /api/benchmarks/{id}/runs` — list runs for a benchmark definition
+- `GET /api/benchmarks/{id}/runs/{run_id}` — get run details, warmup results, and query results
+- `DELETE /api/benchmarks/{id}` — delete a benchmark definition and all its runs
+- `DELETE /api/benchmarks/{id}/runs/{run_id}` — delete a specific run
 
 **ML Models:**
 - `POST /api/models/train` — trigger model training as K8s Job (from benchmark data for specified engine set)
@@ -876,7 +932,8 @@ Open threads from planning sessions. Resolved items are checked off and their co
 - [x] **Phase 11 scope definition (2026-04-02):** Resolved. Azure AKS deployment via Terraform + Helm. Key decisions: (1) Terraform creates Resource Group, AKS, ACR, VNet — cloud-agnostic IaC, not Bicep/az CLI. (2) Single umbrella Helm chart for all 4 services, `values.yaml` + `values-azure.yaml`. (3) Single standard node pool (Standard_B2ms, autoscaler 1-3), no spot instances — thesis demo scale doesn't justify spot complexity; mentioned as production recommendation. (4) NGINX ingress controller with one Azure LB/public IP, two ports: 80→web-ui, 8000→routing-service (both need external access — web-ui is the dashboard, routing-service is the production API for future SDK clients). (5) Secrets via Terraform `kubernetes_secret` from `.tfvars` (gitignored), Key Vault mentioned as production recommendation. (6) PostgreSQL stays StatefulSet with Azure Disk PV. (7) Databricks workspace pre-existing, referenced by host URL. (8) No CI/CD pipeline in GitHub repo (enterprise uses Azure DevOps); deployment triggered manually via Makefile. (9) Existing `k8s/` raw manifests preserved for minikube workflow.
 - [x] **End-user authentication & SDK (2026-04-03):** Resolved. Designed (ODQ-15), scheduled as Phase 12. Two-level credential model (system identity + user identity), DB-API 2.0 compatible Python SDK mirroring `databricks-sql-connector`. PRD: `.taskmaster/docs/phase12-end-user-auth-sdk.md`.
 - [x] **Phase 13 scope definition (2026-04-04):** Resolved. ML Model Training Pipeline — train latency models from benchmark data (ODQ-3/ODQ-10), integrate into routing pipeline, add engine state polling (ODQ-11). Includes: `models` table, extended feature extraction, training endpoint, model activation, ML inference at routing time, engine state polling, frontend wiring (replace model mocks). PRD: `.taskmaster/docs/phase13-ml-model-training.md`.
-- [ ] **Phase 14 scope definition (2026-04-04):** TPC-DS Benchmark Data & External Access Management. Two pillars: (1) External access prerequisites — metastore external access check (read-only indicator, warn if disabled), EXTERNAL USE SCHEMA grant/revoke in catalog browser (strictly scoped, no other permissions). Important for core product beyond TPC-DS. (2) TPC-DS wizard — create managed TPC-DS tables in user's UC. SF1 via CTAS from `samples.tpcds_sf1`; SF10/SF100 via Databricks Job with DuckDB `dsdgen` (streaming, ~3GB RAM at any scale factor). Managed tables only (no external tables complexity). Region co-location is inherent (managed tables in metastore storage = workspace region). Key research findings: `samples` catalog has SF1 and SF1000 only (no SF10/SF100); no public Delta Lake TPC-DS dataset exists on open storage; DuckDB `dsdgen` streams row-by-row so memory is constant (~3GB) regardless of scale factor. SF1000 dropped due to 1TB storage cost. Cleanup: tag system-created catalogs, offer delete (strictly scoped to own catalogs).
+- [x] **Phase 14 scope definition (2026-04-04):** TPC-DS Benchmark Data & External Access Management.
+- [ ] **Phase 15 scope definition (2026-04-04, revised 2026-04-06):** Engine Catalog & UI Redesign (revised ODQ-7). Two-stage approach: (A) Frontend exploration — iterate on UI with mock data, no Taskmaster tasks, flexible to change. (B) Backend phase — formalized with PRD + tasks once UI is validated and backend requirements are clear. Key design decisions: (1) Two-view engine management — "Engine Setup" (center panel tab, benchmarking/config workspace with bidirectional filtering) and "Active Engines" (right panel, simplified routing view). (2) Center panel gains tabs: "Query" | "Engine Setup". (3) Right panel routing pipeline stripped to one-liner (removed if-then rules, cost/perf slider, TrainModePanel). "Manage Engines" button links to Engine Setup. (4) Left panel unchanged — Collections = query groupings CRUD only, benchmark results move to Engine Setup. TPC-DS collections gated by materialization. (5) Benchmark data model: definitions (collection × engine) + runs. (6) DuckDB always-on, Databricks always-on option with cost warning. (7) Mock data mode via `?mock=true` URL param for frontend iteration. (8) Admin-only web UI. Original Phase 15 PRD and tasks (T97-T110) deleted.
 
 ---
 
@@ -904,7 +961,8 @@ Speculative concepts worth capturing but with no timeline or commitment. Unlike 
 - [x] **Phase 11 - Azure AKS Deployment:** Deploy the full Delta Router stack to Azure using Terraform + Helm. **Motivation:** DuckDB worker latency is ~10x Databricks when running locally — co-locating workers in the same Azure region as the data eliminates network round-trip overhead, which is the core value proposition of the project. **Terraform:** Resource Group, AKS cluster (single Standard_B2ms node pool, autoscaler 1-3), ACR (attached to AKS via managed identity), VNet/subnet. Databricks workspace is pre-existing, referenced by host URL. **Helm:** Single umbrella chart (`infrastructure/helm/delta-router/`) with templates for all 4 services (routing-service, web-ui, duckdb-worker, postgresql). `values.yaml` for defaults, `values-azure.yaml` for AKS-specific config (ACR image paths, resource limits, ingress). **Ingress:** NGINX ingress controller → single Azure Load Balancer → one public IP. Port 80 → web-ui (dashboard), port 8000 → routing-service (production API for external clients/SDK). **Secrets:** Terraform `kubernetes_secret` resources, values from `.tfvars` (gitignored). Azure Key Vault mentioned as production recommendation. **PostgreSQL:** Stays as StatefulSet with Azure Disk PV. **No CI/CD in repo** — enterprise uses Azure DevOps; deployment triggered manually via Makefile targets (`make tf-init`, `make tf-plan`, `make tf-apply`, `make build-push`). Existing `k8s/` raw manifests preserved for minikube workflow. *(Task 59 deferred pending Azure credentials; all infrastructure code complete.)*
 - [x] **Phase 12 - End-User Authentication & Python SDK:** Implement ODQ-15. **Backend:** `POST /api/auth/token` endpoint for SDK/API user authentication (Databricks PAT + workspace URL → session token), in-memory session store with TTL, user permission checks (`tables.get()` with user PAT before routing), refactor query execution to use user PAT for Databricks execution and system identity for DuckDB/UC metadata. **SDK:** New `delta-router-sdk/` package with DB-API 2.0 interface (PEP 249) mirroring `databricks-sql-connector` — `connect()`, `cursor()`, `execute()`, `fetchall()`/`fetchone()`/`fetchmany()`, `description`. Routing overrides via `engine` parameter on `execute()`. Routing decision introspection via `cursor.routing_decision`. Transparent token refresh on 401. **Cleanup (folded in):** Remove orphaned frontend files, dead mock functions. **Testing:** SDK unit tests (57 tests, 100% coverage), integration tests (self-skipping), permission check unit tests, dual-identity execution tests. PRD: `.taskmaster/docs/phase12-end-user-auth-sdk.md`.
 - [x] **Phase 13 - ML Model Training Pipeline:** Train latency prediction models from benchmark data and integrate them into the routing pipeline (ODQ-3/ODQ-10). **Backend:** `models` table (latency-only per ODQ-10), extended query feature extraction, `POST /api/models/train` (scikit-learn RandomForest, hold-out validation, joblib serialization), model activation/deactivation endpoints, `GET/DELETE /api/models` CRUD. Populate `io_latency_ms` in benchmark results from storage probes at benchmark time. ML inference at routing time: load active model → predict `compute_time_ms` per engine → combine with `io_latency` + `cold_start` + cost tier → weighted score → engine selection. Engine state polling (ODQ-11): periodic Databricks warehouse state + K8s pod status checks, `runtime_state` caching, running engine bonus in scoring. **Frontend:** Wire ML Models section (replace mocks) — model list, train button, activate/deactivate, detail view with metrics. **Testing:** Feature extraction tests, training pipeline tests, inference tests, model API endpoint tests. 431 tests passing across routing-service. PRD: `.taskmaster/docs/phase13-ml-model-training.md`.
-- [ ] **Phase 14 - TPC-DS Benchmark Data & External Access Management:** Two pillars: (1) External access prerequisites for the core product — read-only metastore external access check with warning when disabled, EXTERNAL USE SCHEMA grant/revoke action in catalog browser (strictly scoped to this one permission, no other permissions management). (2) TPC-DS benchmark data wizard — guided UI flow to create managed TPC-DS tables in the user's Unity Catalog. SF1 uses CTAS from `samples.tpcds_sf1` (instant). SF10/SF100 use a Databricks Job running DuckDB's `dsdgen` extension (streaming generation, ~3GB RAM regardless of scale factor, disk-bound). Wizard steps: inform about costs/time, configure catalog/schema names and scale factor, execute, monitor progress, offer cleanup (delete only system-created catalogs). Region awareness: managed tables live in metastore managed storage (workspace region), so co-location is inherent. PRD: `.taskmaster/docs/phase14-tpcds-external-access.md`.
+- [x] **Phase 14 - TPC-DS Benchmark Data & External Access Management:** Two pillars: (1) External access prerequisites for the core product — read-only metastore external access check with warning when disabled, EXTERNAL USE SCHEMA grant/revoke action in catalog browser (strictly scoped to this one permission, no other permissions management). (2) TPC-DS benchmark data wizard — guided UI flow to create managed TPC-DS tables in the user's Unity Catalog. SF1 uses CTAS from `samples.tpcds_sf1` (instant). SF10/SF100 use a Databricks Job running DuckDB's `dsdgen` extension (streaming generation, ~3GB RAM regardless of scale factor, disk-bound). Wizard steps: inform about costs/time, configure catalog/schema names and scale factor, execute, monitor progress, offer cleanup (delete only system-created catalogs). Region awareness: managed tables live in metastore managed storage (workspace region), so co-location is inherent. PRD: `.taskmaster/docs/phase14-tpcds-external-access.md`.
+- [ ] **Phase 15 - Engine Catalog & UI Redesign:** Two-stage approach. **Stage A (frontend exploration):** Redesign the UI with mock data — no Taskmaster tasks, iterate freely. Center panel gains "Query" | "Engine Setup" tabs. "Engine Setup" is the engine catalog/benchmarking workspace: engine list, bidirectional filtering (engines ↔ benchmarks ↔ models), inline benchmark results, run benchmark/train model actions. Right panel simplified to "Active Engines" routing view: enabled engines + one-liner routing pipeline ("System rules + ML model + Cost/Performance → Engine Selection"), "Manage Engines" button linking to Engine Setup. Removed from right panel: if-then rules UI, cost vs perf slider, TrainModePanel. Left panel unchanged (catalog browser, collections as query groupings, TPC-DS with materialization gate). Mock data mode via `?mock=true`. **Stage B (backend, formalized later):** Once UI is validated, create PRD + tasks for backend: `engine_catalog` table, benchmark definitions+runs schema, routing API changes (single-engine direct routing), DuckDB engine provisioner, Databricks warehouse polling + always-on option, RBAC extension for Deployments/Services.
 
 ---
 
@@ -912,13 +970,13 @@ Speculative concepts worth capturing but with no timeline or commitment. Unlike 
 
 Small items that don't warrant their own phase but should be addressed. These are folded into the next active phase or handled as quick standalone tasks.
 
-- [x] **PostgreSQL schema: add engines table.** *(Created in Phase 10, Task 35. Simplified vs. original spec: no catalog_id FK, no is_temporary, no benchmark_id FK — those are deferred to the engine catalog/managed benchmark lifecycle ODQ-7.)*
+- [x] **PostgreSQL schema: add engines table.** *(Created in Phase 10, Task 35. Simplified vs. original spec: no catalog_id FK, no is_temporary, no benchmark_run_id FK — those are deferred to the engine catalog/managed benchmark lifecycle ODQ-7.)*
 - [x] **PostgreSQL schema: drop cost_metrics table.** The `cost_metrics` table stores per-query `estimated_cost_usd` which is no longer computed (cost is now a static engine property via cost tiers). Drop the table and its index. Remove the `cost_metrics` INSERT from `query_logger.py`. *(Folded into Phase 9, Task 22.)*
 - [x] **PostgreSQL schema: drop cost_estimation_mode from routing_settings.** The `cost_estimation_mode` column is no longer needed — cost is always a static tier lookup from the engine record. Remove from schema and API. *(Folded into Phase 9, Task 22.)*
 - [x] **PostgreSQL schema: add engine_preferences table.** *(Created in Phase 10, Task 35.)*
 - [x] **PostgreSQL schema: add routing_rules table.** The `routing_rules` table (id serial PK, priority int, condition_type text, condition_value text, target_engine text, is_system bool, enabled bool) does not yet exist. Mandatory rules seeded by migration with `is_system = true`. Add when implementing the routing pipeline (ODQ-5). *(Folded into Phase 8, Task 1.)*
-- [ ] **PostgreSQL schema: add engine_catalog table.** The `engine_catalog` table (id serial PK, engine_type enum, display_name text, config JSONB, is_default bool, enabled bool, created_at, updated_at) does not yet exist. Predefined configs seeded by migration with `is_default = true`. Add when implementing the benchmark lifecycle (ODQ-7).
-- [ ] **Routing-service RBAC: extend to Deployments and Services.** The routing-service Role currently only covers Secrets. Extend to include `apiGroups: ["apps"]`, `resources: ["deployments"]`, `verbs: ["get", "create", "delete"]` and `apiGroups: [""]`, `resources: ["services"]`, `verbs: ["get", "create", "delete"]` for temporary DuckDB engine provisioning during benchmarks.
+- [ ] **PostgreSQL schema: add engine_catalog table.** The `engine_catalog` table (id serial PK, engine_type enum, display_name text, config JSONB, is_default bool, enabled bool, created_at, updated_at) does not yet exist. Predefined configs seeded by migration with `is_default = true`. Add when implementing the benchmark lifecycle (ODQ-7). *(Folded into Phase 15.)*
+- [ ] **Routing-service RBAC: extend to Deployments and Services.** The routing-service Role currently only covers Secrets. Extend to include `apiGroups: ["apps"]`, `resources: ["deployments"]`, `verbs: ["get", "create", "delete"]` and `apiGroups: [""]`, `resources: ["services"]`, `verbs: ["get", "create", "delete"]` for temporary DuckDB engine provisioning during benchmarks. *(Folded into Phase 15.)*
 - [x] **PostgreSQL schema: add storage_latency_probes table.** *(Created in Phase 10, Task 35.)*
 - [x] **PostgreSQL schema: update models table for latency-only architecture.** *(Done in Phase 13, Task 72. `models` table created with latency-only JSONB, training_queries, linked_engines. No model_type or cost_model fields.)*
 - [x] **PostgreSQL schema: add io_latency_ms to benchmark_results.** *(Done in Phase 13, Task 75. Column added as nullable float, populated via `_lookup_io_latency_ms()` at benchmark time.)*

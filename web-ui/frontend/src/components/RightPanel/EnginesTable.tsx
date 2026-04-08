@@ -1,169 +1,592 @@
-import React from "react";
+import React, { useState } from "react";
 import { useApp } from "@/contexts/AppContext";
-import { Server, Play, Square, Loader2 } from "lucide-react";
-import type { EngineRuntimeState } from "@/types";
-
-const runtimeStateStyle = (state: EngineRuntimeState) => {
-  switch (state) {
-    case "running": return "bg-status-success";
-    case "starting": return "bg-status-warning";
-    case "stopped":
-    case "unknown":
-    default: return "bg-muted-foreground/40";
-  }
-};
-
-const runtimeStateLabel = (state: EngineRuntimeState) => {
-  switch (state) {
-    case "running": return "Running";
-    case "starting": return "Starting";
-    case "stopped": return "Stopped";
-    case "unknown": return "Unknown";
-    default: return state;
-  }
-};
+import { Server, AlertTriangle, Brain, ChevronDown, Settings2, Cloud, HardDrive, Unlink, CheckCircle2 } from "lucide-react";
+import type { EngineCatalogEntry, Model, DiscoveredWarehouse, WarehouseMapping } from "@/types";
 
 export const EnginesTable: React.FC = () => {
   const {
     engines, connectedWorkspace,
-    enabledEngineIds, toggleEngineEnabled,
-    scaleEngine, scalingEngineIds,
+    routingMode, setRoutingMode,
+    singleEngineId, setSingleEngineId,
+    activeModelId, setActiveModelId, models,
+    enabledEngineIds, toggleEngineEnabled, setAllEnginesEnabled,
+    setEngineCatalogOpen,
+    profileWorkspaceBinding,
+    discoveredWarehouses,
+    warehouseMappings, setWarehouseMapping,
+    unlinkProfileWorkspace,
   } = useApp();
 
-  // Filter: show DuckDB always, show Databricks only when a workspace is connected
-  const visibleEngines = engines.filter(e =>
-    e.engine_type === "duckdb" || (e.engine_type === "databricks_sql" && connectedWorkspace !== null)
-  );
+  // Enabled engines (from catalog) for routing
+  const enabledCatalogEngines = engines.filter(e => e.enabled);
 
-  // Count only visible enabled engines
-  const visibleEnabledCount = visibleEngines.filter(e => enabledEngineIds.has(e.id)).length;
+  // Running engines for single-engine mode — enabled engines that are running
+  // DuckDB: check runtime_state. Databricks: always "available" if workspace is bound.
+  const availableEngines = enabledCatalogEngines.filter(e => {
+    if (e.engine_type === "duckdb") return e.runtime_state === "running";
+    if (e.engine_type === "databricks_sql") return true; // show all enabled Databricks, workspace status shown inline
+    return false;
+  });
 
-  const mode: "none" | "single" | "smart" =
-    visibleEnabledCount === 0 ? "none" : visibleEnabledCount === 1 ? "single" : "smart";
+  const duckdbEngines = availableEngines.filter(e => e.engine_type === "duckdb");
+  const databricksEngines = enabledCatalogEngines.filter(e => e.engine_type === "databricks_sql");
 
-  const formatSpecs = (e: typeof engines[0]) => {
-    if (e.engine_type === "duckdb") {
-      return `${e.config.memory_gb} GB / ${e.config.cpu_count} CPU`;
+  // Active model for smart routing mode
+  const activeModel = models.find(m => m.id === activeModelId);
+
+  // Engines linked to the active model (for smart routing checkboxes)
+  const modelEngines = activeModel
+    ? engines.filter(e => activeModel.linked_engines.includes(e.id))
+    : [];
+
+  // When switching to smart routing with a model, initialize enabledEngineIds to the model's engines
+  const handleModelChange = (modelId: number) => {
+    setActiveModelId(modelId);
+    const model = models.find(m => m.id === modelId);
+    if (model) {
+      setAllEnginesEnabled(model.linked_engines);
     }
-    // Databricks: show cluster_size (e.g. "2X-Small") if available
-    return e.config.cluster_size || "";
   };
-
-  const formatType = (e: typeof engines[0]) => {
-    if (e.engine_type === "duckdb") return e.display_name || "DuckDB";
-    return e.display_name || "Databricks SQL";
-  };
-
-  const modeIndicators = [
-    { key: "single", label: "Single Engine" },
-    { key: "smart", label: "Smart Routing" },
-  ] as const;
 
   return (
     <div className="text-[12px]">
-        <div className="px-3 py-1.5 border-b border-panel-border flex items-center gap-2">
-          <Server size={12} className="text-primary shrink-0" />
-          <span className="font-semibold text-foreground">Engines</span>
-          {!connectedWorkspace && (
-            <span className="text-[10px] text-muted-foreground">(No Databricks workspace)</span>
-          )}
-        </div>
+      <div className="px-3 py-1.5 border-b border-panel-border flex items-center gap-2">
+        <Server size={12} className="text-primary shrink-0" />
+        <span className="font-semibold text-foreground">Routing Settings</span>
+        <button
+          onClick={() => setEngineCatalogOpen(true)}
+          className="ml-auto flex items-center gap-1 text-[10px] text-primary hover:text-primary/80 transition-colors"
+          title="Open engine catalog"
+        >
+          <Settings2 size={10} />
+          Manage Engines
+        </button>
+      </div>
 
-        {/* Mode indicator badges */}
-        <div className="px-3 py-2 flex items-center gap-2">
-          <div className="flex gap-1 flex-1">
-            {modeIndicators.map(ind => {
-              const isActive = mode === ind.key;
+      {/* Workspace dependency warning — shown when profile requires a workspace that isn't connected */}
+      {profileWorkspaceBinding && (
+        <WorkspaceDependencyBanner
+          binding={profileWorkspaceBinding}
+          connectedWorkspace={connectedWorkspace}
+          onUnlink={unlinkProfileWorkspace}
+        />
+      )}
+
+      {/* Mode selector — segmented button */}
+      <div className="px-3 py-2.5 border-b border-panel-border">
+        <div className="flex rounded-md border border-border overflow-hidden">
+          <button
+            onClick={() => setRoutingMode("single")}
+            className={`flex-1 py-1.5 text-[11px] font-medium transition-colors border-r border-border ${
+              routingMode === "single"
+                ? "bg-primary text-primary-foreground"
+                : "bg-card text-muted-foreground hover:bg-muted/50"
+            }`}
+          >
+            Single Engine
+          </button>
+          <button
+            onClick={() => setRoutingMode("smart")}
+            className={`flex-1 py-1.5 text-[11px] font-medium transition-colors ${
+              routingMode === "smart"
+                ? "bg-primary text-primary-foreground"
+                : "bg-card text-muted-foreground hover:bg-muted/50"
+            }`}
+          >
+            Smart Routing
+          </button>
+        </div>
+      </div>
+
+      {/* Content depends on mode */}
+      {routingMode === "single" ? (
+        <SingleEngineView
+          duckdbEngines={duckdbEngines}
+          databricksEngines={databricksEngines}
+          singleEngineId={singleEngineId}
+          onSelect={setSingleEngineId}
+          hasConnectedWorkspace={connectedWorkspace !== null}
+          discoveredWarehouses={discoveredWarehouses}
+          warehouseMappings={warehouseMappings}
+          setWarehouseMapping={setWarehouseMapping}
+        />
+      ) : (
+        <SmartRoutingView
+          models={models}
+          activeModelId={activeModelId}
+          onModelChange={handleModelChange}
+          modelEngines={modelEngines}
+          enabledEngineIds={enabledEngineIds}
+          toggleEngineEnabled={toggleEngineEnabled}
+          engines={engines}
+          hasConnectedWorkspace={connectedWorkspace !== null}
+          discoveredWarehouses={discoveredWarehouses}
+          warehouseMappings={warehouseMappings}
+          setWarehouseMapping={setWarehouseMapping}
+        />
+      )}
+    </div>
+  );
+};
+
+// ---- Workspace Dependency Banner ----
+// Shown when a profile has a workspace dependency (via warehouse mappings)
+const WorkspaceDependencyBanner: React.FC<{
+  binding: { workspaceId: string; workspaceName: string; workspaceUrl: string };
+  connectedWorkspace: { id: string; name: string; url: string } | null;
+  onUnlink: () => void;
+}> = ({ binding, connectedWorkspace, onUnlink }) => {
+  const [confirmUnlink, setConfirmUnlink] = useState(false);
+  const isSatisfied = connectedWorkspace !== null && connectedWorkspace.url === binding.workspaceUrl;
+  const isWrongWorkspace = connectedWorkspace !== null && connectedWorkspace.url !== binding.workspaceUrl;
+
+  const handleUnlink = () => {
+    onUnlink();
+    setConfirmUnlink(false);
+  };
+
+  if (isSatisfied) {
+    // Dependency satisfied — show green confirmation with option to remove
+    return (
+      <div className="px-3 py-1.5 border-b border-panel-border bg-emerald-50">
+        <div className="flex items-center gap-1.5">
+          <CheckCircle2 size={10} className="text-emerald-600 shrink-0" />
+          <span className="text-[10px] text-emerald-700 font-medium truncate">{binding.workspaceName}</span>
+          <span className="text-[9px] text-emerald-600">connected</span>
+          <button
+            onClick={() => setConfirmUnlink(!confirmUnlink)}
+            className="ml-auto text-[9px] text-emerald-600 hover:text-emerald-800 transition-colors"
+            title="Remove workspace dependency"
+          >
+            <Unlink size={9} />
+          </button>
+        </div>
+        {confirmUnlink && (
+          <div className="mt-1.5 p-1.5 rounded bg-amber-50 border border-amber-200">
+            <p className="text-[10px] text-amber-800 mb-1.5">
+              This will remove the workspace dependency and clear all warehouse mappings for Databricks engines.
+            </p>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleUnlink}
+                className="flex items-center gap-1 text-[10px] text-amber-700 hover:text-amber-900 font-medium transition-colors"
+              >
+                <Unlink size={9} />
+                Confirm unlink
+              </button>
+              <button
+                onClick={() => setConfirmUnlink(false)}
+                className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Dependency NOT satisfied — show warning
+  return (
+    <div className="px-3 py-2 border-b border-panel-border bg-amber-50">
+      <div className="flex items-center gap-1.5 mb-1">
+        <AlertTriangle size={10} className="text-amber-600 shrink-0" />
+        <span className="text-[10px] text-amber-800 font-medium">Workspace required</span>
+      </div>
+      <div className="text-[10px] text-amber-700 mb-1.5">
+        {isWrongWorkspace ? (
+          <>Profile needs <span className="font-medium">{binding.workspaceName}</span>, but you're connected to <span className="font-medium">{connectedWorkspace!.name}</span>.</>
+        ) : (
+          <>Profile needs <span className="font-medium">{binding.workspaceName}</span>. Connect via the left panel.</>
+        )}
+      </div>
+      <button
+        onClick={onUnlink}
+        className="flex items-center gap-1 text-[10px] text-amber-700 hover:text-amber-900 transition-colors font-medium"
+      >
+        <Unlink size={9} />
+        Unlink workspace &amp; clear mappings
+      </button>
+    </div>
+  );
+};
+
+// ---- Single Engine View ----
+const SingleEngineView: React.FC<{
+  duckdbEngines: EngineCatalogEntry[];
+  databricksEngines: EngineCatalogEntry[];
+  singleEngineId: string | null;
+  onSelect: (id: string | null) => void;
+  hasConnectedWorkspace: boolean;
+  discoveredWarehouses: DiscoveredWarehouse[];
+  warehouseMappings: WarehouseMapping[];
+  setWarehouseMapping: (engineId: string, warehouseId: string | null, warehouseName: string | null) => void;
+}> = ({ duckdbEngines, databricksEngines, singleEngineId, onSelect, hasConnectedWorkspace, discoveredWarehouses, warehouseMappings, setWarehouseMapping }) => {
+  if (duckdbEngines.length === 0 && databricksEngines.length === 0) {
+    return (
+      <div className="px-3 py-4 text-[11px] text-muted-foreground">
+        No enabled engines available. Open <span className="font-medium text-primary">Manage Engines</span> to enable engines.
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-3 py-2 space-y-3">
+      {/* DuckDB engines */}
+      {duckdbEngines.length > 0 && (
+        <div>
+          <div className="flex items-center gap-1.5 mb-1.5">
+            <HardDrive size={10} className="text-emerald-600" />
+            <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">DuckDB</span>
+          </div>
+          <div className="space-y-0.5">
+            {duckdbEngines.map(e => (
+              <label
+                key={e.id}
+                className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors ${
+                  singleEngineId === e.id ? "bg-primary/10" : "hover:bg-muted/50"
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="single-engine"
+                  checked={singleEngineId === e.id}
+                  onChange={() => onSelect(e.id)}
+                  className="accent-primary"
+                />
+                <span className="flex items-center gap-1.5 text-[11px]">
+                  <span className="inline-block w-[6px] h-[6px] rounded-full shrink-0 bg-status-success" />
+                  <span className="font-medium text-foreground">{e.display_name}</span>
+                </span>
+                <span className="ml-auto text-[10px] text-muted-foreground">
+                  {e.config.memory_gb}GB / {e.config.cpu_count}CPU
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Databricks engines */}
+      {databricksEngines.length > 0 && (
+        <div>
+          <div className="flex items-center gap-1.5 mb-1.5">
+            <Cloud size={10} className="text-blue-600" />
+            <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Databricks SQL</span>
+          </div>
+          <div className="space-y-1">
+            {databricksEngines.map(e => {
+              const matchingWarehouses = discoveredWarehouses.filter(w => w.matchingEngineId === e.id);
+              const currentMapping = warehouseMappings.find(m => m.engineId === e.id);
+              const isSelected = singleEngineId === e.id;
+
               return (
-                <div
-                  key={ind.key}
-                  className={`flex-1 px-2 py-1 rounded text-[10px] font-medium border text-center select-none ${
-                    isActive
-                      ? "bg-primary/10 text-primary border-primary"
-                      : "bg-muted/30 text-muted-foreground border-border opacity-50"
-                  }`}
-                >
-                  {ind.label}
-                </div>
+                <DatabricksEngineRow
+                  key={e.id}
+                  engine={e}
+                  isSelected={isSelected}
+                  onSelect={() => onSelect(e.id)}
+                  hasWorkspace={hasConnectedWorkspace}
+                  matchingWarehouses={matchingWarehouses}
+                  currentMapping={currentMapping ?? null}
+                  setWarehouseMapping={setWarehouseMapping}
+                  selectionMode="radio"
+                />
               );
             })}
           </div>
         </div>
+      )}
 
-        {visibleEngines.length === 0 ? (
-          <div className="px-3 py-3 text-muted-foreground text-[11px]">No engines available.</div>
+      <p className="mt-2 text-[10px] text-muted-foreground">
+        All queries routed directly to the selected engine. No ML model used.
+      </p>
+    </div>
+  );
+};
+
+// ---- Databricks Engine Row (shared between single & smart mode) ----
+const DatabricksEngineRow: React.FC<{
+  engine: EngineCatalogEntry;
+  isSelected: boolean;
+  onSelect: () => void;
+  hasWorkspace: boolean;
+  matchingWarehouses: DiscoveredWarehouse[];
+  currentMapping: WarehouseMapping | null;
+  setWarehouseMapping: (engineId: string, warehouseId: string | null, warehouseName: string | null) => void;
+  selectionMode: "radio" | "checkbox";
+  isEnabled?: boolean;
+  onToggle?: () => void;
+}> = ({ engine, isSelected, onSelect, hasWorkspace, matchingWarehouses, currentMapping, setWarehouseMapping, selectionMode, isEnabled, onToggle }) => {
+  const [warehouseDropdownOpen, setWarehouseDropdownOpen] = useState(false);
+
+  if (!hasWorkspace) {
+    // No workspace connected — show warning
+    return (
+      <div className={`flex items-center gap-2 px-2 py-1.5 rounded opacity-60 ${
+        selectionMode === "radio" ? "" : ""
+      }`}>
+        {selectionMode === "radio" ? (
+          <input type="radio" name="single-engine" disabled className="accent-primary" />
         ) : (
-          <table className="w-full text-[11px]">
-             <thead>
-              <tr className="bg-muted">
-                <th className="w-7 px-2 py-1 border-b border-border"></th>
-                <th className="text-left px-2 py-1 border-b border-border">Engine</th>
-                <th className="text-left px-2 py-1 border-b border-border">Specs</th>
-                <th className="text-center px-2 py-1 border-b border-border" title="Cost tier (1=cheapest, 10=most expensive)">Cost</th>
-                <th className="w-12 px-2 py-1 border-b border-border"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {visibleEngines.map(e => {
-                const isScaling = scalingEngineIds.has(e.id);
-                const canScale = e.scalable === true;
-                const isRunning = e.runtime_state === "running";
+          <input type="checkbox" checked={isEnabled ?? false} disabled className="accent-primary" />
+        )}
+        <span className="flex items-center gap-1.5 text-[11px]">
+          <AlertTriangle size={10} className="text-amber-500 shrink-0" />
+          <span className="font-medium text-muted-foreground">{engine.display_name}</span>
+        </span>
+        <span className="ml-auto text-[10px] text-amber-600 italic">No workspace</span>
+      </div>
+    );
+  }
 
-                return (
-                  <tr key={e.id} className="even:bg-card hover:bg-muted/50">
-                    <td className="px-2 py-1 border-b border-border text-center">
+  // Has workspace — show warehouse info
+  const mappedWarehouse = currentMapping?.warehouseId
+    ? matchingWarehouses.find(w => w.id === currentMapping.warehouseId) ?? null
+    : null;
+  const warehouseCount = matchingWarehouses.length;
+  const isMapped = mappedWarehouse !== null;
+
+  return (
+    <div className={`rounded border transition-colors ${
+      isSelected ? "border-primary/30 bg-primary/5" : "border-transparent"
+    } ${!isMapped ? "opacity-60" : ""}`}>
+      <div className="flex items-center gap-2 px-2 py-1.5">
+        {selectionMode === "radio" ? (
+          <input
+            type="radio"
+            name="single-engine"
+            checked={isSelected}
+            onChange={onSelect}
+            disabled={!isMapped}
+            className="accent-primary"
+            title={!isMapped ? "Map a warehouse first" : undefined}
+          />
+        ) : (
+          <input
+            type="checkbox"
+            checked={isEnabled ?? false}
+            onChange={onToggle}
+            disabled={!isMapped}
+            className="accent-primary"
+            title={!isMapped ? "Map a warehouse first to enable this engine" : undefined}
+          />
+        )}
+        <span className="flex items-center gap-1.5 text-[11px] flex-1 min-w-0">
+          <span className={`inline-block w-[5px] h-[5px] rounded-full shrink-0 ${
+            mappedWarehouse?.state === "RUNNING" ? "bg-status-success" : "bg-muted-foreground/40"
+          }`} />
+          <span className="font-medium text-foreground">{engine.display_name}</span>
+        </span>
+        <span className="text-[10px] text-muted-foreground shrink-0">
+          {engine.config.cluster_size}
+        </span>
+      </div>
+
+      {/* Warehouse mapping row */}
+      <div className="px-2 pb-1.5 pl-[30px]">
+        {warehouseCount === 0 ? (
+          <span className="text-[10px] text-muted-foreground/60 italic">No matching warehouses found</span>
+        ) : mappedWarehouse ? (
+          <div className="flex items-center gap-1.5">
+            <span className={`inline-block w-[4px] h-[4px] rounded-full shrink-0 ${
+              mappedWarehouse.state === "RUNNING" ? "bg-emerald-500" : "bg-muted-foreground/30"
+            }`} />
+            <span className="text-[10px] text-foreground font-medium">{mappedWarehouse.name}</span>
+            <span className="text-[9px] text-muted-foreground">({mappedWarehouse.state.toLowerCase()})</span>
+            <button
+              onClick={() => setWarehouseDropdownOpen(!warehouseDropdownOpen)}
+              className="ml-auto text-[9px] text-primary hover:text-primary/80 transition-colors"
+            >
+              Change
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => setWarehouseDropdownOpen(!warehouseDropdownOpen)}
+            className="text-[10px] text-primary hover:text-primary/80 transition-colors"
+          >
+            {warehouseCount} warehouse{warehouseCount !== 1 ? "s" : ""} available — select one
+          </button>
+        )}
+
+        {/* Warehouse dropdown */}
+        {warehouseDropdownOpen && warehouseCount > 0 && (
+          <div className="mt-1 border border-border rounded bg-popover shadow-sm overflow-hidden">
+            {matchingWarehouses.map(wh => (
+              <button
+                key={wh.id}
+                onClick={() => {
+                  setWarehouseMapping(engine.id, wh.id, wh.name);
+                  setWarehouseDropdownOpen(false);
+                }}
+                className={`w-full flex items-center gap-2 px-2 py-1.5 text-left text-[10px] hover:bg-muted/50 transition-colors ${
+                  currentMapping?.warehouseId === wh.id ? "bg-primary/5" : ""
+                }`}
+              >
+                <span className={`inline-block w-[4px] h-[4px] rounded-full shrink-0 ${
+                  wh.state === "RUNNING" ? "bg-emerald-500" : "bg-muted-foreground/30"
+                }`} />
+                <span className="font-medium text-foreground">{wh.name}</span>
+                <span className="text-muted-foreground">({wh.state.toLowerCase()})</span>
+                {currentMapping?.warehouseId === wh.id && (
+                  <span className="ml-auto text-primary font-medium">current</span>
+                )}
+              </button>
+            ))}
+            <button
+              onClick={() => {
+                setWarehouseMapping(engine.id, null, null);
+                setWarehouseDropdownOpen(false);
+              }}
+              className="w-full px-2 py-1 text-left text-[10px] text-muted-foreground hover:bg-muted/50 transition-colors border-t border-border"
+            >
+              Clear mapping
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ---- Smart Routing View ----
+const SmartRoutingView: React.FC<{
+  models: Model[];
+  activeModelId: number | null;
+  onModelChange: (id: number) => void;
+  modelEngines: EngineCatalogEntry[];
+  enabledEngineIds: Set<string>;
+  toggleEngineEnabled: (id: string) => void;
+  engines: EngineCatalogEntry[];
+  hasConnectedWorkspace: boolean;
+  discoveredWarehouses: DiscoveredWarehouse[];
+  warehouseMappings: WarehouseMapping[];
+  setWarehouseMapping: (engineId: string, warehouseId: string | null, warehouseName: string | null) => void;
+}> = ({ models, activeModelId, onModelChange, modelEngines, enabledEngineIds, toggleEngineEnabled, engines, hasConnectedWorkspace, discoveredWarehouses, warehouseMappings, setWarehouseMapping }) => {
+  if (models.length === 0) {
+    return (
+      <div className="px-3 py-4 text-[11px] text-muted-foreground">
+        No trained models available. Run benchmarks and train a model first.
+      </div>
+    );
+  }
+
+  const duckdbModelEngines = modelEngines.filter(e => e.engine_type === "duckdb");
+  const databricksModelEngines = modelEngines.filter(e => e.engine_type === "databricks_sql");
+
+  return (
+    <div className="px-3 py-2 space-y-3">
+      {/* Model selector */}
+      <div>
+        <label className="block text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1.5">
+          <Brain size={10} className="inline mr-1" />
+          Model
+        </label>
+        <div className="relative">
+          <select
+            value={activeModelId ?? ""}
+            onChange={e => onModelChange(Number(e.target.value))}
+            className="w-full appearance-none bg-card border border-border rounded px-2 py-1.5 text-[11px] font-medium text-foreground pr-7 cursor-pointer hover:bg-muted/50 transition-colors"
+          >
+            <option value="" disabled>Select a model...</option>
+            {models.map(m => (
+              <option key={m.id} value={m.id}>
+                Model #{m.id} — R²={m.latency_model.r_squared} ({m.linked_engines.length} engines)
+              </option>
+            ))}
+          </select>
+          <ChevronDown size={12} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+        </div>
+      </div>
+
+      {/* Model's engines with checkboxes — grouped by type */}
+      {activeModelId && modelEngines.length > 0 && (
+        <div className="space-y-3">
+          {/* DuckDB engines */}
+          {duckdbModelEngines.length > 0 && (
+            <div>
+              <div className="flex items-center gap-1.5 mb-1">
+                <HardDrive size={10} className="text-emerald-600" />
+                <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">DuckDB</span>
+                <span className="text-[10px] text-muted-foreground">
+                  ({duckdbModelEngines.filter(e => enabledEngineIds.has(e.id)).length}/{duckdbModelEngines.length})
+                </span>
+              </div>
+              <div className="space-y-0.5">
+                {duckdbModelEngines.map(e => {
+                  const isEnabled = enabledEngineIds.has(e.id);
+                  return (
+                    <label
+                      key={e.id}
+                      className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors hover:bg-muted/50 ${
+                        isEnabled ? "bg-primary/5" : ""
+                      }`}
+                    >
                       <input
                         type="checkbox"
-                        checked={enabledEngineIds.has(e.id)}
+                        checked={isEnabled}
                         onChange={() => toggleEngineEnabled(e.id)}
                         className="accent-primary"
                       />
-                    </td>
-                    <td className="px-2 py-1 border-b border-border text-foreground font-medium">
-                      <span className="flex items-center gap-1.5">
-                        <span
-                          className={`inline-block w-[6px] h-[6px] rounded-full shrink-0 ${runtimeStateStyle(e.runtime_state)}`}
-                          title={runtimeStateLabel(e.runtime_state)}
-                        />
-                        {formatType(e)}
+                      <span className="flex items-center gap-1.5 text-[11px]">
+                        <span className={`inline-block w-[5px] h-[5px] rounded-full shrink-0 ${
+                          e.runtime_state === "running" ? "bg-status-success" : "bg-muted-foreground/40"
+                        }`} />
+                        <span className="font-medium text-foreground">{e.display_name}</span>
                       </span>
-                    </td>
-                    <td className="px-2 py-1 border-b border-border text-muted-foreground">
-                      {formatSpecs(e)}
-                    </td>
-                    <td className="px-2 py-1 border-b border-border text-center text-muted-foreground">
-                      {e.cost_tier}
-                    </td>
-                    <td className="px-2 py-1 border-b border-border text-center">
-                      {canScale && (
-                        <button
-                          onClick={() => scaleEngine(e.id, isRunning ? 0 : 1)}
-                          disabled={isScaling}
-                          title={isScaling ? "Scaling..." : isRunning ? "Stop" : "Start"}
-                          className={`inline-flex items-center justify-center w-6 h-6 rounded transition-colors ${
-                            isScaling
-                              ? "text-muted-foreground cursor-wait"
-                              : isRunning
-                                ? "text-red-400 hover:bg-red-500/10 hover:text-red-300"
-                                : "text-green-400 hover:bg-green-500/10 hover:text-green-300"
-                          }`}
-                        >
-                          {isScaling ? (
-                            <Loader2 size={12} className="animate-spin" />
-                          ) : isRunning ? (
-                            <Square size={10} />
-                          ) : (
-                            <Play size={10} />
-                          )}
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
+                      <span className="ml-auto text-[10px] text-muted-foreground">
+                        {e.config.memory_gb}GB / {e.config.cpu_count}CPU
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Databricks engines */}
+          {databricksModelEngines.length > 0 && (
+            <div>
+              <div className="flex items-center gap-1.5 mb-1">
+                <Cloud size={10} className="text-blue-600" />
+                <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Databricks SQL</span>
+                <span className="text-[10px] text-muted-foreground">
+                  ({databricksModelEngines.filter(e => enabledEngineIds.has(e.id)).length}/{databricksModelEngines.length})
+                </span>
+              </div>
+              <div className="space-y-1">
+                {databricksModelEngines.map(e => {
+                  const matchingWarehouses = discoveredWarehouses.filter(w => w.matchingEngineId === e.id);
+                  const currentMapping = warehouseMappings.find(m => m.engineId === e.id);
+                  const isEnabled = enabledEngineIds.has(e.id);
+
+                  return (
+                    <DatabricksEngineRow
+                      key={e.id}
+                      engine={e}
+                      isSelected={false}
+                      onSelect={() => {}}
+                      hasWorkspace={hasConnectedWorkspace}
+                      matchingWarehouses={matchingWarehouses}
+                      currentMapping={currentMapping ?? null}
+                      setWarehouseMapping={setWarehouseMapping}
+                      selectionMode="checkbox"
+                      isEnabled={isEnabled}
+                      onToggle={() => toggleEngineEnabled(e.id)}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <p className="text-[10px] text-muted-foreground">
+            Uncheck engines to exclude them from routing. The model stays valid.
+          </p>
+        </div>
+      )}
     </div>
   );
 };

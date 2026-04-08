@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from "react";
 import { api, setAuthToken, clearAuthToken, hasAuthToken, AUTH_UNAUTHORIZED_EVENT } from "@/lib/api";
+import { isMockMode } from "@/lib/mockMode";
 import type { LoginResponse } from "../types";
 
 interface AuthContextType {
@@ -14,8 +15,11 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType>(null!);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [isAuthenticated, setIsAuthenticated] = useState(() => hasAuthToken());
+  const mock = isMockMode();
+
+  const [isAuthenticated, setIsAuthenticated] = useState(() => mock || hasAuthToken());
   const [username, setUsername] = useState<string | null>(() => {
+    if (mock) return "admin";
     return sessionStorage.getItem("auth_username");
   });
   const [isLoggingIn, setIsLoggingIn] = useState(false);
