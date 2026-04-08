@@ -48,6 +48,11 @@ export const EnginesTable: React.FC = () => {
     }
   };
 
+  // Workspace dependency satisfied? If profile binds to a workspace, check it matches the connected one.
+  // When not satisfied, Databricks engines should be fully locked (no warehouse selection).
+  const workspaceSatisfied = !profileWorkspaceBinding ||
+    (connectedWorkspace !== null && connectedWorkspace.url === profileWorkspaceBinding.workspaceUrl);
+
   return (
     <div className="text-[12px]">
       <div className="px-3 py-1.5 border-b border-panel-border flex items-center gap-2">
@@ -106,6 +111,7 @@ export const EnginesTable: React.FC = () => {
           singleEngineId={singleEngineId}
           onSelect={setSingleEngineId}
           hasConnectedWorkspace={connectedWorkspace !== null}
+          workspaceSatisfied={workspaceSatisfied}
           discoveredWarehouses={discoveredWarehouses}
           warehouseMappings={warehouseMappings}
           setWarehouseMapping={setWarehouseMapping}
@@ -120,6 +126,7 @@ export const EnginesTable: React.FC = () => {
           toggleEngineEnabled={toggleEngineEnabled}
           engines={engines}
           hasConnectedWorkspace={connectedWorkspace !== null}
+          workspaceSatisfied={workspaceSatisfied}
           discoveredWarehouses={discoveredWarehouses}
           warehouseMappings={warehouseMappings}
           setWarehouseMapping={setWarehouseMapping}
@@ -219,10 +226,11 @@ const SingleEngineView: React.FC<{
   singleEngineId: string | null;
   onSelect: (id: string | null) => void;
   hasConnectedWorkspace: boolean;
+  workspaceSatisfied: boolean;
   discoveredWarehouses: DiscoveredWarehouse[];
   warehouseMappings: WarehouseMapping[];
   setWarehouseMapping: (engineId: string, warehouseId: string | null, warehouseName: string | null) => void;
-}> = ({ duckdbEngines, databricksEngines, singleEngineId, onSelect, hasConnectedWorkspace, discoveredWarehouses, warehouseMappings, setWarehouseMapping }) => {
+}> = ({ duckdbEngines, databricksEngines, singleEngineId, onSelect, hasConnectedWorkspace, workspaceSatisfied, discoveredWarehouses, warehouseMappings, setWarehouseMapping }) => {
   if (duckdbEngines.length === 0 && databricksEngines.length === 0) {
     return (
       <div className="px-3 py-4 text-[11px] text-muted-foreground">
@@ -288,6 +296,7 @@ const SingleEngineView: React.FC<{
                   isSelected={isSelected}
                   onSelect={() => onSelect(e.id)}
                   hasWorkspace={hasConnectedWorkspace}
+                  workspaceSatisfied={workspaceSatisfied}
                   matchingWarehouses={matchingWarehouses}
                   currentMapping={currentMapping ?? null}
                   setWarehouseMapping={setWarehouseMapping}
@@ -312,21 +321,20 @@ const DatabricksEngineRow: React.FC<{
   isSelected: boolean;
   onSelect: () => void;
   hasWorkspace: boolean;
+  workspaceSatisfied: boolean;
   matchingWarehouses: DiscoveredWarehouse[];
   currentMapping: WarehouseMapping | null;
   setWarehouseMapping: (engineId: string, warehouseId: string | null, warehouseName: string | null) => void;
   selectionMode: "radio" | "checkbox";
   isEnabled?: boolean;
   onToggle?: () => void;
-}> = ({ engine, isSelected, onSelect, hasWorkspace, matchingWarehouses, currentMapping, setWarehouseMapping, selectionMode, isEnabled, onToggle }) => {
+}> = ({ engine, isSelected, onSelect, hasWorkspace, workspaceSatisfied, matchingWarehouses, currentMapping, setWarehouseMapping, selectionMode, isEnabled, onToggle }) => {
   const [warehouseDropdownOpen, setWarehouseDropdownOpen] = useState(false);
 
   if (!hasWorkspace) {
     // No workspace connected — show warning
     return (
-      <div className={`flex items-center gap-2 px-2 py-1.5 rounded opacity-60 ${
-        selectionMode === "radio" ? "" : ""
-      }`}>
+      <div className="flex items-center gap-2 px-2 py-1.5 rounded opacity-60">
         {selectionMode === "radio" ? (
           <input type="radio" name="single-engine" disabled className="accent-primary" />
         ) : (
@@ -341,7 +349,32 @@ const DatabricksEngineRow: React.FC<{
     );
   }
 
-  // Has workspace — show warehouse info
+  if (!workspaceSatisfied) {
+    // Workspace connected but it's the WRONG one — fully disabled, no warehouse interaction
+    return (
+      <div className="rounded opacity-50 cursor-not-allowed">
+        <div className="flex items-center gap-2 px-2 py-1.5">
+          {selectionMode === "radio" ? (
+            <input type="radio" name="single-engine" disabled className="accent-primary" />
+          ) : (
+            <input type="checkbox" checked={isEnabled ?? false} disabled className="accent-primary" />
+          )}
+          <span className="flex items-center gap-1.5 text-[11px]">
+            <AlertTriangle size={10} className="text-amber-500 shrink-0" />
+            <span className="font-medium text-muted-foreground">{engine.display_name}</span>
+          </span>
+          <span className="ml-auto text-[10px] text-muted-foreground shrink-0">
+            {engine.config.cluster_size}
+          </span>
+        </div>
+        <div className="px-2 pb-1.5 pl-[30px]">
+          <span className="text-[10px] text-amber-600 italic">Wrong workspace connected</span>
+        </div>
+      </div>
+    );
+  }
+
+  // Has correct workspace — show warehouse info
   const mappedWarehouse = currentMapping?.warehouseId
     ? matchingWarehouses.find(w => w.id === currentMapping.warehouseId) ?? null
     : null;
@@ -351,8 +384,8 @@ const DatabricksEngineRow: React.FC<{
   return (
     <div className={`rounded border transition-colors ${
       isSelected ? "border-primary/30 bg-primary/5" : "border-transparent"
-    } ${!isMapped ? "opacity-60" : ""}`}>
-      <div className="flex items-center gap-2 px-2 py-1.5">
+    }`}>
+      <div className={`flex items-center gap-2 px-2 py-1.5 ${!isMapped ? "opacity-60" : ""}`}>
         {selectionMode === "radio" ? (
           <input
             type="radio"
@@ -461,10 +494,11 @@ const SmartRoutingView: React.FC<{
   toggleEngineEnabled: (id: string) => void;
   engines: EngineCatalogEntry[];
   hasConnectedWorkspace: boolean;
+  workspaceSatisfied: boolean;
   discoveredWarehouses: DiscoveredWarehouse[];
   warehouseMappings: WarehouseMapping[];
   setWarehouseMapping: (engineId: string, warehouseId: string | null, warehouseName: string | null) => void;
-}> = ({ models, activeModelId, onModelChange, modelEngines, enabledEngineIds, toggleEngineEnabled, engines, hasConnectedWorkspace, discoveredWarehouses, warehouseMappings, setWarehouseMapping }) => {
+}> = ({ models, activeModelId, onModelChange, modelEngines, enabledEngineIds, toggleEngineEnabled, engines, hasConnectedWorkspace, workspaceSatisfied, discoveredWarehouses, warehouseMappings, setWarehouseMapping }) => {
   if (models.length === 0) {
     return (
       <div className="px-3 py-4 text-[11px] text-muted-foreground">
@@ -569,6 +603,7 @@ const SmartRoutingView: React.FC<{
                       isSelected={false}
                       onSelect={() => {}}
                       hasWorkspace={hasConnectedWorkspace}
+                      workspaceSatisfied={workspaceSatisfied}
                       matchingWarehouses={matchingWarehouses}
                       currentMapping={currentMapping ?? null}
                       setWarehouseMapping={setWarehouseMapping}
