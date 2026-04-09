@@ -282,13 +282,18 @@ const ModelDetailView: React.FC<{
         };
       });
 
+      // Effective runs = min(runCount) across ALL engines (same rule as wizard).
+      // If any engine has 0 runs, the collection is ineligible and effectiveRuns = 0.
+      const allRunCounts = engineRuns.map(er => er.runCount);
+      const allHaveRuns = allRunCounts.every(c => c > 0);
+      const effectiveRuns = allHaveRuns ? Math.min(...allRunCounts) : 0;
       const totalRuns = engineRuns.reduce((sum, er) => sum + er.runCount, 0);
 
-      return { collectionId, collectionName, engineRuns, totalRuns };
+      return { collectionId, collectionName, engineRuns, totalRuns, effectiveRuns };
     });
   }, [trainingCollectionIds, benchmarkDefinitions, model.linked_engines, engines]);
 
-  const totalTrainingRuns = trainingDetails.reduce((sum, td) => sum + td.totalRuns, 0);
+  const totalEffectiveRuns = trainingDetails.reduce((sum, td) => sum + td.effectiveRuns, 0);
 
   return (
     <>
@@ -375,9 +380,9 @@ const ModelDetailView: React.FC<{
             <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
               Training Data ({trainingDetails.length} collection{trainingDetails.length !== 1 ? "s" : ""})
             </span>
-            {totalTrainingRuns > 0 && (
+            {totalEffectiveRuns > 0 && (
               <span className="text-[10px] text-muted-foreground">
-                {totalTrainingRuns} total runs
+                {totalEffectiveRuns} run{totalEffectiveRuns !== 1 ? "s" : ""} per engine
               </span>
             )}
           </div>
@@ -388,12 +393,15 @@ const ModelDetailView: React.FC<{
           ) : (
             <div className="mt-1.5 space-y-2">
               {trainingDetails.map(td => (
-                <div key={td.collectionId} className="px-3 py-2.5 bg-muted/30 rounded border border-border">
+                <div key={td.collectionId} className={`px-3 py-2.5 rounded border ${td.effectiveRuns === 0 ? "bg-amber-50/50 border-amber-200" : "bg-muted/30 border-border"}`}>
                   <div className="flex items-center gap-2 mb-1.5">
-                    <Database size={10} className="text-primary/70" />
+                    <Database size={10} className={td.effectiveRuns === 0 ? "text-amber-500" : "text-primary/70"} />
                     <span className="text-[11px] font-medium text-foreground">{td.collectionName}</span>
-                    <span className="ml-auto text-[10px] text-muted-foreground">
-                      {td.totalRuns} run{td.totalRuns !== 1 ? "s" : ""} total
+                    <span className={`ml-auto text-[10px] ${td.effectiveRuns === 0 ? "text-amber-600" : "text-muted-foreground"}`}>
+                      {td.effectiveRuns === 0
+                        ? "incomplete — not all engines have runs"
+                        : `${td.effectiveRuns} run${td.effectiveRuns !== 1 ? "s" : ""} per engine`
+                      }
                     </span>
                   </div>
                   {/* Per-engine run counts — mini table */}
@@ -407,15 +415,30 @@ const ModelDetailView: React.FC<{
                         )}
                         <span className="text-[10px] text-muted-foreground flex-1">{er.engineName}</span>
                         <div className="flex items-center gap-1.5">
-                          {/* Mini bar visualization */}
+                          {/* Mini bar visualization — capped at effectiveRuns */}
                           <div className="w-16 h-1.5 bg-border rounded-full overflow-hidden">
                             <div
-                              className={`h-full rounded-full ${er.runCount > 0 ? "bg-primary/60" : "bg-transparent"}`}
-                              style={{ width: `${Math.min(er.runCount / 3 * 100, 100)}%` }}
+                              className={`h-full rounded-full ${
+                                td.effectiveRuns === 0
+                                  ? "bg-transparent"
+                                  : er.runCount > 0 ? "bg-primary/60" : "bg-transparent"
+                              }`}
+                              style={{ width: `${td.effectiveRuns > 0 ? Math.min(Math.min(er.runCount, td.effectiveRuns) / td.effectiveRuns * 100, 100) : 0}%` }}
                             />
                           </div>
-                          <span className={`text-[10px] tabular-nums w-8 text-right ${er.runCount === 0 ? "text-muted-foreground/40" : "text-foreground"}`}>
-                            {er.runCount} run{er.runCount !== 1 ? "s" : ""}
+                          <span className={`text-[10px] tabular-nums text-right ${er.runCount === 0 ? "text-red-400" : td.effectiveRuns === 0 ? "text-muted-foreground/50" : "text-foreground"}`}>
+                            {er.runCount === 0
+                              ? "no runs"
+                              : <>
+                                  {er.runCount} run{er.runCount !== 1 ? "s" : ""}
+                                  {td.effectiveRuns > 0 && er.runCount > td.effectiveRuns && (
+                                    <span className="text-muted-foreground/50"> (using {td.effectiveRuns})</span>
+                                  )}
+                                  {td.effectiveRuns === 0 && (
+                                    <span className="text-amber-500/70"> (not used)</span>
+                                  )}
+                                </>
+                            }
                           </span>
                         </div>
                       </div>
