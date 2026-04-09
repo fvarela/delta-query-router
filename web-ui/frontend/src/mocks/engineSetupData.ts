@@ -378,8 +378,8 @@ export const MOCK_COLLECTIONS_WITH_QUERIES: CollectionWithQueries[] = [
   },
 ];
 
-/** Whether TPC-DS dataset is configured (mock toggle for UI dev) */
-export const MOCK_TPCDS_CONFIGURED = true;
+/** Whether TPC-DS dataset is configured (mock toggle for UI dev — false to show the gate) */
+export const MOCK_TPCDS_CONFIGURED = false;
 
 // ---- Routing Profiles (persistent named configs — Round 13, updated Round 16 with workspace binding) ----
 export const MOCK_ROUTING_PROFILES: RoutingProfile[] = [

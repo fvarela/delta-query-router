@@ -6,8 +6,9 @@ import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { StatusBadge } from "@/components/shared/StatusBadge";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 import { MOCK_COLLECTIONS_WITH_QUERIES, MOCK_TPCDS_CONFIGURED, MOCK_BENCHMARK_RUN_DETAILS, getRunsForDefinition } from "@/mocks/engineSetupData";
+import { TpcdsSetupDialog } from "@/components/LeftPanel/TpcdsWizard";
 import type { CollectionWithQueries, BenchmarkSummary, BenchmarkDetail, BenchmarkRunDetail } from "@/types";
-import { ArrowLeft, Plus, Trash2, X, Database, AlertTriangle, Lock, BarChart3, Clock, ExternalLink } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, X, Database, AlertTriangle, Lock, BarChart3, Clock, ExternalLink, Settings2 } from "lucide-react";
 
 export const CollectionsPanel: React.FC = () => {
   const {
@@ -31,8 +32,9 @@ export const CollectionsPanel: React.FC = () => {
   const [benchmarkError, setBenchmarkError] = useState<string | null>(null);
   const [runsDialog, setRunsDialog] = useState<{ definitionId: number; engineName: string } | null>(null);
 
-  // TPC-DS dataset configured check
-  const tpcdsConfigured = MOCK_TPCDS_CONFIGURED; // TODO: fetch from backend in non-mock mode
+  // TPC-DS dataset configured check — starts unconfigured in mock mode to show the gate
+  const [tpcdsConfigured, setTpcdsConfigured] = useState(MOCK_TPCDS_CONFIGURED);
+  const [showTpcdsSetup, setShowTpcdsSetup] = useState(false);
 
   const mock = isMockMode();
 
@@ -314,7 +316,14 @@ export const CollectionsPanel: React.FC = () => {
             <AlertTriangle size={13} className="text-amber-500 shrink-0 mt-0.5" />
             <div className="text-[11px]">
               <span className="font-medium text-amber-700">TPC-DS dataset not configured.</span>
-              <span className="text-amber-600"> Configure the TPC-DS dataset to run benchmarks with this collection.</span>
+              <span className="text-amber-600"> Set up the TPC-DS dataset to run benchmarks with this collection.</span>
+              <button
+                onClick={() => setShowTpcdsSetup(true)}
+                className="mt-1.5 flex items-center gap-1 px-2 py-1 rounded bg-amber-100 hover:bg-amber-200 text-amber-800 text-[11px] font-medium transition-colors"
+              >
+                <Settings2 size={11} />
+                Configure Dataset
+              </button>
             </div>
           </div>
         )}
@@ -453,6 +462,13 @@ export const CollectionsPanel: React.FC = () => {
             onClose={() => setRunsDialog(null)}
           />
         )}
+
+        {/* TPC-DS Setup Dialog */}
+        <TpcdsSetupDialog
+          open={showTpcdsSetup}
+          onClose={() => setShowTpcdsSetup(false)}
+          onComplete={() => setTpcdsConfigured(true)}
+        />
       </div>
     );
   }
@@ -488,9 +504,13 @@ export const CollectionsPanel: React.FC = () => {
               <Database size={11} className="text-amber-500" />
               <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">TPC-DS Benchmarks</span>
               {!tpcdsConfigured && (
-                <span className="ml-auto flex items-center gap-0.5 text-[10px] text-amber-600">
-                  <AlertTriangle size={10} /> Not configured
-                </span>
+                <button
+                  onClick={() => setShowTpcdsSetup(true)}
+                  className="ml-auto flex items-center gap-0.5 text-[10px] text-amber-600 hover:text-amber-800 transition-colors"
+                  title="Configure TPC-DS dataset"
+                >
+                  <AlertTriangle size={10} /> Set up
+                </button>
               )}
             </div>
             {tpcdsCollections.map(c => (
@@ -544,6 +564,13 @@ export const CollectionsPanel: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* TPC-DS Setup Dialog */}
+      <TpcdsSetupDialog
+        open={showTpcdsSetup}
+        onClose={() => setShowTpcdsSetup(false)}
+        onComplete={() => setTpcdsConfigured(true)}
+      />
     </div>
   );
 };
