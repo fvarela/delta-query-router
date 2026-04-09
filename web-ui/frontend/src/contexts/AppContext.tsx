@@ -727,6 +727,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       created_at: new Date().toISOString(),
       benchmark_count: relevantDefs.length,
       training_queries: totalRuns * 10, // approximate: 10 queries per run
+      training_collection_ids: trainingCollectionIds,
     };
     setModels(prev => [...prev, newModel]);
     return newModel;

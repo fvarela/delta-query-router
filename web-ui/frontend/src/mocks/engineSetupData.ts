@@ -328,6 +328,7 @@ export const MOCK_MODELS: Model[] = [
     created_at: "2026-04-01T11:00:00Z",
     benchmark_count: 6,
     training_queries: 60,
+    training_collection_ids: [1, 2], // TPC-DS 1GB + TPC-DS 10GB
   },
   {
     id: 2,
@@ -337,6 +338,7 @@ export const MOCK_MODELS: Model[] = [
     created_at: "2026-03-28T15:00:00Z",
     benchmark_count: 8,
     training_queries: 80,
+    training_collection_ids: [1], // TPC-DS 1GB only
   },
 ];
 

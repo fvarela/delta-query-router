@@ -565,6 +565,7 @@ const RunsDialog: React.FC<{
 }> = ({ definitionId, engineName, onClose }) => {
   const runs = useMemo(() => getRunsForDefinition(definitionId), [definitionId]);
   const [selectedRun, setSelectedRun] = useState<BenchmarkRunDetail | null>(null);
+  const [view, setView] = useState<"runs" | "statistics">("runs");
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
@@ -593,7 +594,9 @@ const RunsDialog: React.FC<{
               <p className="text-[10px] text-muted-foreground mt-0.5">
                 {selectedRun
                   ? `${selectedRun.results.length} queries`
-                  : "Click Details to view per-query results"}
+                  : view === "statistics"
+                    ? "Aggregated statistics across all runs"
+                    : "Click Details to view per-query results"}
               </p>
             </div>
           </div>
@@ -602,10 +605,34 @@ const RunsDialog: React.FC<{
           </button>
         </div>
 
+        {/* Tab bar — only show when not drilled into a run detail */}
+        {!selectedRun && runs.length >= 2 && (
+          <div className="flex items-center gap-1 px-4 py-2 border-b border-border bg-muted/20 shrink-0">
+            <button
+              onClick={() => setView("runs")}
+              className={`px-2.5 py-1 text-[10px] font-medium rounded transition-colors ${
+                view === "runs" ? "bg-background text-foreground shadow-sm border border-border" : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              Runs
+            </button>
+            <button
+              onClick={() => setView("statistics")}
+              className={`px-2.5 py-1 text-[10px] font-medium rounded transition-colors ${
+                view === "statistics" ? "bg-background text-foreground shadow-sm border border-border" : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              Statistics
+            </button>
+          </div>
+        )}
+
         {/* Body */}
         <div className="overflow-y-auto flex-1">
           {selectedRun ? (
             <RunDetailView runDetail={selectedRun} />
+          ) : view === "statistics" && runs.length >= 2 ? (
+            <RunStatisticsView runs={runs} />
           ) : (
             <RunListView runs={runs} onViewDetail={setSelectedRun} />
           )}
@@ -711,7 +738,7 @@ const RunDetailView: React.FC<{ runDetail: BenchmarkRunDetail }> = ({ runDetail 
             <tr className="bg-muted">
               <th className="text-left px-2 py-1.5 border-b border-border font-semibold">Query</th>
               <th className="text-right px-2 py-1.5 border-b border-border font-semibold">Time (ms)</th>
-              <th className="text-left px-3 py-1.5 border-b border-border font-semibold w-[40%]">Distribution</th>
+              <th className="text-left px-3 py-1.5 border-b border-border font-semibold w-[40%]">Relative</th>
             </tr>
           </thead>
           <tbody>
@@ -745,6 +772,150 @@ const RunDetailView: React.FC<{ runDetail: BenchmarkRunDetail }> = ({ runDetail 
         <span>Max: <span className="font-mono text-foreground">{maxMs}ms</span></span>
         <span>Avg: <span className="font-mono text-foreground">{avgMs}ms</span></span>
         <span>Total: <span className="font-mono text-foreground">{totalMs >= 1000 ? `${(totalMs / 1000).toFixed(1)}s` : `${totalMs}ms`}</span></span>
+      </div>
+    </div>
+  );
+};
+
+// ---- Run Statistics View (aggregate across all runs) ----
+
+interface QueryStats {
+  queryId: number;
+  values: number[];
+  avg: number;
+  min: number;
+  max: number;
+  stddev: number;
+  median: number;
+}
+
+const RunStatisticsView: React.FC<{ runs: BenchmarkRunDetail[] }> = ({ runs }) => {
+  const stats = useMemo((): QueryStats[] => {
+    // Collect all query IDs from all runs
+    const queryMap = new Map<number, number[]>();
+    for (const run of runs) {
+      for (const result of run.results) {
+        const ms = result.execution_time_ms;
+        if (ms == null) continue;
+        if (!queryMap.has(result.query_id)) queryMap.set(result.query_id, []);
+        queryMap.get(result.query_id)!.push(ms);
+      }
+    }
+
+    // Compute stats per query
+    const result: QueryStats[] = [];
+    for (const [queryId, values] of queryMap) {
+      const sorted = [...values].sort((a, b) => a - b);
+      const sum = values.reduce((a, b) => a + b, 0);
+      const avg = sum / values.length;
+      const min = sorted[0];
+      const max = sorted[sorted.length - 1];
+      const median = sorted.length % 2 === 0
+        ? (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2
+        : sorted[Math.floor(sorted.length / 2)];
+      const variance = values.reduce((s, v) => s + (v - avg) ** 2, 0) / values.length;
+      const stddev = Math.sqrt(variance);
+      result.push({ queryId, values, avg, min, max, stddev, median });
+    }
+
+    return result.sort((a, b) => a.queryId - b.queryId);
+  }, [runs]);
+
+  if (stats.length === 0) {
+    return (
+      <div className="px-4 py-6 text-center text-[11px] text-muted-foreground">
+        No data available to compute statistics.
+      </div>
+    );
+  }
+
+  const globalMax = Math.max(...stats.map(s => s.max));
+  const globalAvg = Math.round(stats.reduce((s, q) => s + q.avg, 0) / stats.length);
+  const globalMin = Math.min(...stats.map(s => s.min));
+  const globalMaxVal = Math.max(...stats.map(s => s.max));
+
+  return (
+    <div className="px-4 py-3">
+      {/* Summary */}
+      <div className="flex items-center gap-4 mb-3 text-[11px]">
+        <div className="flex items-center gap-1.5">
+          <span className="text-muted-foreground">Runs:</span>
+          <span className="font-mono text-foreground">{runs.length}</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="text-muted-foreground">Queries:</span>
+          <span className="font-mono text-foreground">{stats.length}</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="text-muted-foreground">Avg across all:</span>
+          <span className="font-mono text-foreground">{globalAvg}ms</span>
+        </div>
+      </div>
+
+      {/* Per-query statistics table */}
+      <div className="border border-border rounded overflow-hidden">
+        <table className="w-full text-[10px]">
+          <thead>
+            <tr className="bg-muted">
+              <th className="text-left px-2 py-1.5 border-b border-border font-semibold">Query</th>
+              <th className="text-right px-2 py-1.5 border-b border-border font-semibold">Avg (ms)</th>
+              <th className="text-right px-2 py-1.5 border-b border-border font-semibold">Min</th>
+              <th className="text-right px-2 py-1.5 border-b border-border font-semibold">Max</th>
+              <th className="text-right px-2 py-1.5 border-b border-border font-semibold">Std</th>
+              <th className="text-left px-3 py-1.5 border-b border-border font-semibold w-[25%]">Range</th>
+            </tr>
+          </thead>
+          <tbody>
+            {stats.map((s, i) => {
+              // Range bar: min to max, relative to global max
+              const minPct = globalMax > 0 ? (s.min / globalMax) * 100 : 0;
+              const maxPct = globalMax > 0 ? (s.max / globalMax) * 100 : 0;
+              const avgPct = globalMax > 0 ? (s.avg / globalMax) * 100 : 0;
+
+              return (
+                <tr key={s.queryId} className="even:bg-card/50">
+                  <td className="px-2 py-1 border-b border-border font-mono text-foreground">Q{s.queryId}</td>
+                  <td className={`px-2 py-1 border-b border-border text-right font-mono ${latencyColor(s.avg)}`}>
+                    {Math.round(s.avg)}
+                  </td>
+                  <td className="px-2 py-1 border-b border-border text-right font-mono text-status-success">
+                    {Math.round(s.min)}
+                  </td>
+                  <td className="px-2 py-1 border-b border-border text-right font-mono text-status-error">
+                    {Math.round(s.max)}
+                  </td>
+                  <td className="px-2 py-1 border-b border-border text-right font-mono text-muted-foreground">
+                    {s.stddev < 1 ? s.stddev.toFixed(1) : Math.round(s.stddev)}
+                  </td>
+                  <td className="px-3 py-1.5 border-b border-border">
+                    {/* Min-max range bar with avg marker */}
+                    <div className="relative w-full h-3">
+                      <div className="absolute top-1 w-full h-1 bg-muted rounded-full" />
+                      {/* Range bar: min to max */}
+                      <div
+                        className="absolute top-0.5 h-2 bg-primary/20 rounded-full"
+                        style={{ left: `${minPct}%`, width: `${Math.max(maxPct - minPct, 1)}%` }}
+                      />
+                      {/* Average marker */}
+                      <div
+                        className="absolute top-0 w-0.5 h-3 bg-primary rounded-full"
+                        style={{ left: `${avgPct}%` }}
+                      />
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Overall stats */}
+      <div className="flex items-center gap-4 mt-3 text-[10px] text-muted-foreground">
+        <span>Overall min: <span className="font-mono text-foreground">{globalMin}ms</span></span>
+        <span>Overall max: <span className="font-mono text-foreground">{globalMaxVal}ms</span></span>
+        <span>Mean avg: <span className="font-mono text-foreground">{globalAvg}ms</span></span>
+        <span>Data points: <span className="font-mono text-foreground">{stats.reduce((s, q) => s + q.values.length, 0)}</span></span>
       </div>
     </div>
   );

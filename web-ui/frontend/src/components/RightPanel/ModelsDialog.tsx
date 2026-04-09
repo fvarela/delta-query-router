@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from "react";
 import { useApp } from "@/contexts/AppContext";
-import { X, Plus, Trash2, CheckCircle2, Circle, Brain, ChevronRight, ChevronLeft, HardDrive, Cloud, AlertTriangle } from "lucide-react";
+import { X, Plus, Trash2, CheckCircle2, Circle, Brain, ChevronRight, ChevronLeft, HardDrive, Cloud, AlertTriangle, Database, BarChart3 } from "lucide-react";
 import type { Model, BenchmarkDefinition, EngineCatalogEntry } from "@/types";
 
 interface ModelsDialogProps {
@@ -9,6 +9,7 @@ interface ModelsDialogProps {
 }
 
 type WizardStep = 1 | 2 | 3;
+type DialogView = { kind: "list" } | { kind: "wizard" } | { kind: "detail"; modelId: number };
 
 // ---- Collection eligibility for training ----
 interface CollectionTrainingInfo {
@@ -23,7 +24,7 @@ interface CollectionTrainingInfo {
 }
 
 export const ModelsDialog: React.FC<ModelsDialogProps> = ({ open, onClose }) => {
-  const [wizardActive, setWizardActive] = useState(false);
+  const [view, setView] = useState<DialogView>({ kind: "list" });
 
   if (!open) return null;
 
@@ -33,10 +34,16 @@ export const ModelsDialog: React.FC<ModelsDialogProps> = ({ open, onClose }) => 
         className="bg-background border border-panel-border rounded-lg shadow-lg w-[580px] max-h-[80vh] flex flex-col"
         onClick={e => e.stopPropagation()}
       >
-        {wizardActive ? (
-          <NewModelWizard onBack={() => setWizardActive(false)} onClose={onClose} />
+        {view.kind === "wizard" ? (
+          <NewModelWizard onBack={() => setView({ kind: "list" })} onClose={onClose} />
+        ) : view.kind === "detail" ? (
+          <ModelDetailView modelId={view.modelId} onBack={() => setView({ kind: "list" })} onClose={onClose} />
         ) : (
-          <ModelListView onNewModel={() => setWizardActive(true)} onClose={onClose} />
+          <ModelListView
+            onNewModel={() => setView({ kind: "wizard" })}
+            onViewDetail={(id) => setView({ kind: "detail", modelId: id })}
+            onClose={onClose}
+          />
         )}
       </div>
     </div>
@@ -46,8 +53,9 @@ export const ModelsDialog: React.FC<ModelsDialogProps> = ({ open, onClose }) => 
 // ---- Model List View ----
 const ModelListView: React.FC<{
   onNewModel: () => void;
+  onViewDetail: (id: number) => void;
   onClose: () => void;
-}> = ({ onNewModel, onClose }) => {
+}> = ({ onNewModel, onViewDetail, onClose }) => {
   const { models, activeModelId, activateModel, deactivateModel, deleteModel, engines } = useApp();
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
 
@@ -91,6 +99,7 @@ const ModelListView: React.FC<{
                 model={model}
                 isActive={model.id === activeModelId}
                 engineNames={getEngineNames(model.linked_engines)}
+                onClick={() => onViewDetail(model.id)}
                 onActivate={() => activateModel(model.id)}
                 onDeactivate={() => deactivateModel(model.id)}
                 confirmDelete={confirmDeleteId === model.id}
@@ -111,15 +120,19 @@ const ModelRow: React.FC<{
   model: Model;
   isActive: boolean;
   engineNames: string[];
+  onClick: () => void;
   onActivate: () => void;
   onDeactivate: () => void;
   confirmDelete: boolean;
   onDeleteRequest: () => void;
   onDeleteConfirm: () => void;
   onDeleteCancel: () => void;
-}> = ({ model, isActive, engineNames, onActivate, onDeactivate, confirmDelete, onDeleteRequest, onDeleteConfirm, onDeleteCancel }) => {
+}> = ({ model, isActive, engineNames, onClick, onActivate, onDeactivate, confirmDelete, onDeleteRequest, onDeleteConfirm, onDeleteCancel }) => {
   return (
-    <div className={`px-4 py-3 ${isActive ? "bg-primary/5" : "hover:bg-muted/30"} transition-colors`}>
+    <div
+      className={`px-4 py-3 cursor-pointer ${isActive ? "bg-primary/5" : "hover:bg-muted/30"} transition-colors`}
+      onClick={onClick}
+    >
       <div className="flex items-start justify-between gap-3">
         {/* Left: model info */}
         <div className="flex-1 min-w-0">
@@ -131,6 +144,7 @@ const ModelRow: React.FC<{
                 Active
               </span>
             )}
+            <ChevronRight size={10} className="text-muted-foreground/40 ml-auto" />
           </div>
           {/* Metrics */}
           <div className="flex items-center gap-3 mb-1.5">
@@ -163,7 +177,7 @@ const ModelRow: React.FC<{
         </div>
 
         {/* Right: actions */}
-        <div className="flex items-center gap-1.5 shrink-0 pt-0.5">
+        <div className="flex items-center gap-1.5 shrink-0 pt-0.5" onClick={e => e.stopPropagation()}>
           {isActive ? (
             <button
               onClick={onDeactivate}
@@ -208,6 +222,221 @@ const ModelRow: React.FC<{
         </div>
       </div>
     </div>
+  );
+};
+
+// ---- Model Detail View ----
+const ModelDetailView: React.FC<{
+  modelId: number;
+  onBack: () => void;
+  onClose: () => void;
+}> = ({ modelId, onBack, onClose }) => {
+  const { models, engines, benchmarkDefinitions, activeModelId, activateModel, deactivateModel } = useApp();
+
+  const model = models.find(m => m.id === modelId);
+  if (!model) {
+    return (
+      <>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-panel-border">
+          <div className="flex items-center gap-2">
+            <button onClick={onBack} className="text-muted-foreground hover:text-foreground transition-colors">
+              <ChevronLeft size={16} />
+            </button>
+            <span className="font-semibold text-sm text-foreground">Model not found</span>
+          </div>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+          This model no longer exists.
+        </div>
+      </>
+    );
+  }
+
+  const isActive = model.id === activeModelId;
+  const linkedEngines = engines.filter(e => model.linked_engines.includes(e.id));
+  const trainingCollectionIds = model.training_collection_ids ?? [];
+
+  // Build training collection details: for each collection, show per-engine run counts
+  const trainingDetails = useMemo(() => {
+    if (trainingCollectionIds.length === 0) return [];
+
+    return trainingCollectionIds.map(collectionId => {
+      // Find the collection name from benchmark definitions
+      const defForCollection = benchmarkDefinitions.find(d => d.collection_id === collectionId);
+      const collectionName = defForCollection?.collection_name ?? `Collection #${collectionId}`;
+
+      // For each linked engine, find how many runs exist
+      const engineRuns = model.linked_engines.map(engineId => {
+        const def = benchmarkDefinitions.find(
+          d => d.collection_id === collectionId && d.engine_id === engineId
+        );
+        const engineEntry = engines.find(e => e.id === engineId);
+        return {
+          engineId,
+          engineName: engineEntry?.display_name ?? engineId,
+          engineType: engineEntry?.engine_type ?? "duckdb",
+          runCount: def?.run_count ?? 0,
+        };
+      });
+
+      const totalRuns = engineRuns.reduce((sum, er) => sum + er.runCount, 0);
+
+      return { collectionId, collectionName, engineRuns, totalRuns };
+    });
+  }, [trainingCollectionIds, benchmarkDefinitions, model.linked_engines, engines]);
+
+  const totalTrainingRuns = trainingDetails.reduce((sum, td) => sum + td.totalRuns, 0);
+
+  return (
+    <>
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-panel-border">
+        <div className="flex items-center gap-2">
+          <button onClick={onBack} className="text-muted-foreground hover:text-foreground transition-colors">
+            <ChevronLeft size={16} />
+          </button>
+          <Brain size={14} className="text-primary" />
+          <span className="font-semibold text-sm text-foreground">Model #{model.id}</span>
+          {isActive && (
+            <span className="flex items-center gap-0.5 px-1.5 py-0.5 bg-emerald-100 text-emerald-700 text-[9px] font-medium rounded-full">
+              <CheckCircle2 size={8} />
+              Active
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {isActive ? (
+            <button
+              onClick={() => deactivateModel(model.id)}
+              className="px-2 py-1 text-[10px] font-medium text-muted-foreground border border-border rounded hover:bg-muted/50 transition-colors"
+            >
+              Deactivate
+            </button>
+          ) : (
+            <button
+              onClick={() => activateModel(model.id)}
+              className="px-2 py-1 text-[10px] font-medium text-primary border border-primary/30 rounded hover:bg-primary/10 transition-colors"
+            >
+              Activate
+            </button>
+          )}
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors">
+            <X size={16} />
+          </button>
+        </div>
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto min-h-0 px-4 py-3 space-y-4">
+        {/* Metrics */}
+        <div>
+          <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Performance Metrics</span>
+          <div className="mt-1.5 grid grid-cols-3 gap-2">
+            <div className="px-3 py-2 bg-muted/30 rounded border border-border text-center">
+              <div className="text-[16px] font-semibold text-foreground">{model.latency_model.r_squared}</div>
+              <div className="text-[10px] text-muted-foreground">R² Score</div>
+            </div>
+            {model.latency_model.mae_ms != null && (
+              <div className="px-3 py-2 bg-muted/30 rounded border border-border text-center">
+                <div className="text-[16px] font-semibold text-foreground">{model.latency_model.mae_ms}<span className="text-[11px] font-normal text-muted-foreground">ms</span></div>
+                <div className="text-[10px] text-muted-foreground">MAE</div>
+              </div>
+            )}
+            {model.training_queries != null && (
+              <div className="px-3 py-2 bg-muted/30 rounded border border-border text-center">
+                <div className="text-[16px] font-semibold text-foreground">{model.training_queries}</div>
+                <div className="text-[10px] text-muted-foreground">Training Queries</div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Linked Engines */}
+        <div>
+          <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+            Linked Engines ({linkedEngines.length})
+          </span>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {linkedEngines.map(e => (
+              <span key={e.id} className="flex items-center gap-1 px-2 py-1 bg-muted/60 text-[11px] text-foreground rounded border border-border">
+                {e.engine_type === "duckdb" ? <HardDrive size={9} className="text-emerald-600" /> : <Cloud size={9} className="text-blue-600" />}
+                {e.display_name}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        {/* Training Data */}
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+              Training Data ({trainingDetails.length} collection{trainingDetails.length !== 1 ? "s" : ""})
+            </span>
+            {totalTrainingRuns > 0 && (
+              <span className="text-[10px] text-muted-foreground">
+                {totalTrainingRuns} total runs
+              </span>
+            )}
+          </div>
+          {trainingDetails.length === 0 ? (
+            <div className="mt-1.5 px-3 py-2 bg-muted/20 rounded border border-border text-[11px] text-muted-foreground/70">
+              No training collection data recorded for this model.
+            </div>
+          ) : (
+            <div className="mt-1.5 space-y-2">
+              {trainingDetails.map(td => (
+                <div key={td.collectionId} className="px-3 py-2.5 bg-muted/30 rounded border border-border">
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <Database size={10} className="text-primary/70" />
+                    <span className="text-[11px] font-medium text-foreground">{td.collectionName}</span>
+                    <span className="ml-auto text-[10px] text-muted-foreground">
+                      {td.totalRuns} run{td.totalRuns !== 1 ? "s" : ""} total
+                    </span>
+                  </div>
+                  {/* Per-engine run counts — mini table */}
+                  <div className="space-y-0.5">
+                    {td.engineRuns.map(er => (
+                      <div key={er.engineId} className="flex items-center gap-2 ml-1">
+                        {er.engineType === "duckdb" ? (
+                          <HardDrive size={8} className="text-emerald-600/70 shrink-0" />
+                        ) : (
+                          <Cloud size={8} className="text-blue-600/70 shrink-0" />
+                        )}
+                        <span className="text-[10px] text-muted-foreground flex-1">{er.engineName}</span>
+                        <div className="flex items-center gap-1.5">
+                          {/* Mini bar visualization */}
+                          <div className="w-16 h-1.5 bg-border rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full ${er.runCount > 0 ? "bg-primary/60" : "bg-transparent"}`}
+                              style={{ width: `${Math.min(er.runCount / 3 * 100, 100)}%` }}
+                            />
+                          </div>
+                          <span className={`text-[10px] tabular-nums w-8 text-right ${er.runCount === 0 ? "text-muted-foreground/40" : "text-foreground"}`}>
+                            {er.runCount} run{er.runCount !== 1 ? "s" : ""}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Metadata footer */}
+        <div className="text-[10px] text-muted-foreground/60 pt-1 border-t border-border space-y-0.5">
+          <div>Created: {new Date(model.created_at).toLocaleString()}</div>
+          {model.updated_at && (
+            <div>Updated: {new Date(model.updated_at).toLocaleString()}</div>
+          )}
+          <div>Model path: {model.latency_model.model_path}</div>
+        </div>
+      </div>
+    </>
   );
 };
 

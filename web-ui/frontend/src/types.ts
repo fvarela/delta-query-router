@@ -203,6 +203,7 @@ export interface Model {
   updated_at?: string;
   benchmark_count?: number;
   training_queries?: number;
+  training_collection_ids?: number[];
 }
 
 // --- Storage Latency Probes (ODQ-9) ---
