@@ -1,18 +1,18 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { mockApi } from "@/mocks/api";
 import { useApp } from "@/contexts/AppContext";
 import { isMockMode } from "@/lib/mockMode";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { StatusBadge } from "@/components/shared/StatusBadge";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
-import { MOCK_COLLECTIONS_WITH_QUERIES, MOCK_TPCDS_CONFIGURED } from "@/mocks/engineSetupData";
-import type { CollectionWithQueries, BenchmarkSummary, BenchmarkDetail } from "@/types";
-import { ArrowLeft, Plus, Trash2, X, Database, AlertTriangle, Lock } from "lucide-react";
+import { MOCK_COLLECTIONS_WITH_QUERIES, MOCK_TPCDS_CONFIGURED, MOCK_BENCHMARK_RUN_DETAILS, getRunsForDefinition } from "@/mocks/engineSetupData";
+import type { CollectionWithQueries, BenchmarkSummary, BenchmarkDetail, BenchmarkRunDetail } from "@/types";
+import { ArrowLeft, Plus, Trash2, X, Database, AlertTriangle, Lock, BarChart3, Clock, ExternalLink } from "lucide-react";
 
 export const CollectionsPanel: React.FC = () => {
   const {
     setEditorSql, setCollectionContext, refreshCollections, activeCollectionId, setActiveCollectionId,
-    engines, routingMode, benchmarkEngineIds,
+    engines, routingMode, benchmarkEngineIds, benchmarkDefinitions,
   } = useApp();
   const [collections, setCollections] = useState<CollectionWithQueries[]>([]);
   const [loading, setLoading] = useState(true);
@@ -29,11 +29,25 @@ export const CollectionsPanel: React.FC = () => {
   const [benchmarkDetail, setBenchmarkDetail] = useState<BenchmarkDetail | null>(null);
   const [runningBenchmark, setRunningBenchmark] = useState(false);
   const [benchmarkError, setBenchmarkError] = useState<string | null>(null);
+  const [runsDialog, setRunsDialog] = useState<{ definitionId: number; engineName: string } | null>(null);
 
   // TPC-DS dataset configured check
   const tpcdsConfigured = MOCK_TPCDS_CONFIGURED; // TODO: fetch from backend in non-mock mode
 
   const mock = isMockMode();
+
+  // Per-engine benchmark runs for the active collection
+  const collectionEngineRuns = useMemo(() => {
+    if (!activeCollection) return [];
+    const colDefs = benchmarkDefinitions.filter(d => d.collection_id === activeCollection.id);
+    if (colDefs.length === 0) return [];
+    return colDefs.map(def => ({
+      definitionId: def.id,
+      engineId: def.engine_id,
+      engineName: def.engine_display_name,
+      runCount: def.run_count,
+    }));
+  }, [activeCollection, benchmarkDefinitions]);
 
   // Sync activeCollectionId to context for "Add to Collection" button in CenterPanel
   const setActiveCollection = (c: CollectionWithQueries | null) => {
@@ -376,6 +390,34 @@ export const CollectionsPanel: React.FC = () => {
             </div>
           )}
 
+          {/* Runs by engine */}
+          {collectionEngineRuns.length > 0 && (
+            <div className="px-3 py-2 border-t border-panel-border">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <BarChart3 size={11} className="text-muted-foreground" />
+                <span className="text-[11px] font-semibold text-foreground">Runs by Engine</span>
+              </div>
+              {collectionEngineRuns.map(({ definitionId, engineName, runCount }) => (
+                <div
+                  key={definitionId}
+                  className="flex items-center justify-between px-2 py-1.5 hover:bg-muted/30 rounded text-[11px]"
+                >
+                  <span className="text-foreground font-medium truncate min-w-0">{engineName}</span>
+                  {runCount > 0 ? (
+                    <button
+                      onClick={() => setRunsDialog({ definitionId, engineName })}
+                      className="text-[10px] text-primary hover:underline shrink-0 ml-2"
+                    >
+                      {runCount} run{runCount !== 1 ? "s" : ""}
+                    </button>
+                  ) : (
+                    <span className="text-[10px] text-muted-foreground shrink-0 ml-2">No runs</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
           {benchmarks.length > 0 && (
             <div className="px-3 py-2 border-t border-panel-border">
               <h4 className="font-semibold mb-1 text-foreground">Benchmark History</h4>
@@ -401,6 +443,15 @@ export const CollectionsPanel: React.FC = () => {
             <ConfirmDialog open={deleteCollectionId !== null} title="Delete Collection" description={`Delete collection '${activeCollection.name}' and all its queries? This cannot be undone.`} onConfirm={handleDeleteCollection} onCancel={() => setDeleteCollectionId(null)} destructive />
             <ConfirmDialog open={deleteQueryId !== null} title="Remove Query" description="Remove this query from the collection?" onConfirm={handleDeleteQuery} onCancel={() => setDeleteQueryId(null)} destructive />
           </>
+        )}
+
+        {/* Runs dialog */}
+        {runsDialog && (
+          <RunsDialog
+            definitionId={runsDialog.definitionId}
+            engineName={runsDialog.engineName}
+            onClose={() => setRunsDialog(null)}
+          />
         )}
       </div>
     );
@@ -492,6 +543,208 @@ export const CollectionsPanel: React.FC = () => {
             No collections yet. Create one or configure TPC-DS datasets.
           </div>
         )}
+      </div>
+    </div>
+  );
+};
+
+// ---- Helpers ----
+
+const latencyColor = (ms: number) => {
+  if (ms < 100) return "text-status-success";
+  if (ms < 500) return "text-status-warning";
+  return "text-status-error";
+};
+
+// ---- Runs Dialog (run list + drill-down to run detail) ----
+
+const RunsDialog: React.FC<{
+  definitionId: number;
+  engineName: string;
+  onClose: () => void;
+}> = ({ definitionId, engineName, onClose }) => {
+  const runs = useMemo(() => getRunsForDefinition(definitionId), [definitionId]);
+  const [selectedRun, setSelectedRun] = useState<BenchmarkRunDetail | null>(null);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+      <div
+        className="bg-background border border-border rounded-lg shadow-xl max-w-lg w-full mx-4 max-h-[80vh] flex flex-col"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+          <div className="flex items-center gap-2">
+            {selectedRun && (
+              <button
+                onClick={() => setSelectedRun(null)}
+                className="text-muted-foreground hover:text-foreground p-0.5 rounded hover:bg-muted/50"
+                title="Back to run list"
+              >
+                <ArrowLeft size={14} />
+              </button>
+            )}
+            <div>
+              <h3 className="text-[13px] font-semibold text-foreground">
+                {selectedRun
+                  ? `Run #${selectedRun.id} — ${new Date(selectedRun.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`
+                  : `${engineName} — ${runs.length} run${runs.length !== 1 ? "s" : ""}`}
+              </h3>
+              <p className="text-[10px] text-muted-foreground mt-0.5">
+                {selectedRun
+                  ? `${selectedRun.results.length} queries`
+                  : "Click Details to view per-query results"}
+              </p>
+            </div>
+          </div>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground p-1 rounded hover:bg-muted/50">
+            <X size={14} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="overflow-y-auto flex-1">
+          {selectedRun ? (
+            <RunDetailView runDetail={selectedRun} />
+          ) : (
+            <RunListView runs={runs} onViewDetail={setSelectedRun} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ---- Run List View (inside dialog) ----
+
+const RunListView: React.FC<{
+  runs: BenchmarkRunDetail[];
+  onViewDetail: (run: BenchmarkRunDetail) => void;
+}> = ({ runs, onViewDetail }) => {
+  if (runs.length === 0) {
+    return (
+      <div className="px-4 py-6 text-center text-[11px] text-muted-foreground">
+        No run data available. Run a benchmark to see results.
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {runs.map((run, idx) => {
+        const totalMs = run.results.reduce((s, r) => s + (r.execution_time_ms ?? 0), 0);
+        const queryCount = run.results.length;
+        const date = new Date(run.created_at);
+        const dateStr = date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+        const timeStr = date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+        const warmup = run.warmups[0];
+
+        return (
+          <div
+            key={run.id}
+            className={`flex items-center gap-3 px-4 py-2.5 text-[11px] ${
+              idx > 0 ? "border-t border-border/50" : ""
+            } hover:bg-muted/30 transition-colors`}
+          >
+            <Clock size={11} className="text-muted-foreground shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-foreground font-medium">{dateStr}</span>
+                <span className="text-muted-foreground">{timeStr}</span>
+              </div>
+              <div className="flex items-center gap-3 mt-0.5 text-[10px] text-muted-foreground">
+                <span>Total: <span className="font-mono text-foreground">{totalMs >= 1000 ? `${(totalMs / 1000).toFixed(1)}s` : `${totalMs}ms`}</span></span>
+                <span>{queryCount} quer{queryCount !== 1 ? "ies" : "y"}</span>
+                {warmup && <span>Cold start: <span className={`font-mono ${latencyColor(warmup.cold_start_time_ms ?? 0)}`}>{warmup.cold_start_time_ms}ms</span></span>}
+              </div>
+            </div>
+            <button
+              onClick={() => onViewDetail(run)}
+              className="flex items-center gap-1 text-[10px] text-primary hover:underline shrink-0"
+            >
+              Details <ExternalLink size={9} />
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+// ---- Run Detail View (inside dialog) ----
+
+const RunDetailView: React.FC<{ runDetail: BenchmarkRunDetail }> = ({ runDetail }) => {
+  const warmup = runDetail.warmups[0];
+  const totalMs = runDetail.results.reduce((s, r) => s + (r.execution_time_ms ?? 0), 0);
+  const avgMs = Math.round(totalMs / runDetail.results.length);
+  const minMs = Math.min(...runDetail.results.map(r => r.execution_time_ms ?? Infinity));
+  const maxMs = Math.max(...runDetail.results.map(r => r.execution_time_ms ?? 0));
+
+  return (
+    <div className="px-4 py-3">
+      {/* Summary stats */}
+      <div className="flex items-center gap-4 mb-3 text-[11px]">
+        {warmup && (
+          <div className="flex items-center gap-1.5">
+            <span className="text-muted-foreground">Cold start:</span>
+            <span className={`font-mono ${latencyColor(warmup.cold_start_time_ms ?? 0)}`}>
+              {warmup.cold_start_time_ms}ms
+            </span>
+          </div>
+        )}
+        <div className="flex items-center gap-1.5">
+          <span className="text-muted-foreground">Total:</span>
+          <span className="font-mono text-foreground">
+            {totalMs >= 1000 ? `${(totalMs / 1000).toFixed(1)}s` : `${totalMs}ms`}
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="text-muted-foreground">Avg:</span>
+          <span className="font-mono text-foreground">{avgMs}ms</span>
+        </div>
+      </div>
+
+      {/* Per-query results table */}
+      <div className="border border-border rounded overflow-hidden">
+        <table className="w-full text-[10px]">
+          <thead>
+            <tr className="bg-muted">
+              <th className="text-left px-2 py-1.5 border-b border-border font-semibold">Query</th>
+              <th className="text-right px-2 py-1.5 border-b border-border font-semibold">Time (ms)</th>
+              <th className="text-left px-3 py-1.5 border-b border-border font-semibold w-[40%]">Distribution</th>
+            </tr>
+          </thead>
+          <tbody>
+            {runDetail.results.map((r, i) => {
+              const pct = maxMs > 0 ? ((r.execution_time_ms ?? 0) / maxMs) * 100 : 0;
+
+              return (
+                <tr key={i} className="even:bg-card/50">
+                  <td className="px-2 py-1 border-b border-border font-mono text-foreground">Q{r.query_id}</td>
+                  <td className={`px-2 py-1 border-b border-border text-right font-mono ${latencyColor(r.execution_time_ms ?? 0)}`}>
+                    {r.execution_time_ms ?? "ERR"}
+                  </td>
+                  <td className="px-3 py-1 border-b border-border">
+                    <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${(r.execution_time_ms ?? 0) < 100 ? "bg-status-success" : (r.execution_time_ms ?? 0) < 300 ? "bg-status-warning" : "bg-status-error"}`}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Bottom stats */}
+      <div className="flex items-center gap-4 mt-3 text-[10px] text-muted-foreground">
+        <span>Min: <span className="font-mono text-foreground">{minMs}ms</span></span>
+        <span>Max: <span className="font-mono text-foreground">{maxMs}ms</span></span>
+        <span>Avg: <span className="font-mono text-foreground">{avgMs}ms</span></span>
+        <span>Total: <span className="font-mono text-foreground">{totalMs >= 1000 ? `${(totalMs / 1000).toFixed(1)}s` : `${totalMs}ms`}</span></span>
       </div>
     </div>
   );

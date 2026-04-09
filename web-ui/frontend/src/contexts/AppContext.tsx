@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useMemo } from "react";
-import type { RunMode, RoutingMode, PanelMode, CenterPanelTab, LeftPanelTab, RoutingConfig, RoutingProfile, WorkspaceBinding, WarehouseMapping, DiscoveredWarehouse, QueryExecutionResult, Workspace, Warehouse, DatabricksSettings, EngineCatalogEntry, Model, RoutingSettings, StorageLatencyProbe, BenchmarkDefinition } from "../types";
+import type { RunMode, RoutingMode, PanelMode, LeftPanelTab, RoutingConfig, RoutingProfile, WorkspaceBinding, WarehouseMapping, DiscoveredWarehouse, QueryExecutionResult, Workspace, Warehouse, DatabricksSettings, EngineCatalogEntry, Model, RoutingSettings, StorageLatencyProbe, BenchmarkDefinition } from "../types";
 import { mockApi } from "@/mocks/api";
 import { api } from "@/lib/api";
 import { isMockMode } from "@/lib/mockMode";
@@ -82,24 +82,13 @@ interface AppContextType {
   runStorageProbes: () => Promise<void>;
   probesRunning: boolean;
 
-  // Center panel tab
-  centerTab: CenterPanelTab;
-  setCenterTab: (tab: CenterPanelTab) => void;
-
-  // Benchmark definitions (Phase 15 — Engine Setup view)
+  // Benchmark definitions (Phase 15 — Collections panel runs)
   benchmarkDefinitions: BenchmarkDefinition[];
   reloadBenchmarkDefinitions: () => Promise<void>;
 
-  // Left panel tab (lifted so center panel can switch it)
+  // Left panel tab (lifted so other panels can switch it)
   leftPanelTab: LeftPanelTab;
   setLeftPanelTab: (tab: LeftPanelTab) => void;
-
-  // Benchmark collection & engine selection (center panel ↔ left panel coordination)
-  selectedBenchmarkCollectionId: number | null;
-  setSelectedBenchmarkCollectionId: (id: number | null) => void;
-  selectedBenchmarkEngineIds: Set<string>;
-  toggleBenchmarkEngineId: (id: string) => void;
-  setBenchmarkEngineIds: (ids: Set<string>) => void;
 
   // Saved routing config (persistent settings — Round 8)
   savedRoutingConfig: RoutingConfig;
@@ -415,38 +404,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [reloadStorageProbes]);
 
-  // Center panel tab (Phase 15)
-  const [centerTab, setCenterTab] = useState<CenterPanelTab>("query");
-
   // Left panel tab (lifted so center panel can switch it)
   const [leftPanelTab, setLeftPanelTab] = useState<LeftPanelTab>("catalog");
-
-  // Benchmark collection & engine selection (center panel ↔ left panel coordination)
-  const [selectedBenchmarkCollectionId, setSelectedBenchmarkCollectionIdRaw] = useState<number | null>(null);
-  const [selectedBenchmarkEngineIds, setSelectedBenchmarkEngineIds] = useState<Set<string>>(new Set());
-
-  const setSelectedBenchmarkCollectionId = useCallback((id: number | null) => {
-    setSelectedBenchmarkCollectionIdRaw(id);
-    // Reset engine selection when collection changes
-    setSelectedBenchmarkEngineIds(new Set());
-    if (id !== null) {
-      // Switch left panel to collections and open the selected collection
-      setLeftPanelTab("collections");
-      setActiveCollectionId(id);
-    }
-  }, []);
-
-  const toggleBenchmarkEngineId = useCallback((id: string) => {
-    setSelectedBenchmarkEngineIds(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  }, []);
-
-  const setBenchmarkEngineIds = useCallback((ids: Set<string>) => {
-    setSelectedBenchmarkEngineIds(ids);
-  }, []);
 
   // Saved routing config (DB-persisted state — Round 8/9/12)
   // This represents the last configuration persisted to the backend database.
@@ -759,11 +718,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       activeModelId, setActiveModelId, models, reloadModels,
       routingSettings, updateRoutingSettings,
       storageProbes, reloadStorageProbes, runStorageProbes, probesRunning,
-      centerTab, setCenterTab,
       benchmarkDefinitions, reloadBenchmarkDefinitions,
       leftPanelTab, setLeftPanelTab,
-      selectedBenchmarkCollectionId, setSelectedBenchmarkCollectionId,
-      selectedBenchmarkEngineIds, toggleBenchmarkEngineId, setBenchmarkEngineIds,
       savedRoutingConfig, hasUnsavedChanges, saveRoutingConfig, rollbackRoutingConfig,
       routingProfiles, activeProfileId, activeProfileName,
       loadProfile, saveProfile, saveProfileAs, deleteProfile, setDefaultProfile, clearActiveProfile,

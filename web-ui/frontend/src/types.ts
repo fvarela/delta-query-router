@@ -300,9 +300,6 @@ export interface BenchmarkRunDetail extends BenchmarkRunSummary {
   results: BenchmarkResult[];
 }
 
-// --- Center panel view mode ---
-export type CenterPanelTab = "query" | "engine-setup";
-
 // --- Left panel tab ---
 export type LeftPanelTab = "catalog" | "collections";
 
