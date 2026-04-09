@@ -1,7 +1,8 @@
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { useApp } from "@/contexts/AppContext";
-import { Server, AlertTriangle, Brain, ChevronDown, Cloud, HardDrive, Unlink, CheckCircle2, FlaskConical } from "lucide-react";
+import { Server, AlertTriangle, Brain, ChevronDown, Cloud, HardDrive, Unlink, CheckCircle2, FlaskConical, Settings2 } from "lucide-react";
 import type { EngineCatalogEntry, Model, DiscoveredWarehouse, WarehouseMapping } from "@/types";
+import { ModelsDialog } from "./ModelsDialog";
 
 export const EnginesTable: React.FC = () => {
   const {
@@ -502,10 +503,38 @@ const SmartRoutingView: React.FC<{
   warehouseMappings: WarehouseMapping[];
   setWarehouseMapping: (engineId: string, warehouseId: string | null, warehouseName: string | null) => void;
 }> = ({ models, activeModelId, onModelChange, modelEngines, enabledEngineIds, toggleEngineEnabled, engines, hasConnectedWorkspace, workspaceSatisfied, discoveredWarehouses, warehouseMappings, setWarehouseMapping }) => {
+  const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
+  const [modelsDialogOpen, setModelsDialogOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown on click outside
+  useEffect(() => {
+    if (!modelDropdownOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setModelDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [modelDropdownOpen]);
+
+  const activeModel = models.find(m => m.id === activeModelId);
+
   if (models.length === 0) {
     return (
-      <div className="px-3 py-4 text-[11px] text-muted-foreground">
-        No trained models available. Run benchmarks and train a model first.
+      <div className="px-3 py-4">
+        <p className="text-[11px] text-muted-foreground mb-2">
+          No trained models available. Create a model from benchmark data to enable smart routing.
+        </p>
+        <button
+          onClick={() => setModelsDialogOpen(true)}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium text-primary border border-primary/30 rounded hover:bg-primary/10 transition-colors"
+        >
+          <Settings2 size={11} />
+          Manage Models...
+        </button>
+        <ModelsDialog open={modelsDialogOpen} onClose={() => setModelsDialogOpen(false)} />
       </div>
     );
   }
@@ -515,26 +544,60 @@ const SmartRoutingView: React.FC<{
 
   return (
     <div className="px-3 py-2 space-y-3">
-      {/* Model selector */}
+      {/* Model selector — custom dropdown with "Manage Models..." action */}
       <div>
         <label className="block text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1.5">
           <Brain size={10} className="inline mr-1" />
           Model
         </label>
-        <div className="relative">
-          <select
-            value={activeModelId ?? ""}
-            onChange={e => onModelChange(Number(e.target.value))}
-            className="w-full appearance-none bg-card border border-border rounded px-2 py-1.5 text-[11px] font-medium text-foreground pr-7 cursor-pointer hover:bg-muted/50 transition-colors"
+        <div className="relative" ref={dropdownRef}>
+          <button
+            onClick={() => setModelDropdownOpen(!modelDropdownOpen)}
+            className="w-full flex items-center justify-between bg-card border border-border rounded px-2 py-1.5 text-[11px] font-medium text-foreground cursor-pointer hover:bg-muted/50 transition-colors"
           >
-            <option value="" disabled>Select a model...</option>
-            {models.map(m => (
-              <option key={m.id} value={m.id}>
-                Model #{m.id} — R²={m.latency_model.r_squared} ({m.linked_engines.length} engines)
-              </option>
-            ))}
-          </select>
-          <ChevronDown size={12} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+            <span className="truncate">
+              {activeModel
+                ? `Model #${activeModel.id} — R²=${activeModel.latency_model.r_squared} (${activeModel.linked_engines.length} engines)`
+                : "Select a model..."
+              }
+            </span>
+            <ChevronDown size={12} className={`shrink-0 ml-1 text-muted-foreground transition-transform ${modelDropdownOpen ? "rotate-180" : ""}`} />
+          </button>
+
+          {modelDropdownOpen && (
+            <div className="absolute z-20 top-full left-0 right-0 mt-0.5 bg-popover border border-border rounded shadow-md overflow-hidden">
+              {/* Model options */}
+              {models.map(m => (
+                <button
+                  key={m.id}
+                  onClick={() => { onModelChange(m.id); setModelDropdownOpen(false); }}
+                  className={`w-full flex items-center gap-2 px-2 py-1.5 text-left text-[11px] transition-colors hover:bg-muted/50 ${
+                    m.id === activeModelId ? "bg-primary/5" : ""
+                  }`}
+                >
+                  <span className="font-medium text-foreground truncate">
+                    Model #{m.id} — R²={m.latency_model.r_squared}
+                  </span>
+                  <span className="ml-auto text-[10px] text-muted-foreground shrink-0">
+                    {m.linked_engines.length} engines
+                  </span>
+                  {m.id === activeModelId && (
+                    <CheckCircle2 size={10} className="text-primary shrink-0" />
+                  )}
+                </button>
+              ))}
+              {/* Separator + Manage action */}
+              <div className="border-t border-border">
+                <button
+                  onClick={() => { setModelDropdownOpen(false); setModelsDialogOpen(true); }}
+                  className="w-full flex items-center gap-1.5 px-2 py-1.5 text-left text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+                >
+                  <Settings2 size={10} />
+                  Manage Models...
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -625,6 +688,8 @@ const SmartRoutingView: React.FC<{
           </p>
         </div>
       )}
+
+      <ModelsDialog open={modelsDialogOpen} onClose={() => setModelsDialogOpen(false)} />
     </div>
   );
 };

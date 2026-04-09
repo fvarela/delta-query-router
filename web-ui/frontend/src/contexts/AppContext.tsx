@@ -71,6 +71,10 @@ interface AppContextType {
   setActiveModelId: (id: number | null) => void;
   models: Model[];
   reloadModels: () => Promise<void>;
+  deleteModel: (id: number) => void;
+  activateModel: (id: number) => void;
+  deactivateModel: (id: number) => void;
+  createModel: (linkedEngines: string[], trainingCollectionIds: number[]) => Model;
 
   // Routing settings (ODQ-10)
   routingSettings: RoutingSettings;
@@ -372,6 +376,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const active = m.find(x => x.is_active);
     if (active) setActiveModelId(active.id);
   }, [mock]);
+
+  // Model CRUD operations (mock-only for now)
+  const deleteModel = useCallback((id: number) => {
+    setModels(prev => prev.filter(m => m.id !== id));
+    if (activeModelId === id) setActiveModelId(null);
+  }, [activeModelId]);
+
+  const activateModel = useCallback((id: number) => {
+    setModels(prev => prev.map(m => ({
+      ...m,
+      is_active: m.id === id,
+    })));
+    setActiveModelId(id);
+  }, []);
+
+  const deactivateModel = useCallback((id: number) => {
+    setModels(prev => prev.map(m =>
+      m.id === id ? { ...m, is_active: false } : m
+    ));
+    if (activeModelId === id) setActiveModelId(null);
+  }, [activeModelId]);
 
   // Routing settings (ODQ-10)
   const [routingSettings, setRoutingSettings] = useState<RoutingSettings>({ fit_weight: 0.5, cost_weight: 0.5, running_bonus_duckdb: 0.05, running_bonus_databricks: 0.15 });
@@ -680,6 +705,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // TODO: fetch from real API when backend is ready
   }, [mock]);
 
+  // createModel — declared here because it depends on benchmarkDefinitions (state ordering matters in React)
+  const createModel = useCallback((linkedEngines: string[], trainingCollectionIds: number[]): Model => {
+    const newId = Math.max(0, ...models.map(m => m.id)) + 1;
+    // Compute training query count from benchmark definitions
+    const relevantDefs = benchmarkDefinitions.filter(d =>
+      trainingCollectionIds.includes(d.collection_id) && linkedEngines.includes(d.engine_id)
+    );
+    // Per-collection, runs used = min across engines. Total queries = sum of (min_runs * queries_per_collection).
+    // For mock, approximate: sum run_counts for relevant defs
+    const totalRuns = relevantDefs.reduce((sum, d) => sum + d.run_count, 0);
+    const newModel: Model = {
+      id: newId,
+      linked_engines: linkedEngines,
+      latency_model: {
+        r_squared: +(0.8 + Math.random() * 0.15).toFixed(2),
+        mae_ms: +(8 + Math.random() * 15).toFixed(1),
+        model_path: `/models/latency_v${newId}.joblib`,
+      },
+      is_active: false,
+      created_at: new Date().toISOString(),
+      benchmark_count: relevantDefs.length,
+      training_queries: totalRuns * 10, // approximate: 10 queries per run
+    };
+    setModels(prev => [...prev, newModel]);
+    return newModel;
+  }, [models, benchmarkDefinitions]);
+
   // Re-load engines when workspace connection changes (backend returns both DuckDB + Databricks)
   useEffect(() => {
     reloadEngines();
@@ -715,7 +767,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       benchmarkEngineIds, toggleBenchmarkEngine, setBenchmarkEngines,
       runMode,
       panelMode, setPanelMode,
-      activeModelId, setActiveModelId, models, reloadModels,
+      activeModelId, setActiveModelId, models, reloadModels, deleteModel, activateModel, deactivateModel, createModel,
       routingSettings, updateRoutingSettings,
       storageProbes, reloadStorageProbes, runStorageProbes, probesRunning,
       benchmarkDefinitions, reloadBenchmarkDefinitions,
