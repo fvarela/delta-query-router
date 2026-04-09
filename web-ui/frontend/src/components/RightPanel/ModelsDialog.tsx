@@ -162,13 +162,18 @@ const ModelRow: React.FC<{
               </span>
             )}
           </div>
-          {/* Engines */}
+          {/* Engines (collapse if > 3) */}
           <div className="flex flex-wrap gap-1">
-            {engineNames.map((name, i) => (
+            {engineNames.slice(0, 3).map((name, i) => (
               <span key={i} className="px-1.5 py-0.5 bg-muted/60 text-[10px] text-muted-foreground rounded">
                 {name}
               </span>
             ))}
+            {engineNames.length > 3 && (
+              <span className="px-1.5 py-0.5 bg-muted/40 text-[10px] text-muted-foreground/70 rounded">
+                +{engineNames.length - 3} more
+              </span>
+            )}
           </div>
           {/* Created date */}
           <div className="mt-1 text-[10px] text-muted-foreground/60">
@@ -197,17 +202,18 @@ const ModelRow: React.FC<{
           )}
           {confirmDelete ? (
             <div className="flex items-center gap-1">
+              <span className="text-[10px] text-red-600 font-medium">Delete #{model.id}?</span>
               <button
                 onClick={onDeleteConfirm}
-                className="px-1.5 py-1 text-[10px] font-medium text-red-600 hover:text-red-700 transition-colors"
+                className="px-1.5 py-1 text-[10px] font-medium text-red-600 border border-red-300 rounded hover:bg-red-50 transition-colors"
               >
-                Confirm
+                Yes
               </button>
               <button
                 onClick={onDeleteCancel}
                 className="px-1.5 py-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
               >
-                Cancel
+                No
               </button>
             </div>
           ) : (
@@ -446,7 +452,7 @@ const NewModelWizard: React.FC<{
   onBack: () => void;
   onClose: () => void;
 }> = ({ onBack, onClose }) => {
-  const { engines, benchmarkDefinitions, createModel, activateModel } = useApp();
+  const { engines, benchmarkDefinitions, createModel } = useApp();
   const [step, setStep] = useState<WizardStep>(1);
   const [selectedEngines, setSelectedEngines] = useState<Set<string>>(new Set());
   const [selectedCollections, setSelectedCollections] = useState<Set<number>>(new Set());
@@ -525,9 +531,8 @@ const NewModelWizard: React.FC<{
   const canProceedStep2 = selectedCollections.size >= 1;
 
   const handleCreate = () => {
-    const model = createModel([...selectedEngines], [...selectedCollections]);
-    activateModel(model.id);
-    onBack(); // Return to model list
+    createModel([...selectedEngines], [...selectedCollections]);
+    onBack(); // Return to model list — user can activate manually
   };
 
   // Total effective training runs
@@ -692,7 +697,7 @@ const Step1Engines: React.FC<{
                 />
                 <span className="text-[11px] font-medium text-foreground">{e.display_name}</span>
                 <span className="ml-auto text-[10px] text-muted-foreground">
-                  {getDefCount(e.id)} collections, {getTotalRuns(e.id)} runs
+                  {getDefCount(e.id)} collection{getDefCount(e.id) !== 1 ? "s" : ""}, {getTotalRuns(e.id)} run{getTotalRuns(e.id) !== 1 ? "s" : ""}
                 </span>
               </label>
             ))}
@@ -723,7 +728,7 @@ const Step1Engines: React.FC<{
                 />
                 <span className="text-[11px] font-medium text-foreground">{e.display_name}</span>
                 <span className="ml-auto text-[10px] text-muted-foreground">
-                  {getDefCount(e.id)} collections, {getTotalRuns(e.id)} runs
+                  {getDefCount(e.id)} collection{getDefCount(e.id) !== 1 ? "s" : ""}, {getTotalRuns(e.id)} run{getTotalRuns(e.id) !== 1 ? "s" : ""}
                 </span>
               </label>
             ))}
@@ -876,7 +881,7 @@ const Step3Review: React.FC<{
         </div>
       </div>
 
-      {/* Collections */}
+      {/* Collections — aligned annotation format with Step 2 (UX #24) */}
       <div>
         <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
           Training Data ({selectedCollectionInfos.length} collection{selectedCollectionInfos.length !== 1 ? "s" : ""})
@@ -893,8 +898,10 @@ const Step3Review: React.FC<{
               <div className="mt-1 flex flex-wrap gap-x-3">
                 {info.runsByEngine.map(re => (
                   <span key={re.engineId} className="text-[10px] text-muted-foreground">
-                    {re.engineName}: {re.runCount} available
-                    {re.runCount > info.effectiveRuns && ` (using ${info.effectiveRuns})`}
+                    {re.engineName}: {re.runCount} run{re.runCount !== 1 ? "s" : ""}
+                    {re.runCount > info.effectiveRuns && (
+                      <span className="text-muted-foreground/50"> (using latest {info.effectiveRuns})</span>
+                    )}
                   </span>
                 ))}
               </div>

@@ -2,6 +2,7 @@ import React, { useState, useCallback, useEffect, useRef } from "react";
 import { useApp } from "@/contexts/AppContext";
 import { mockApi } from "@/mocks/api";
 import { api } from "@/lib/api";
+import { isMockMode } from "@/lib/mockMode";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { StatusBadge } from "@/components/shared/StatusBadge";
 import type { QueryExecutionResult, LogEntry, RoutingLogEvent } from "@/types";
@@ -58,16 +59,22 @@ export const CenterPanel: React.FC = () => {
     }
   };
 
-  /* load query history */
+  /* load query history — use mock API in mock mode (UX #30) */
+  const mock = isMockMode();
   const loadLogs = useCallback(async () => {
     try {
-      const params = logFilter !== "all" ? { engine: logFilter } : undefined;
-      const l = await api.get<LogEntry[]>("/api/logs", params);
-      setLogs(l);
+      if (mock) {
+        const l = await mockApi.getQueryLogs(logFilter !== "all" ? logFilter : undefined);
+        setLogs(l);
+      } else {
+        const params = logFilter !== "all" ? { engine: logFilter } : undefined;
+        const l = await api.get<LogEntry[]>("/api/logs", params);
+        setLogs(l);
+      }
     } catch {
       // silently fail — user sees stale or empty history
     }
-  }, [logFilter]);
+  }, [logFilter, mock]);
 
   // Load history on mount and when filter changes
   useEffect(() => { loadLogs(); }, [loadLogs]);
@@ -85,8 +92,14 @@ export const CenterPanel: React.FC = () => {
         if (engine) routing_mode = engine.engine_type === "duckdb" ? "duckdb" : "databricks";
       }
 
-      const result = await api.post<QueryExecutionResult>("/api/query", { sql: editorSql, routing_mode });
-      setQueryResult(result);
+      // UX #28: Route through mock API in mock mode
+      if (mock) {
+        const result = await mockApi.executeQuery(editorSql, routing_mode);
+        setQueryResult(result);
+      } else {
+        const result = await api.post<QueryExecutionResult>("/api/query", { sql: editorSql, routing_mode });
+        setQueryResult(result);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Query execution failed";
       setQueryError(message);

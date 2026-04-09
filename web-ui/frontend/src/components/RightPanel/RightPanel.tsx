@@ -14,6 +14,7 @@ export const RightPanel: React.FC = () => {
   } = useApp();
 
   const isBenchmark = routingMode === "benchmark";
+  const isSingle = routingMode === "single";
 
   const [saveAsOpen, setSaveAsOpen] = useState(false);
   const [saveAsName, setSaveAsName] = useState("");
@@ -36,8 +37,8 @@ export const RightPanel: React.FC = () => {
       <div className="flex-1 overflow-y-auto">
         <EnginesTable />
 
-        {/* Routing Priority — hidden in benchmark mode */}
-        {!isBenchmark && (
+        {/* Routing Priority — hidden in benchmark and single engine modes (UX #1) */}
+        {!isBenchmark && !isSingle && (
         <div className="px-3 py-2.5 border-t border-panel-border">
           <div className="flex items-center justify-between mb-2">
             <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Routing Priority</span>

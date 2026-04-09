@@ -11,6 +11,8 @@ export const ProfileSelector: React.FC = () => {
 
   const [isOpen, setIsOpen] = useState(false);
   const [filterWorkspace, setFilterWorkspace] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  const [deletedMessage, setDeletedMessage] = useState<string | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   // Close dropdown when clicking outside
@@ -118,6 +120,7 @@ export const ProfileSelector: React.FC = () => {
                   onClick={() => {
                     loadProfile(profile.id);
                     setIsOpen(false);
+                    setConfirmDeleteId(null);
                   }}
                 >
                   {/* Default star */}
@@ -149,25 +152,55 @@ export const ProfileSelector: React.FC = () => {
                     )}
                   </div>
 
-                  {/* Mode badge */}
+                  {/* Mode badge — full labels (UX #8) */}
                   <span className="text-[9px] text-muted-foreground px-1 py-0.5 rounded bg-muted/50 shrink-0">
-                    {profile.config.routingMode === "single" ? "Single" : "Smart"}
+                    {profile.config.routingMode === "single" ? "Single Engine" : "Smart Routing"}
                   </span>
 
-                  {/* Delete button */}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      deleteProfile(profile.id);
-                    }}
-                    className="shrink-0 text-transparent group-hover:text-muted-foreground/50 hover:!text-destructive transition-colors"
-                    title="Delete profile"
-                  >
-                    <Trash2 size={10} />
-                  </button>
+                  {/* Delete button — with spacing (UX #9) and confirmation (UX #13) */}
+                  {confirmDeleteId === profile.id ? (
+                    <div className="flex items-center gap-1 ml-1 shrink-0" onClick={e => e.stopPropagation()}>
+                      <button
+                        onClick={() => {
+                          const name = profile.name;
+                          deleteProfile(profile.id);
+                          setConfirmDeleteId(null);
+                          setDeletedMessage(`"${name}" deleted`);
+                          setTimeout(() => setDeletedMessage(null), 2500);
+                        }}
+                        className="px-1.5 py-0.5 text-[9px] font-medium text-red-600 hover:text-red-700 transition-colors"
+                      >
+                        Delete
+                      </button>
+                      <button
+                        onClick={() => setConfirmDeleteId(null)}
+                        className="px-1 py-0.5 text-[9px] text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmDeleteId(profile.id);
+                      }}
+                      className="shrink-0 ml-1 text-transparent group-hover:text-muted-foreground/50 hover:!text-destructive transition-colors"
+                      title="Delete profile"
+                    >
+                      <Trash2 size={10} />
+                    </button>
+                  )}
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {/* Deletion notification (UX #14) */}
+        {deletedMessage && (
+          <div className="mt-1 text-[10px] text-amber-600 font-medium animate-pulse">
+            {deletedMessage}
           </div>
         )}
       </div>

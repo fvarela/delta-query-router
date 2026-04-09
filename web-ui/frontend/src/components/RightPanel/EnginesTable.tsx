@@ -339,13 +339,13 @@ const DatabricksEngineRow: React.FC<{
   const [warehouseDropdownOpen, setWarehouseDropdownOpen] = useState(false);
 
   if (!hasWorkspace) {
-    // No workspace connected — show warning
+    // No workspace connected — show warning with unchecked disabled checkbox (UX #31)
     return (
       <div className="flex items-center gap-2 px-2 py-1.5 rounded opacity-60">
         {selectionMode === "radio" ? (
           <input type="radio" name="single-engine" disabled className="accent-primary" />
         ) : (
-          <input type="checkbox" checked={isEnabled ?? false} disabled className="accent-primary" />
+          <input type="checkbox" checked={false} disabled className="accent-primary" />
         )}
         <span className="flex items-center gap-1.5 text-[11px]">
           <AlertTriangle size={10} className="text-amber-500 shrink-0" />
@@ -685,6 +685,16 @@ const SmartRoutingView: React.FC<{
 
           <p className="text-[10px] text-muted-foreground">
             Only engines supported by the selected model are shown. Uncheck to exclude from routing.
+          </p>
+        </div>
+      )}
+
+      {/* UX #26: Help text when no model is active but models exist */}
+      {!activeModelId && models.length > 0 && (
+        <div className="px-3 py-3 text-[11px] text-muted-foreground">
+          <Brain size={14} className="mx-auto mb-1.5 text-muted-foreground/40" />
+          <p className="text-center">
+            Select a model above to configure engine routing.
           </p>
         </div>
       )}

@@ -320,18 +320,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setBenchmarkEngineIdsRaw(new Set(ids));
   }, []);
 
-  // When switching TO benchmark mode, clear active profile (profiles don't apply).
-  // When switching FROM benchmark mode, clear benchmark engine selection.
-  const setRoutingMode = useCallback((mode: RoutingMode) => {
-    if (mode === "benchmark") {
-      setActiveProfileId(null);
-    }
-    if (routingMode === "benchmark" && mode !== "benchmark") {
-      setBenchmarkEngineIdsRaw(new Set());
-    }
-    setRoutingModeRaw(mode);
-  }, [routingMode]);
-
   // Run mode — derived from routingMode for backward compat
   const runMode: RunMode = routingMode === "smart" ? "multi" : "single";
 
@@ -470,6 +458,51 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (activeProfileId === null) return null;
     return routingProfiles.find(p => p.id === activeProfileId)?.name ?? null;
   }, [activeProfileId, routingProfiles]);
+
+  // UX #5/#7: Remember the profile that was active before entering benchmark mode, so we can restore it when leaving
+  // MUST be declared after activeProfileId (uses it in setRoutingMode callback)
+  const [preBenchmarkProfileId, setPreBenchmarkProfileId] = useState<number | null>(null);
+
+  // When switching TO benchmark mode, save active profile and clear it (profiles don't apply).
+  // When switching FROM benchmark mode, restore the saved profile and clear benchmark engine selection.
+  const setRoutingMode = useCallback((mode: RoutingMode) => {
+    if (mode === "benchmark") {
+      // Save profile before entering benchmark mode (UX #5/#7)
+      setPreBenchmarkProfileId(activeProfileId);
+      setActiveProfileId(null);
+    }
+    if (routingMode === "benchmark" && mode !== "benchmark") {
+      setBenchmarkEngineIdsRaw(new Set());
+      // Restore profile when leaving benchmark mode (UX #5/#7)
+      if (preBenchmarkProfileId !== null) {
+        // Verify the profile still exists before restoring
+        const profileExists = routingProfiles.some(p => p.id === preBenchmarkProfileId);
+        if (profileExists) {
+          // We use setTimeout to defer loadProfile until after mode has changed
+          const savedId = preBenchmarkProfileId;
+          setTimeout(() => {
+            const profile = routingProfiles.find(p => p.id === savedId);
+            if (profile) {
+              setActiveProfileId(savedId);
+              setSavedRoutingConfig({ ...profile.config });
+              setSingleEngineId(profile.config.singleEngineId);
+              setActiveModelId(profile.config.activeModelId);
+              setEnabledEngineIds(new Set(profile.config.enabledEngineIds));
+              setRoutingSettings(prev => ({
+                ...prev,
+                cost_weight: profile.config.routingPriority,
+                fit_weight: 1 - profile.config.routingPriority,
+              }));
+              setProfileWorkspaceBinding(profile.config.workspaceBinding ?? null);
+              setWarehouseMappings(profile.config.warehouseMappings ?? []);
+            }
+          }, 0);
+        }
+        setPreBenchmarkProfileId(null);
+      }
+    }
+    setRoutingModeRaw(mode);
+  }, [routingMode, activeProfileId, preBenchmarkProfileId, routingProfiles]);
 
   // Workspace binding for current profile (Round 16)
   // MUST be declared before loadProfile/saveProfile/hasUnsavedChanges which reference it
