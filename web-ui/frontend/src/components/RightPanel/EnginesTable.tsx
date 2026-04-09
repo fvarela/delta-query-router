@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { useApp } from "@/contexts/AppContext";
-import { Server, AlertTriangle, Brain, ChevronDown, Settings2, Cloud, HardDrive, Unlink, CheckCircle2 } from "lucide-react";
+import { Server, AlertTriangle, Brain, ChevronDown, Cloud, HardDrive, Unlink, CheckCircle2 } from "lucide-react";
 import type { EngineCatalogEntry, Model, DiscoveredWarehouse, WarehouseMapping } from "@/types";
 
 export const EnginesTable: React.FC = () => {
@@ -10,26 +10,16 @@ export const EnginesTable: React.FC = () => {
     singleEngineId, setSingleEngineId,
     activeModelId, setActiveModelId, models,
     enabledEngineIds, toggleEngineEnabled, setAllEnginesEnabled,
-    setEngineCatalogOpen,
     profileWorkspaceBinding,
     discoveredWarehouses,
     warehouseMappings, setWarehouseMapping,
     unlinkProfileWorkspace,
   } = useApp();
 
-  // Enabled engines (from catalog) for routing
-  const enabledCatalogEngines = engines.filter(e => e.enabled);
-
-  // Running engines for single-engine mode — enabled engines that are running
-  // DuckDB: check runtime_state. Databricks: always "available" if workspace is bound.
-  const availableEngines = enabledCatalogEngines.filter(e => {
-    if (e.engine_type === "duckdb") return e.runtime_state === "running";
-    if (e.engine_type === "databricks_sql") return true; // show all enabled Databricks, workspace status shown inline
-    return false;
-  });
-
-  const duckdbEngines = availableEngines.filter(e => e.engine_type === "duckdb");
-  const databricksEngines = enabledCatalogEngines.filter(e => e.engine_type === "databricks_sql");
+  // All engines grouped by type for single-engine mode
+  // DuckDB: only show running engines. Databricks: show all (workspace status shown inline).
+  const duckdbEngines = engines.filter(e => e.engine_type === "duckdb" && e.runtime_state === "running");
+  const databricksEngines = engines.filter(e => e.engine_type === "databricks_sql");
 
   // Active model for smart routing mode
   const activeModel = models.find(m => m.id === activeModelId);
@@ -58,14 +48,6 @@ export const EnginesTable: React.FC = () => {
       <div className="px-3 py-1.5 border-b border-panel-border flex items-center gap-2">
         <Server size={12} className="text-primary shrink-0" />
         <span className="font-semibold text-foreground">Routing Settings</span>
-        <button
-          onClick={() => setEngineCatalogOpen(true)}
-          className="ml-auto flex items-center gap-1 text-[10px] text-primary hover:text-primary/80 transition-colors"
-          title="Open engine catalog"
-        >
-          <Settings2 size={10} />
-          Manage Engines
-        </button>
       </div>
 
       {/* Workspace dependency warning — shown when profile requires a workspace that isn't connected */}
@@ -407,9 +389,6 @@ const DatabricksEngineRow: React.FC<{
           />
         )}
         <span className="flex items-center gap-1.5 text-[11px] flex-1 min-w-0">
-          <span className={`inline-block w-[5px] h-[5px] rounded-full shrink-0 ${
-            mappedWarehouse?.state === "RUNNING" ? "bg-status-success" : "bg-muted-foreground/40"
-          }`} />
           <span className="font-medium text-foreground">{engine.display_name}</span>
         </span>
         <span className="text-[10px] text-muted-foreground shrink-0">
@@ -618,7 +597,7 @@ const SmartRoutingView: React.FC<{
           )}
 
           <p className="text-[10px] text-muted-foreground">
-            Uncheck engines to exclude them from routing. The model stays valid.
+            Only engines supported by the selected model are shown. Uncheck to exclude from routing.
           </p>
         </div>
       )}

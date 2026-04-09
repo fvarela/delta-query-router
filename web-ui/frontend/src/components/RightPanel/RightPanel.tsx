@@ -3,7 +3,6 @@ import { useApp } from "@/contexts/AppContext";
 import { CurrentSettings } from "./CurrentSettings";
 import { ProfileSelector } from "./ProfileSelector";
 import { EnginesTable } from "./EnginesTable";
-import { EngineCatalogDialog } from "./EngineCatalogDialog";
 import { Save, SaveAll, Undo2 } from "lucide-react";
 
 export const RightPanel: React.FC = () => {
@@ -11,7 +10,6 @@ export const RightPanel: React.FC = () => {
     routingSettings, updateRoutingSettings,
     hasUnsavedChanges, saveRoutingConfig, rollbackRoutingConfig,
     activeProfileId, saveProfileAs,
-    engineCatalogOpen, setEngineCatalogOpen,
   } = useApp();
 
   const [saveAsOpen, setSaveAsOpen] = useState(false);
@@ -131,9 +129,6 @@ export const RightPanel: React.FC = () => {
           )}
         </div>
       )}
-
-      {/* Engine Catalog Dialog (Round 16) */}
-      <EngineCatalogDialog open={engineCatalogOpen} onClose={() => setEngineCatalogOpen(false)} />
 
     </div>
   );

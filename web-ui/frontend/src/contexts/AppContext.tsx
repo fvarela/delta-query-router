@@ -3,7 +3,7 @@ import type { RunMode, RoutingMode, PanelMode, CenterPanelTab, LeftPanelTab, Rou
 import { mockApi } from "@/mocks/api";
 import { api } from "@/lib/api";
 import { isMockMode } from "@/lib/mockMode";
-import { MOCK_ENGINES, MOCK_MODELS, MOCK_BENCHMARK_DEFINITIONS, MOCK_ROUTING_PROFILES, MOCK_DISCOVERED_WAREHOUSES, MOCK_WORKSPACES, computeProfileUsageCounts } from "@/mocks/engineSetupData";
+import { MOCK_ENGINES, MOCK_MODELS, MOCK_BENCHMARK_DEFINITIONS, MOCK_ROUTING_PROFILES, MOCK_DISCOVERED_WAREHOUSES, MOCK_WORKSPACES } from "@/mocks/engineSetupData";
 
 // ---- App Context ----
 interface AppContextType {
@@ -125,14 +125,6 @@ interface AppContextType {
   // Discovered warehouses from the bound workspace (Round 16)
   discoveredWarehouses: DiscoveredWarehouse[];
   reloadDiscoveredWarehouses: () => Promise<void>;
-
-  // Engine catalog dialog (Round 16)
-  engineCatalogOpen: boolean;
-  setEngineCatalogOpen: (open: boolean) => void;
-  toggleCatalogEngine: (engineId: string, field: "enabled" | "scale_policy", value: any) => void;
-
-  // Profile usage counts for engines (Round 16 — computed from all profiles)
-  engineProfileCounts: Record<string, number>;
 }
 
 const AppContext = createContext<AppContextType>(null!);
@@ -539,20 +531,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [mock]);
 
-  // Engine catalog dialog (Round 16)
-  const [engineCatalogOpen, setEngineCatalogOpen] = useState(false);
-
-  const toggleCatalogEngine = useCallback((engineId: string, field: "enabled" | "scale_policy", value: any) => {
-    setEngines(prev => prev.map(e =>
-      e.id === engineId ? { ...e, [field]: value } : e
-    ));
-  }, []);
-
-  // Profile usage counts (Round 16 — derived from all profiles)
-  const engineProfileCounts = useMemo(() => {
-    return computeProfileUsageCounts(routingProfiles);
-  }, [routingProfiles]);
-
   // Load a profile — apply its config to all working state
   const loadProfile = useCallback((id: number) => {
     const profile = routingProfiles.find(p => p.id === id);
@@ -756,8 +734,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       profileWorkspaceBinding, unlinkProfileWorkspace,
       warehouseMappings, setWarehouseMapping,
       discoveredWarehouses, reloadDiscoveredWarehouses,
-      engineCatalogOpen, setEngineCatalogOpen, toggleCatalogEngine,
-      engineProfileCounts,
     }}>
       {children}
     </AppContext.Provider>
