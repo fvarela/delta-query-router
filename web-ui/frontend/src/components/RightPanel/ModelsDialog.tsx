@@ -403,33 +403,24 @@ const ModelDetailView: React.FC<{
                       {td.effectiveRuns} run{td.effectiveRuns !== 1 ? "s" : ""} per engine
                     </span>
                   </div>
-                  {/* Per-engine run counts */}
+                  {/* Per-engine: show only the runs that were used (effectiveRuns), not raw available count */}
                   <div className="space-y-0.5">
-                    {td.engineRuns.map(er => (
-                      <div key={er.engineId} className="flex items-center gap-2 ml-1">
-                        {er.engineType === "duckdb" ? (
-                          <HardDrive size={8} className="text-emerald-600/70 shrink-0" />
-                        ) : (
-                          <Cloud size={8} className="text-blue-600/70 shrink-0" />
-                        )}
-                        <span className="text-[10px] text-muted-foreground flex-1">{er.engineName}</span>
-                        <div className="flex items-center gap-1.5">
-                          {/* Mini bar visualization — capped at effectiveRuns */}
-                          <div className="w-16 h-1.5 bg-border rounded-full overflow-hidden">
-                            <div
-                              className="h-full rounded-full bg-primary/60"
-                              style={{ width: `${Math.min(Math.min(er.runCount, td.effectiveRuns) / td.effectiveRuns * 100, 100)}%` }}
-                            />
-                          </div>
+                    {td.engineRuns.map(er => {
+                      const usedRuns = Math.min(er.runCount, td.effectiveRuns);
+                      return (
+                        <div key={er.engineId} className="flex items-center gap-2 ml-1">
+                          {er.engineType === "duckdb" ? (
+                            <HardDrive size={8} className="text-emerald-600/70 shrink-0" />
+                          ) : (
+                            <Cloud size={8} className="text-blue-600/70 shrink-0" />
+                          )}
+                          <span className="text-[10px] text-muted-foreground flex-1">{er.engineName}</span>
                           <span className="text-[10px] tabular-nums text-right text-foreground">
-                            {er.runCount} run{er.runCount !== 1 ? "s" : ""}
-                            {er.runCount > td.effectiveRuns && (
-                              <span className="text-muted-foreground/50"> (using {td.effectiveRuns})</span>
-                            )}
+                            {usedRuns} run{usedRuns !== 1 ? "s" : ""}
                           </span>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               ))}
