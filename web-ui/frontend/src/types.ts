@@ -120,7 +120,7 @@ export interface RoutingSettings {
 export type RunMode = "single" | "multi";
 
 // --- Routing mode (user-selected) ---
-export type RoutingMode = "single" | "smart";
+export type RoutingMode = "single" | "smart" | "benchmark";
 
 // --- Panel mode (Run vs Train) ---
 export type PanelMode = "run" | "train";

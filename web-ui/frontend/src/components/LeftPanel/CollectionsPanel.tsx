@@ -12,7 +12,7 @@ import { ArrowLeft, Plus, Trash2, X, Database, AlertTriangle, Lock } from "lucid
 export const CollectionsPanel: React.FC = () => {
   const {
     setEditorSql, setCollectionContext, refreshCollections, activeCollectionId, setActiveCollectionId,
-    engines, enabledEngineIds, selectedBenchmarkEngineIds, selectedBenchmarkCollectionId,
+    engines, routingMode, benchmarkEngineIds,
   } = useApp();
   const [collections, setCollections] = useState<CollectionWithQueries[]>([]);
   const [loading, setLoading] = useState(true);
@@ -156,17 +156,10 @@ export const CollectionsPanel: React.FC = () => {
 
   const handleRunBenchmark = async () => {
     if (!activeCollection) return;
-    // Use center-panel engine selection when a benchmark collection is selected; fall back to right-panel enabled engines
-    const isBenchmarkCollection = selectedBenchmarkCollectionId === activeCollection.id;
-    const engineIds = isBenchmarkCollection && selectedBenchmarkEngineIds.size > 0
-      ? [...selectedBenchmarkEngineIds]
-      : engines.filter(e => enabledEngineIds.has(e.id)).map(e => e.id);
+    // In benchmark mode, use engines selected in the right panel's BenchmarkingView
+    const engineIds = [...benchmarkEngineIds];
     if (engineIds.length === 0) {
-      setBenchmarkError(
-        isBenchmarkCollection
-          ? "No engines selected. Select at least one engine in the Runs section of the Benchmarks tab."
-          : "No engines enabled. Enable at least one engine in the right panel."
-      );
+      setBenchmarkError("No engines selected. Switch to Benchmarking mode and select engines in the right panel.");
       return;
     }
     setRunningBenchmark(true);
@@ -346,11 +339,9 @@ export const CollectionsPanel: React.FC = () => {
               ) : (
                 <>
                   {(() => {
-                    const isBenchmarkCollection = selectedBenchmarkCollectionId === activeCollection.id;
-                    const hasEnginesSelected = isBenchmarkCollection
-                      ? selectedBenchmarkEngineIds.size > 0
-                      : enabledEngineIds.size > 0;
-                    const isDisabled = isBenchmarkCollection && selectedBenchmarkEngineIds.size === 0;
+                    const isBenchmarkMode = routingMode === "benchmark";
+                    const hasEnginesSelected = benchmarkEngineIds.size > 0;
+                    const isDisabled = !isBenchmarkMode || !hasEnginesSelected;
                     return (
                       <>
                         <button
@@ -359,14 +350,19 @@ export const CollectionsPanel: React.FC = () => {
                           className={`px-3 py-1.5 rounded-md text-[11px] font-medium w-full ${
                             isDisabled
                               ? "bg-muted text-muted-foreground cursor-not-allowed"
-                              : "bg-primary text-primary-foreground"
+                              : "bg-amber-600 text-white hover:bg-amber-700"
                           }`}
                         >
                           Run Benchmark
                         </button>
-                        {isDisabled && (
+                        {!isBenchmarkMode && (
                           <p className="text-[10px] text-muted-foreground mt-1">
-                            Select engines in Benchmarks &gt; Runs to enable.
+                            Switch to Benchmarking mode in the right panel to run benchmarks.
+                          </p>
+                        )}
+                        {isBenchmarkMode && !hasEnginesSelected && (
+                          <p className="text-[10px] text-amber-600 mt-1">
+                            Select engines in the right panel to enable.
                           </p>
                         )}
                       </>

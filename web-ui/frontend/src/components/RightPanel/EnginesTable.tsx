@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { useApp } from "@/contexts/AppContext";
-import { Server, AlertTriangle, Brain, ChevronDown, Cloud, HardDrive, Unlink, CheckCircle2 } from "lucide-react";
+import { Server, AlertTriangle, Brain, ChevronDown, Cloud, HardDrive, Unlink, CheckCircle2, FlaskConical } from "lucide-react";
 import type { EngineCatalogEntry, Model, DiscoveredWarehouse, WarehouseMapping } from "@/types";
 
 export const EnginesTable: React.FC = () => {
@@ -10,6 +10,7 @@ export const EnginesTable: React.FC = () => {
     singleEngineId, setSingleEngineId,
     activeModelId, setActiveModelId, models,
     enabledEngineIds, toggleEngineEnabled, setAllEnginesEnabled,
+    benchmarkEngineIds, toggleBenchmarkEngine,
     profileWorkspaceBinding,
     discoveredWarehouses,
     warehouseMappings, setWarehouseMapping,
@@ -50,8 +51,8 @@ export const EnginesTable: React.FC = () => {
         <span className="font-semibold text-foreground">Routing Settings</span>
       </div>
 
-      {/* Workspace dependency warning — shown when profile requires a workspace that isn't connected */}
-      {profileWorkspaceBinding && (
+      {/* Workspace dependency warning — shown when profile requires a workspace that isn't connected (not in benchmark mode) */}
+      {profileWorkspaceBinding && routingMode !== "benchmark" && (
         <WorkspaceDependencyBanner
           binding={profileWorkspaceBinding}
           connectedWorkspace={connectedWorkspace}
@@ -59,7 +60,7 @@ export const EnginesTable: React.FC = () => {
         />
       )}
 
-      {/* Mode selector — segmented button */}
+      {/* Mode selector — 3-button segmented control */}
       <div className="px-3 py-2.5 border-b border-panel-border">
         <div className="flex rounded-md border border-border overflow-hidden">
           <button
@@ -74,13 +75,23 @@ export const EnginesTable: React.FC = () => {
           </button>
           <button
             onClick={() => setRoutingMode("smart")}
-            className={`flex-1 py-1.5 text-[11px] font-medium transition-colors ${
+            className={`flex-1 py-1.5 text-[11px] font-medium transition-colors border-r border-border ${
               routingMode === "smart"
                 ? "bg-primary text-primary-foreground"
                 : "bg-card text-muted-foreground hover:bg-muted/50"
             }`}
           >
             Smart Routing
+          </button>
+          <button
+            onClick={() => setRoutingMode("benchmark")}
+            className={`flex-1 py-1.5 text-[11px] font-medium transition-colors ${
+              routingMode === "benchmark"
+                ? "bg-amber-600 text-white"
+                : "bg-card text-muted-foreground hover:bg-muted/50"
+            }`}
+          >
+            Benchmarking
           </button>
         </div>
       </div>
@@ -98,7 +109,7 @@ export const EnginesTable: React.FC = () => {
           warehouseMappings={warehouseMappings}
           setWarehouseMapping={setWarehouseMapping}
         />
-      ) : (
+      ) : routingMode === "smart" ? (
         <SmartRoutingView
           models={models}
           activeModelId={activeModelId}
@@ -107,6 +118,18 @@ export const EnginesTable: React.FC = () => {
           enabledEngineIds={enabledEngineIds}
           toggleEngineEnabled={toggleEngineEnabled}
           engines={engines}
+          hasConnectedWorkspace={connectedWorkspace !== null}
+          workspaceSatisfied={workspaceSatisfied}
+          discoveredWarehouses={discoveredWarehouses}
+          warehouseMappings={warehouseMappings}
+          setWarehouseMapping={setWarehouseMapping}
+        />
+      ) : (
+        <BenchmarkingView
+          duckdbEngines={duckdbEngines}
+          databricksEngines={databricksEngines}
+          benchmarkEngineIds={benchmarkEngineIds}
+          toggleBenchmarkEngine={toggleBenchmarkEngine}
           hasConnectedWorkspace={connectedWorkspace !== null}
           workspaceSatisfied={workspaceSatisfied}
           discoveredWarehouses={discoveredWarehouses}
@@ -310,7 +333,8 @@ const DatabricksEngineRow: React.FC<{
   selectionMode: "radio" | "checkbox";
   isEnabled?: boolean;
   onToggle?: () => void;
-}> = ({ engine, isSelected, onSelect, hasWorkspace, workspaceSatisfied, matchingWarehouses, currentMapping, setWarehouseMapping, selectionMode, isEnabled, onToggle }) => {
+  accentColor?: "primary" | "amber";
+}> = ({ engine, isSelected, onSelect, hasWorkspace, workspaceSatisfied, matchingWarehouses, currentMapping, setWarehouseMapping, selectionMode, isEnabled, onToggle, accentColor = "primary" }) => {
   const [warehouseDropdownOpen, setWarehouseDropdownOpen] = useState(false);
 
   if (!hasWorkspace) {
@@ -365,7 +389,7 @@ const DatabricksEngineRow: React.FC<{
 
   return (
     <div className={`rounded border transition-colors ${
-      isSelected ? "border-primary/30 bg-primary/5" : "border-transparent"
+      isSelected ? "border-primary/30 bg-primary/5" : accentColor === "amber" && isEnabled ? "border-amber-300/30 bg-amber-50" : "border-transparent"
     }`}>
       <div className={`flex items-center gap-2 px-2 py-1.5 ${!isMapped ? "opacity-60" : ""}`}>
         {selectionMode === "radio" ? (
@@ -384,7 +408,7 @@ const DatabricksEngineRow: React.FC<{
             checked={isEnabled ?? false}
             onChange={onToggle}
             disabled={!isMapped}
-            className="accent-primary"
+            className={accentColor === "amber" ? "accent-amber-600" : "accent-primary"}
             title={!isMapped ? "Map a warehouse first to enable this engine" : undefined}
           />
         )}
@@ -601,6 +625,135 @@ const SmartRoutingView: React.FC<{
           </p>
         </div>
       )}
+    </div>
+  );
+};
+
+// ---- Benchmarking View ----
+// Multi-select all engines (no model, no profile). Used to run benchmarks.
+const BenchmarkingView: React.FC<{
+  duckdbEngines: EngineCatalogEntry[];
+  databricksEngines: EngineCatalogEntry[];
+  benchmarkEngineIds: Set<string>;
+  toggleBenchmarkEngine: (id: string) => void;
+  hasConnectedWorkspace: boolean;
+  workspaceSatisfied: boolean;
+  discoveredWarehouses: DiscoveredWarehouse[];
+  warehouseMappings: WarehouseMapping[];
+  setWarehouseMapping: (engineId: string, warehouseId: string | null, warehouseName: string | null) => void;
+}> = ({ duckdbEngines, databricksEngines, benchmarkEngineIds, toggleBenchmarkEngine, hasConnectedWorkspace, workspaceSatisfied, discoveredWarehouses, warehouseMappings, setWarehouseMapping }) => {
+  const allEngines = [...duckdbEngines, ...databricksEngines];
+  const selectedCount = benchmarkEngineIds.size;
+
+  if (allEngines.length === 0) {
+    return (
+      <div className="px-3 py-4 text-[11px] text-muted-foreground">
+        No engines available. Start a DuckDB engine or connect a workspace.
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-3 py-2 space-y-3">
+      {/* Header with count */}
+      <div className="flex items-center gap-1.5">
+        <FlaskConical size={10} className="text-amber-600" />
+        <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+          Select engines to benchmark
+        </span>
+        {selectedCount > 0 && (
+          <span className="ml-auto text-[10px] text-amber-700 font-medium">
+            {selectedCount} selected
+          </span>
+        )}
+      </div>
+
+      {/* DuckDB engines */}
+      {duckdbEngines.length > 0 && (
+        <div>
+          <div className="flex items-center gap-1.5 mb-1.5">
+            <HardDrive size={10} className="text-emerald-600" />
+            <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">DuckDB</span>
+            <span className="text-[10px] text-muted-foreground">
+              ({duckdbEngines.filter(e => benchmarkEngineIds.has(e.id)).length}/{duckdbEngines.length})
+            </span>
+          </div>
+          <div className="space-y-0.5">
+            {duckdbEngines.map(e => {
+              const isChecked = benchmarkEngineIds.has(e.id);
+              return (
+                <label
+                  key={e.id}
+                  className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors hover:bg-muted/50 ${
+                    isChecked ? "bg-amber-50" : ""
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={isChecked}
+                    onChange={() => toggleBenchmarkEngine(e.id)}
+                    className="accent-amber-600"
+                  />
+                  <span className="flex items-center gap-1.5 text-[11px]">
+                    <span className="inline-block w-[5px] h-[5px] rounded-full shrink-0 bg-status-success" />
+                    <span className="font-medium text-foreground">{e.display_name}</span>
+                  </span>
+                  <span className="ml-auto text-[10px] text-muted-foreground">
+                    {e.config.memory_gb}GB / {e.config.cpu_count}CPU
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Databricks engines */}
+      {databricksEngines.length > 0 && (
+        <div>
+          <div className="flex items-center gap-1.5 mb-1.5">
+            <Cloud size={10} className="text-blue-600" />
+            <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Databricks SQL</span>
+            <span className="text-[10px] text-muted-foreground">
+              ({databricksEngines.filter(e => benchmarkEngineIds.has(e.id)).length}/{databricksEngines.length})
+            </span>
+          </div>
+          <div className="space-y-1">
+            {databricksEngines.map(e => {
+              const matchingWarehouses = discoveredWarehouses.filter(w => w.matchingEngineId === e.id);
+              const currentMapping = warehouseMappings.find(m => m.engineId === e.id);
+              const isChecked = benchmarkEngineIds.has(e.id);
+
+              return (
+                <DatabricksEngineRow
+                  key={e.id}
+                  engine={e}
+                  isSelected={false}
+                  onSelect={() => {}}
+                  hasWorkspace={hasConnectedWorkspace}
+                  workspaceSatisfied={workspaceSatisfied}
+                  matchingWarehouses={matchingWarehouses}
+                  currentMapping={currentMapping ?? null}
+                  setWarehouseMapping={setWarehouseMapping}
+                  selectionMode="checkbox"
+                  isEnabled={isChecked}
+                  onToggle={() => toggleBenchmarkEngine(e.id)}
+                  accentColor="amber"
+                />
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      <p className="text-[10px] text-muted-foreground">
+        Select engines to include in the benchmark run. Each engine will be tested sequentially.
+        {selectedCount === 0 && (
+          <span className="block mt-1 text-amber-600 font-medium">
+            Select at least one engine, then use "Run Benchmark" in the Collections panel.
+          </span>
+        )}
+      </p>
     </div>
   );
 };

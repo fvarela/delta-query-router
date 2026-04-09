@@ -50,9 +50,14 @@ interface AppContextType {
   scaleEngine: (engineId: string, replicas: number) => Promise<void>;
   scalingEngineIds: Set<string>;
 
-  // Routing mode (user-selected: "single" or "smart")
+  // Routing mode (user-selected: "single", "smart", or "benchmark")
   routingMode: RoutingMode;
   setRoutingMode: (mode: RoutingMode) => void;
+
+  /** IDs of engines selected for benchmarking (checkboxes in Benchmark mode) */
+  benchmarkEngineIds: Set<string>;
+  toggleBenchmarkEngine: (id: string) => void;
+  setBenchmarkEngines: (ids: string[]) => void;
 
   // Run mode (derived from routing mode + selection — kept for backward compat)
   runMode: RunMode;
@@ -304,8 +309,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setEnabledEngineIds(new Set(ids));
   }, []);
 
-  // Routing mode — user-selected: "single" (no model) or "smart" (model-driven)
-  const [routingMode, setRoutingMode] = useState<RoutingMode>(mock ? "smart" : "single");
+  // Routing mode — user-selected: "single" (no model) or "smart" (model-driven) or "benchmark" (multi-engine, no model/profile)
+  const [routingMode, setRoutingModeRaw] = useState<RoutingMode>(mock ? "smart" : "single");
+
+  // Benchmark engine selection — separate from enabledEngineIds (which is for Smart Routing)
+  const [benchmarkEngineIds, setBenchmarkEngineIdsRaw] = useState<Set<string>>(new Set());
+
+  const toggleBenchmarkEngine = useCallback((id: string) => {
+    setBenchmarkEngineIdsRaw(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const setBenchmarkEngines = useCallback((ids: string[]) => {
+    setBenchmarkEngineIdsRaw(new Set(ids));
+  }, []);
+
+  // When switching TO benchmark mode, clear active profile (profiles don't apply).
+  // When switching FROM benchmark mode, clear benchmark engine selection.
+  const setRoutingMode = useCallback((mode: RoutingMode) => {
+    if (mode === "benchmark") {
+      setActiveProfileId(null);
+    }
+    if (routingMode === "benchmark" && mode !== "benchmark") {
+      setBenchmarkEngineIdsRaw(new Set());
+    }
+    setRoutingModeRaw(mode);
+  }, [routingMode]);
 
   // Run mode — derived from routingMode for backward compat
   const runMode: RunMode = routingMode === "smart" ? "multi" : "single";
@@ -626,11 +658,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (routingMode !== savedRoutingConfig.routingMode) return true;
     if (routingMode === "single") {
       if (singleEngineId !== savedRoutingConfig.singleEngineId) return true;
-    } else {
+    } else if (routingMode === "smart") {
       if (activeModelId !== savedRoutingConfig.activeModelId) return true;
       const currentIds = [...enabledEngineIds].sort();
       const savedIds = [...savedRoutingConfig.enabledEngineIds].sort();
       if (currentIds.length !== savedIds.length || currentIds.some((id, i) => id !== savedIds[i])) return true;
+    } else if (routingMode === "benchmark") {
+      // Benchmark mode doesn't use profiles/save — always considered "no unsaved changes"
+      return false;
     }
     if (Math.abs(routingSettings.cost_weight - savedRoutingConfig.routingPriority) > 0.01) return true;
     // Check workspace binding (Round 16)
@@ -718,6 +753,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       singleEngineId: derivedSingleEngineId, setSingleEngineId,
       scaleEngine, scalingEngineIds,
       routingMode, setRoutingMode,
+      benchmarkEngineIds, toggleBenchmarkEngine, setBenchmarkEngines,
       runMode,
       panelMode, setPanelMode,
       activeModelId, setActiveModelId, models, reloadModels,

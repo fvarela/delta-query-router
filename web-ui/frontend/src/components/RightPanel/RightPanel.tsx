@@ -7,10 +7,13 @@ import { Save, SaveAll, Undo2 } from "lucide-react";
 
 export const RightPanel: React.FC = () => {
   const {
+    routingMode,
     routingSettings, updateRoutingSettings,
     hasUnsavedChanges, saveRoutingConfig, rollbackRoutingConfig,
     activeProfileId, saveProfileAs,
   } = useApp();
+
+  const isBenchmark = routingMode === "benchmark";
 
   const [saveAsOpen, setSaveAsOpen] = useState(false);
   const [saveAsName, setSaveAsName] = useState("");
@@ -27,13 +30,14 @@ export const RightPanel: React.FC = () => {
       {/* Current Settings — always visible, read-only */}
       <CurrentSettings />
 
-      {/* Profile Selector — between CurrentSettings and routing mode */}
-      <ProfileSelector />
+      {/* Profile Selector — between CurrentSettings and routing mode (hidden in benchmark mode) */}
+      {!isBenchmark && <ProfileSelector />}
 
       <div className="flex-1 overflow-y-auto">
         <EnginesTable />
 
-        {/* Routing Priority */}
+        {/* Routing Priority — hidden in benchmark mode */}
+        {!isBenchmark && (
         <div className="px-3 py-2.5 border-t border-panel-border">
           <div className="flex items-center justify-between mb-2">
             <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Routing Priority</span>
@@ -61,10 +65,11 @@ export const RightPanel: React.FC = () => {
             })}
           </div>
         </div>
+        )}
       </div>
 
-      {/* Save / Save As / Rollback bar — fixed at bottom */}
-      {(hasUnsavedChanges || saveAsOpen) && (
+      {/* Save / Save As / Rollback bar — fixed at bottom (hidden in benchmark mode) */}
+      {!isBenchmark && (hasUnsavedChanges || saveAsOpen) && (
         <div className="border-t border-panel-border bg-card px-3 py-2 shrink-0">
           {/* Save As inline form */}
           {saveAsOpen ? (

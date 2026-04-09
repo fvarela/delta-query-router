@@ -1,25 +1,10 @@
 import React, { useState, useMemo } from "react";
 import { useApp } from "@/contexts/AppContext";
-import { MOCK_BENCHMARK_RUN_DETAILS, MOCK_COLLECTIONS, getRunsForDefinition } from "@/mocks/engineSetupData";
-import type { BenchmarkRunDetail, EngineCatalogEntry, Model } from "@/types";
-import { Server, BarChart3, Brain, ChevronDown, ChevronRight, Check, Trash2, Info, Zap, X, Clock, ExternalLink, ArrowLeft } from "lucide-react";
+import { MOCK_BENCHMARK_RUN_DETAILS, getRunsForDefinition } from "@/mocks/engineSetupData";
+import type { BenchmarkRunDetail, EngineCatalogEntry } from "@/types";
+import { BarChart3, Info, X, Clock, ExternalLink, ArrowLeft } from "lucide-react";
 
 // ---- Helpers ----
-
-const costBar = (tier: number, max = 10) => {
-  const pct = (tier / max) * 100;
-  return (
-    <div className="flex items-center gap-1.5">
-      <div className="w-12 h-1.5 bg-muted rounded-full overflow-hidden">
-        <div
-          className={`h-full rounded-full ${tier <= 3 ? "bg-status-success" : tier <= 6 ? "bg-status-warning" : "bg-status-error"}`}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      <span className="text-[10px] text-muted-foreground w-3">{tier}</span>
-    </div>
-  );
-};
 
 const latencyColor = (ms: number) => {
   if (ms < 100) return "text-status-success";
@@ -27,38 +12,17 @@ const latencyColor = (ms: number) => {
   return "text-status-error";
 };
 
-// ---- Main Component: Vertical Stacked Layout ----
+// ---- Main Component: Runs-only Layout ----
 
 export const EngineSetupView: React.FC = () => {
   const {
-    engines, enabledEngineIds, benchmarkDefinitions, models, activeModelId, setActiveModelId,
+    engines, enabledEngineIds, benchmarkDefinitions,
     selectedBenchmarkCollectionId, setSelectedBenchmarkCollectionId,
     selectedBenchmarkEngineIds, toggleBenchmarkEngineId,
   } = useApp();
 
   // Local state
-  const [selectedEngineIds, setSelectedEngineIds] = useState<Set<string>>(new Set());
   const [runsDialog, setRunsDialog] = useState<{ definitionId: number; engineName: string } | null>(null);
-
-  // Filtered models: only models that can route to ALL selected engines
-  const filteredModels = useMemo(() => {
-    if (selectedEngineIds.size === 0) return models;
-    return models.filter(m => {
-      const modelEngines = new Set(m.linked_engines);
-      return [...selectedEngineIds].every(eid => modelEngines.has(eid));
-    });
-  }, [models, selectedEngineIds]);
-
-  const toggleSelectedEngine = (id: string) => {
-    setSelectedEngineIds(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  };
-
-  const selectAllEngines = () => setSelectedEngineIds(new Set(engines.map(e => e.id)));
-  const clearSelectedEngines = () => setSelectedEngineIds(new Set());
 
   // Available collections for the benchmark selector
   const availableCollections = useMemo(() => {
@@ -76,10 +40,8 @@ export const EngineSetupView: React.FC = () => {
     const colDefs = benchmarkDefinitions.filter(d => d.collection_id === selectedBenchmarkCollectionId);
     const collectionName = colDefs[0]?.collection_name ?? `Collection ${selectedBenchmarkCollectionId}`;
 
-    // Show all engines (selected from engine catalog filter, or enabled in right panel as fallback)
-    const selectedEngs = selectedEngineIds.size > 0
-      ? engines.filter(e => selectedEngineIds.has(e.id))
-      : engines.filter(e => enabledEngineIds.has(e.id));
+    // Show all enabled engines
+    const selectedEngs = engines.filter(e => enabledEngineIds.has(e.id));
 
     const engineEntries = selectedEngs.map(eng => {
       const existing = colDefs.find(d => d.engine_id === eng.id);
@@ -91,44 +53,12 @@ export const EngineSetupView: React.FC = () => {
     });
 
     return { collectionId: selectedBenchmarkCollectionId, collectionName, engineEntries };
-  }, [benchmarkDefinitions, engines, selectedEngineIds, enabledEngineIds, selectedBenchmarkCollectionId]);
-
-  // Check if all selected engines have at least one completed benchmark run
-  const allSelectedHaveRuns = useMemo(() => {
-    if (selectedEngineIds.size === 0) return false;
-    return [...selectedEngineIds].every(eid =>
-      benchmarkDefinitions.some(d => d.engine_id === eid && d.latest_run?.status === "complete")
-    );
-  }, [selectedEngineIds, benchmarkDefinitions]);
+  }, [benchmarkDefinitions, engines, enabledEngineIds, selectedBenchmarkCollectionId]);
 
   return (
     <div className="flex flex-col h-full overflow-y-auto">
-      {/* ---- Section 1: Engines ---- */}
+      {/* ---- Runs (Collection selector + engine rows) ---- */}
       <div className="shrink-0">
-        <SectionHeader icon={Server} title="Engines" subtitle={`${engines.length} available`}>
-          {selectedEngineIds.size > 0 && (
-            <div className="flex items-center gap-1.5">
-              <span className="text-[10px] text-muted-foreground">
-                {selectedEngineIds.size} selected
-              </span>
-              <button onClick={clearSelectedEngines} className="text-[10px] text-primary hover:underline">
-                Clear
-              </button>
-            </div>
-          )}
-        </SectionHeader>
-
-        <EnginesCatalog
-          engines={engines}
-          selectedIds={selectedEngineIds}
-          onToggleSelected={toggleSelectedEngine}
-          onSelectAll={selectAllEngines}
-          onClearAll={clearSelectedEngines}
-        />
-      </div>
-
-      {/* ---- Section 2: Runs (Collection selector + engine rows) ---- */}
-      <div className="shrink-0 border-t-2 border-border">
         <SectionHeader icon={BarChart3} title="Runs" subtitle="By collection and engine" />
 
         {/* Collection selector */}
@@ -208,45 +138,7 @@ export const EngineSetupView: React.FC = () => {
         ) : null}
       </div>
 
-      {/* ---- Section 3: ML Models ---- */}
-      <div className="shrink-0 border-t-2 border-border">
-        <SectionHeader icon={Brain} title="ML Models" subtitle={
-          selectedEngineIds.size > 0
-            ? `Models routing to all ${selectedEngineIds.size} selected engine${selectedEngineIds.size !== 1 ? "s" : ""}`
-            : "All trained models"
-        } />
-
-        {/* Training prerequisites info */}
-        <div className="px-3 py-2 bg-blue-50/50 border-b border-border flex items-start gap-2">
-          <Info size={12} className="text-blue-500 shrink-0 mt-0.5" />
-          <div className="text-[10px] text-blue-700">
-            {allSelectedHaveRuns ? (
-              <span>All selected engines have completed benchmark runs. You can train a new model.</span>
-            ) : selectedEngineIds.size > 0 ? (
-              <span>To train a model, ensure all selected engines have at least one completed benchmark run.</span>
-            ) : (
-              <span>Select engines above to filter models. Train a model from completed benchmark runs to enable ML-based routing.</span>
-            )}
-          </div>
-        </div>
-
-        {/* Train new model button */}
-        {allSelectedHaveRuns && (
-          <div className="px-3 py-2 border-b border-border">
-            <button className="flex items-center gap-1.5 px-3 py-1.5 bg-primary text-primary-foreground rounded text-[11px] font-medium w-full justify-center">
-              <Zap size={11} /> Train New Model
-            </button>
-          </div>
-        )}
-
-        <ModelsList
-          models={filteredModels}
-          activeModelId={activeModelId}
-          onSetActive={setActiveModelId}
-          selectedEngineIds={selectedEngineIds}
-          allEngines={engines}
-        />
-      </div>
+      {/* ---- Section 3: ML Models ---- REMOVED in Round 24 */}
 
       {/* Bottom spacer for scroll comfort */}
       <div className="h-8 shrink-0" />
@@ -469,243 +361,6 @@ const RunDetailView: React.FC<{ runDetail: BenchmarkRunDetail }> = ({ runDetail 
         <span>Avg: <span className="font-mono text-foreground">{avgMs}ms</span></span>
         <span>Total: <span className="font-mono text-foreground">{totalMs >= 1000 ? `${(totalMs / 1000).toFixed(1)}s` : `${totalMs}ms`}</span></span>
       </div>
-    </div>
-  );
-};
-
-// ---- Engine Catalog Sub-Component ----
-
-const EnginesCatalog: React.FC<{
-  engines: EngineCatalogEntry[];
-  selectedIds: Set<string>;
-  onToggleSelected: (id: string) => void;
-  onSelectAll: () => void;
-  onClearAll: () => void;
-}> = ({ engines, selectedIds, onToggleSelected, onSelectAll, onClearAll }) => {
-
-  const formatSpecs = (e: EngineCatalogEntry) => {
-    if (e.engine_type === "duckdb") return `${e.config.memory_gb} GB / ${e.config.cpu_count} CPU`;
-    return e.config.cluster_size || "";
-  };
-
-  return (
-    <div className="text-[12px]">
-      {/* Toolbar */}
-      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border">
-        <span className="text-[10px] text-muted-foreground">Select engines to filter benchmarks & models</span>
-        <div className="ml-auto flex gap-2">
-          <button onClick={onSelectAll} className="text-[10px] text-primary hover:underline">Select all</button>
-          <button onClick={onClearAll} className="text-[10px] text-primary hover:underline">Clear</button>
-        </div>
-      </div>
-
-      <table className="w-full text-[11px]">
-        <thead>
-          <tr className="bg-muted">
-            <th className="w-7 px-2 py-1.5 border-b border-border"></th>
-            <th className="text-left px-2 py-1.5 border-b border-border font-semibold">Engine</th>
-            <th className="text-left px-2 py-1.5 border-b border-border font-semibold">Type</th>
-            <th className="text-left px-2 py-1.5 border-b border-border font-semibold">Specs</th>
-            <th className="text-center px-2 py-1.5 border-b border-border font-semibold">Cost Tier</th>
-          </tr>
-        </thead>
-        <tbody>
-          {engines.map(e => {
-            const isSelected = selectedIds.has(e.id);
-
-            return (
-              <tr
-                key={e.id}
-                onClick={() => onToggleSelected(e.id)}
-                className={`cursor-pointer transition-colors ${
-                  isSelected
-                    ? "bg-primary/5 hover:bg-primary/8"
-                    : "even:bg-card hover:bg-muted/50"
-                }`}
-              >
-                <td className="px-2 py-2 border-b border-border text-center" onClick={ev => ev.stopPropagation()}>
-                  <input
-                    type="checkbox"
-                    checked={isSelected}
-                    onChange={() => onToggleSelected(e.id)}
-                    className="accent-primary"
-                  />
-                </td>
-                <td className="px-2 py-2 border-b border-border">
-                  <span className="font-medium text-foreground">{e.display_name}</span>
-                </td>
-                <td className="px-2 py-2 border-b border-border text-muted-foreground">
-                  {e.engine_type === "duckdb" ? "DuckDB" : "Databricks"}
-                </td>
-                <td className="px-2 py-2 border-b border-border text-muted-foreground">
-                  {formatSpecs(e)}
-                </td>
-                <td className="px-2 py-2 border-b border-border">
-                  {costBar(e.cost_tier)}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-};
-
-// ---- Models List Sub-Component ----
-
-const ModelsList: React.FC<{
-  models: Model[];
-  activeModelId: number | null;
-  onSetActive: (id: number | null) => void;
-  selectedEngineIds: Set<string>;
-  allEngines: EngineCatalogEntry[];
-}> = ({ models, activeModelId, onSetActive, selectedEngineIds, allEngines }) => {
-  const [expandedModelId, setExpandedModelId] = useState<number | null>(null);
-
-  if (models.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
-        <Brain size={20} className="mb-2 opacity-50" />
-        <p className="text-[11px]">No trained models{selectedEngineIds.size > 0 ? " matching selected engines" : ""}.</p>
-        <p className="text-[10px] mt-0.5">Train a model from benchmark results to enable ML-based routing.</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="text-[12px]">
-      {models.map(m => {
-        const isActive = m.id === activeModelId;
-        const isExpanded = expandedModelId === m.id;
-
-        return (
-          <div
-            key={m.id}
-            className={`border-b border-border transition-colors ${isActive ? "bg-primary/5" : ""}`}
-          >
-            {/* Model header row */}
-            <div className="px-3 py-2.5 flex items-center gap-2">
-              <button
-                onClick={() => setExpandedModelId(isExpanded ? null : m.id)}
-                className="shrink-0 text-muted-foreground hover:text-foreground"
-              >
-                {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-              </button>
-              <Brain size={12} className={isActive ? "text-primary" : "text-muted-foreground"} />
-              <span className="font-medium text-foreground text-[11px]">
-                Model #{m.id}
-              </span>
-              {isActive && (
-                <span className="px-1.5 py-0.5 rounded bg-primary/10 text-primary text-[9px] font-medium">
-                  Active
-                </span>
-              )}
-              <div className="flex items-center gap-3 ml-auto text-[10px] text-muted-foreground">
-                <span>R²={m.latency_model.r_squared.toFixed(2)}</span>
-                <span>MAE={m.latency_model.mae_ms?.toFixed(0) ?? "?"}ms</span>
-                <span>{m.created_at.slice(0, 10)}</span>
-              </div>
-            </div>
-
-            {/* Expanded model details */}
-            {isExpanded && (
-              <div className="px-5 pb-3">
-                {/* Metrics */}
-                <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-[11px] mb-3">
-                  <div>
-                    <span className="text-muted-foreground">R-squared: </span>
-                    <span className={`font-mono ${m.latency_model.r_squared >= 0.9 ? "text-status-success" : m.latency_model.r_squared >= 0.8 ? "text-status-warning" : "text-status-error"}`}>
-                      {m.latency_model.r_squared.toFixed(3)}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">MAE: </span>
-                    <span className="font-mono text-foreground">{m.latency_model.mae_ms?.toFixed(1) ?? "?"}ms</span>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">Training data: </span>
-                    <span className="text-foreground">{m.training_queries ?? "?"} queries from {m.benchmark_count ?? "?"} benchmarks</span>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">Created: </span>
-                    <span className="text-foreground">{new Date(m.created_at).toLocaleDateString()}</span>
-                  </div>
-                </div>
-
-                {/* Linked engines with highlighting */}
-                <div className="mb-3">
-                  <span className="text-[10px] text-muted-foreground font-medium">Engines this model can route to:</span>
-                  <div className="mt-1 flex flex-wrap gap-1">
-                    {m.linked_engines.map(eid => {
-                      const eng = allEngines.find(e => e.id === eid);
-                      const isSelectedEngine = selectedEngineIds.has(eid);
-                      return (
-                        <span
-                          key={eid}
-                          className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
-                            isSelectedEngine
-                              ? "bg-primary/15 text-primary border border-primary/30"
-                              : "bg-muted text-muted-foreground"
-                          }`}
-                        >
-                          {eng?.display_name ?? eid}
-                          {isSelectedEngine && <Check size={8} className="inline ml-0.5" />}
-                        </span>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Training data detail table */}
-                <div className="mb-3">
-                  <span className="text-[10px] text-muted-foreground font-medium">Training data breakdown:</span>
-                  <table className="w-full text-[10px] mt-1 border border-border rounded overflow-hidden">
-                    <thead>
-                      <tr className="bg-muted">
-                        <th className="text-left px-2 py-1 border-b border-border font-semibold">Collection</th>
-                        <th className="text-left px-2 py-1 border-b border-border font-semibold">Engine</th>
-                        <th className="text-right px-2 py-1 border-b border-border font-semibold">Runs</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {/* Simulate training data from mock benchmark definitions */}
-                      {m.linked_engines.flatMap(eid => {
-                        const eng = allEngines.find(e => e.id === eid);
-                        // Find collections that have definitions for this engine
-                        return MOCK_COLLECTIONS.filter(c =>
-                          MOCK_BENCHMARK_RUN_DETAILS && true // simplified - show all collections
-                        ).slice(0, 2).map(c => (
-                          <tr key={`${c.id}-${eid}`} className="even:bg-card/50">
-                            <td className="px-2 py-1 border-b border-border text-foreground">{c.name}</td>
-                            <td className="px-2 py-1 border-b border-border text-foreground">{eng?.display_name ?? eid}</td>
-                            <td className="px-2 py-1 border-b border-border text-right text-foreground">{Math.floor(Math.random() * 3) + 1}</td>
-                          </tr>
-                        ));
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-
-                {/* Action buttons */}
-                <div className="flex items-center gap-2">
-                  {!isActive && (
-                    <button
-                      onClick={() => onSetActive(m.id)}
-                      className="px-2.5 py-1 bg-primary text-primary-foreground rounded text-[10px] font-medium"
-                    >
-                      Set as Active
-                    </button>
-                  )}
-                  <button className="px-2.5 py-1 border border-status-error/30 text-status-error rounded text-[10px] font-medium hover:bg-status-error/5 flex items-center gap-1">
-                    <Trash2 size={9} /> Delete
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        );
-      })}
     </div>
   );
 };
