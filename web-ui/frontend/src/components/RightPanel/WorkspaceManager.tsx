@@ -144,10 +144,10 @@ export const WorkspaceManager: React.FC = () => {
         <span className={`w-2 h-2 rounded-full shrink-0 ${connectedWorkspace ? "bg-status-success" : "bg-muted-foreground/40"}`} />
         <span className="font-semibold text-foreground">Workspaces</span>
         {connectedWorkspace && (
-          <span className="text-[10px] text-muted-foreground truncate">{connectedWorkspace.name}</span>
+          <span className="text-[11px] text-muted-foreground truncate">{connectedWorkspace.name}</span>
         )}
         {!connectedWorkspace && (
-          <span className="text-[10px] text-muted-foreground">Not connected</span>
+          <span className="text-[11px] text-muted-foreground">Not connected</span>
         )}
         <ChevronDown size={12} className={`ml-auto text-muted-foreground shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
@@ -165,8 +165,8 @@ export const WorkspaceManager: React.FC = () => {
               <input placeholder="Name" value={newName} onChange={e => setNewName(e.target.value)} className="w-full px-2 py-1 border border-border rounded text-[12px] bg-background text-foreground" />
               <input placeholder="URL (https://...)" value={newUrl} onChange={e => setNewUrl(e.target.value)} className="w-full px-2 py-1 border border-border rounded text-[12px] bg-background text-foreground" />
               <div className="flex gap-2">
-                <button onClick={handleAdd} className="px-3 py-1 bg-primary text-primary-foreground rounded text-[11px]">Add</button>
-                <button onClick={() => setShowAdd(false)} className="px-3 py-1 border border-border rounded text-[11px] text-foreground">Cancel</button>
+                <button onClick={handleAdd} className="px-3 py-1 bg-primary text-primary-foreground rounded text-[12px]">Add</button>
+                <button onClick={() => setShowAdd(false)} className="px-3 py-1 border border-border rounded text-[12px] text-foreground">Cancel</button>
               </div>
             </div>
           )}
@@ -177,27 +177,27 @@ export const WorkspaceManager: React.FC = () => {
                 <div className="flex items-center justify-between gap-1">
                   <div className="min-w-0 flex-1">
                     <div className="font-medium text-foreground truncate">{ws.name}</div>
-                    <div className="text-[10px] text-muted-foreground truncate">{ws.url}</div>
+                    <div className="text-[11px] text-muted-foreground truncate">{ws.url}</div>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
                     {!ws.connected && (
                       <button
                         onClick={() => openTokenModal(ws.id)}
-                        className="px-1.5 py-0.5 text-[10px] border border-border rounded hover:bg-muted text-muted-foreground hover:text-foreground"
+                        className="px-1.5 py-0.5 text-[11px] border border-border rounded hover:bg-muted text-muted-foreground hover:text-foreground"
                         title="Connect with PAT token"
                       >
                         <Key size={11} />
                       </button>
                     )}
                     {ws.connected ? (
-                      <button onClick={() => handleDisconnect(ws.id)} className="px-1.5 py-0.5 text-[10px] border border-border rounded hover:bg-muted text-foreground" title="Disconnect">
+                      <button onClick={() => handleDisconnect(ws.id)} className="px-1.5 py-0.5 text-[11px] border border-border rounded hover:bg-muted text-foreground" title="Disconnect">
                         <Unplug size={12} />
                       </button>
                     ) : (
                       <button
                         onClick={() => handleConnect(ws.id)}
                         disabled={connecting === ws.id}
-                        className="px-1.5 py-0.5 text-[10px] border border-border rounded hover:bg-muted disabled:opacity-40 text-foreground"
+                        className="px-1.5 py-0.5 text-[11px] border border-border rounded hover:bg-muted disabled:opacity-40 text-foreground"
                         title="Connect"
                       >
                         {connecting === ws.id ? <LoadingSpinner size={12} /> : <Plug size={12} />}
@@ -208,7 +208,7 @@ export const WorkspaceManager: React.FC = () => {
                     </button>
                   </div>
                 </div>
-                <div className="text-[10px] mt-0.5">
+                <div className="text-[11px] mt-0.5">
                   {ws.connected
                     ? <span className="text-status-success">Connected{ws.username ? ` as ${ws.username}` : ""}</span>
                     : <span className="text-muted-foreground">Not connected</span>}
@@ -225,8 +225,8 @@ export const WorkspaceManager: React.FC = () => {
           <div className="absolute inset-0 bg-black/60" onClick={() => { setTokenModalId(null); setConnectError(null); }} />
           <div className="relative bg-background border border-border rounded-lg shadow-lg p-4 w-[340px] space-y-3 z-10">
             <h3 className="text-[13px] font-semibold text-foreground">Connect to Workspace</h3>
-            <p className="text-[11px] text-muted-foreground">{tokenModalWs.name}</p>
-            <p className="text-[10px] text-muted-foreground truncate">{tokenModalWs.url}</p>
+            <p className="text-[12px] text-muted-foreground">{tokenModalWs.name}</p>
+            <p className="text-[11px] text-muted-foreground truncate">{tokenModalWs.url}</p>
             <div className="relative">
               <input
                 type={showTokenText ? "text" : "password"}
@@ -245,14 +245,14 @@ export const WorkspaceManager: React.FC = () => {
               </button>
             </div>
             {connectError && (
-              <p className="text-[10px] text-status-error">{connectError}</p>
+              <p className="text-[11px] text-status-error">{connectError}</p>
             )}
             <div className="flex justify-end gap-2">
-              <button onClick={() => { setTokenModalId(null); setConnectError(null); }} className="px-3 py-1 border border-border rounded text-[11px] text-foreground">Cancel</button>
+              <button onClick={() => { setTokenModalId(null); setConnectError(null); }} className="px-3 py-1 border border-border rounded text-[12px] text-foreground">Cancel</button>
               <button
                 onClick={handleSetTokenAndConnect}
                 disabled={!tokenInput.trim() || connecting === tokenModalId}
-                className="px-3 py-1 bg-primary text-primary-foreground rounded text-[11px] disabled:opacity-40"
+                className="px-3 py-1 bg-primary text-primary-foreground rounded text-[12px] disabled:opacity-40"
               >
                 {connecting === tokenModalId ? "Connecting..." : "Connect"}
               </button>

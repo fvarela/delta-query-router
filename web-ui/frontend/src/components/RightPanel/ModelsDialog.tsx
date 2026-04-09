@@ -74,7 +74,7 @@ const ModelListView: React.FC<{
         <div className="flex items-center gap-2">
           <button
             onClick={onNewModel}
-            className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium bg-primary text-primary-foreground rounded hover:bg-primary/90 transition-colors"
+            className="flex items-center gap-1 px-2.5 py-1 text-[12px] font-medium bg-primary text-primary-foreground rounded hover:bg-primary/90 transition-colors"
           >
             <Plus size={11} />
             New Model
@@ -139,7 +139,7 @@ const ModelRow: React.FC<{
           <div className="flex items-center gap-2 mb-1">
             <span className="text-[12px] font-semibold text-foreground">Model #{model.id}</span>
             {isActive && (
-              <span className="flex items-center gap-0.5 px-1.5 py-0.5 bg-emerald-100 text-emerald-700 text-[9px] font-medium rounded-full">
+              <span className="flex items-center gap-0.5 px-1.5 py-0.5 bg-emerald-100 text-emerald-700 text-[10px] font-medium rounded-full">
                 <CheckCircle2 size={8} />
                 Active
               </span>
@@ -148,16 +148,16 @@ const ModelRow: React.FC<{
           </div>
           {/* Metrics */}
           <div className="flex items-center gap-3 mb-1.5">
-            <span className="text-[11px] text-muted-foreground">
+            <span className="text-[12px] text-muted-foreground">
               R<sup>2</sup>={model.latency_model.r_squared}
             </span>
             {model.latency_model.mae_ms != null && (
-              <span className="text-[11px] text-muted-foreground">
+              <span className="text-[12px] text-muted-foreground">
                 MAE={model.latency_model.mae_ms}ms
               </span>
             )}
             {model.training_queries != null && (
-              <span className="text-[11px] text-muted-foreground">
+              <span className="text-[12px] text-muted-foreground">
                 {model.training_queries} training queries
               </span>
             )}
@@ -165,18 +165,18 @@ const ModelRow: React.FC<{
           {/* Engines (collapse if > 3) */}
           <div className="flex flex-wrap gap-1">
             {engineNames.slice(0, 3).map((name, i) => (
-              <span key={i} className="px-1.5 py-0.5 bg-muted/60 text-[10px] text-muted-foreground rounded">
+              <span key={i} className="px-1.5 py-0.5 bg-muted/60 text-[11px] text-muted-foreground rounded">
                 {name}
               </span>
             ))}
             {engineNames.length > 3 && (
-              <span className="px-1.5 py-0.5 bg-muted/40 text-[10px] text-muted-foreground/70 rounded">
+              <span className="px-1.5 py-0.5 bg-muted/40 text-[11px] text-muted-foreground/70 rounded">
                 +{engineNames.length - 3} more
               </span>
             )}
           </div>
           {/* Created date */}
-          <div className="mt-1 text-[10px] text-muted-foreground/60">
+          <div className="mt-1 text-[11px] text-muted-foreground/60">
             Created {new Date(model.created_at).toLocaleDateString()}
           </div>
         </div>
@@ -186,7 +186,7 @@ const ModelRow: React.FC<{
           {isActive ? (
             <button
               onClick={onDeactivate}
-              className="px-2 py-1 text-[10px] font-medium text-muted-foreground border border-border rounded hover:bg-muted/50 transition-colors"
+              className="px-2 py-1 text-[11px] font-medium text-muted-foreground border border-border rounded hover:bg-muted/50 transition-colors"
               title="Deactivate model"
             >
               Deactivate
@@ -194,7 +194,7 @@ const ModelRow: React.FC<{
           ) : (
             <button
               onClick={onActivate}
-              className="px-2 py-1 text-[10px] font-medium text-primary border border-primary/30 rounded hover:bg-primary/10 transition-colors"
+              className="px-2 py-1 text-[11px] font-medium text-primary border border-primary/30 rounded hover:bg-primary/10 transition-colors"
               title="Activate model"
             >
               Activate
@@ -202,16 +202,16 @@ const ModelRow: React.FC<{
           )}
           {confirmDelete ? (
             <div className="flex items-center gap-1">
-              <span className="text-[10px] text-red-600 font-medium">Delete #{model.id}?</span>
+              <span className="text-[11px] text-red-600 font-medium">Delete #{model.id}?</span>
               <button
                 onClick={onDeleteConfirm}
-                className="px-1.5 py-1 text-[10px] font-medium text-red-600 border border-red-300 rounded hover:bg-red-50 transition-colors"
+                className="px-1.5 py-1 text-[11px] font-medium text-red-600 border border-red-300 rounded hover:bg-red-50 transition-colors"
               >
                 Yes
               </button>
               <button
                 onClick={onDeleteCancel}
-                className="px-1.5 py-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                className="px-1.5 py-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
               >
                 No
               </button>
@@ -314,7 +314,7 @@ const ModelDetailView: React.FC<{
           <Brain size={14} className="text-primary" />
           <span className="font-semibold text-sm text-foreground">Model #{model.id}</span>
           {isActive && (
-            <span className="flex items-center gap-0.5 px-1.5 py-0.5 bg-emerald-100 text-emerald-700 text-[9px] font-medium rounded-full">
+            <span className="flex items-center gap-0.5 px-1.5 py-0.5 bg-emerald-100 text-emerald-700 text-[10px] font-medium rounded-full">
               <CheckCircle2 size={8} />
               Active
             </span>
@@ -324,14 +324,14 @@ const ModelDetailView: React.FC<{
           {isActive ? (
             <button
               onClick={() => deactivateModel(model.id)}
-              className="px-2 py-1 text-[10px] font-medium text-muted-foreground border border-border rounded hover:bg-muted/50 transition-colors"
+              className="px-2 py-1 text-[11px] font-medium text-muted-foreground border border-border rounded hover:bg-muted/50 transition-colors"
             >
               Deactivate
             </button>
           ) : (
             <button
               onClick={() => activateModel(model.id)}
-              className="px-2 py-1 text-[10px] font-medium text-primary border border-primary/30 rounded hover:bg-primary/10 transition-colors"
+              className="px-2 py-1 text-[11px] font-medium text-primary border border-primary/30 rounded hover:bg-primary/10 transition-colors"
             >
               Activate
             </button>
@@ -346,22 +346,22 @@ const ModelDetailView: React.FC<{
       <div className="flex-1 overflow-y-auto min-h-0 px-4 py-3 space-y-4">
         {/* Metrics */}
         <div>
-          <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Performance Metrics</span>
+          <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Performance Metrics</span>
           <div className="mt-1.5 grid grid-cols-3 gap-2">
             <div className="px-3 py-2 bg-muted/30 rounded border border-border text-center">
               <div className="text-[16px] font-semibold text-foreground">{model.latency_model.r_squared}</div>
-              <div className="text-[10px] text-muted-foreground">R² Score</div>
+              <div className="text-[11px] text-muted-foreground">R² Score</div>
             </div>
             {model.latency_model.mae_ms != null && (
               <div className="px-3 py-2 bg-muted/30 rounded border border-border text-center">
                 <div className="text-[16px] font-semibold text-foreground">{model.latency_model.mae_ms}<span className="text-[11px] font-normal text-muted-foreground">ms</span></div>
-                <div className="text-[10px] text-muted-foreground">MAE</div>
+                <div className="text-[11px] text-muted-foreground">MAE</div>
               </div>
             )}
             {model.training_queries != null && (
               <div className="px-3 py-2 bg-muted/30 rounded border border-border text-center">
                 <div className="text-[16px] font-semibold text-foreground">{model.training_queries}</div>
-                <div className="text-[10px] text-muted-foreground">Training Queries</div>
+                <div className="text-[11px] text-muted-foreground">Training Queries</div>
               </div>
             )}
           </div>
@@ -369,12 +369,12 @@ const ModelDetailView: React.FC<{
 
         {/* Linked Engines */}
         <div>
-          <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+          <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
             Linked Engines ({linkedEngines.length})
           </span>
           <div className="mt-1.5 flex flex-wrap gap-1.5">
             {linkedEngines.map(e => (
-              <span key={e.id} className="flex items-center gap-1 px-2 py-1 bg-muted/60 text-[11px] text-foreground rounded border border-border">
+              <span key={e.id} className="flex items-center gap-1 px-2 py-1 bg-muted/60 text-[12px] text-foreground rounded border border-border">
                 {e.engine_type === "duckdb" ? <HardDrive size={9} className="text-emerald-600" /> : <Cloud size={9} className="text-blue-600" />}
                 {e.display_name}
               </span>
@@ -385,17 +385,17 @@ const ModelDetailView: React.FC<{
         {/* Training Data */}
         <div>
           <div className="flex items-center gap-2">
-            <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+            <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
               Training Data ({trainingDetails.length} collection{trainingDetails.length !== 1 ? "s" : ""})
             </span>
             {totalEffectiveRuns > 0 && (
-              <span className="text-[10px] text-muted-foreground">
+              <span className="text-[11px] text-muted-foreground">
                 {totalEffectiveRuns} run{totalEffectiveRuns !== 1 ? "s" : ""} per engine
               </span>
             )}
           </div>
           {trainingDetails.length === 0 ? (
-            <div className="mt-1.5 px-3 py-2 bg-muted/20 rounded border border-border text-[11px] text-muted-foreground/70">
+            <div className="mt-1.5 px-3 py-2 bg-muted/20 rounded border border-border text-[12px] text-muted-foreground/70">
               No training collection data recorded for this model.
             </div>
           ) : (
@@ -404,8 +404,8 @@ const ModelDetailView: React.FC<{
                 <div key={td.collectionId} className="px-3 py-2.5 bg-muted/30 rounded border border-border">
                   <div className="flex items-center gap-2 mb-1.5">
                     <Database size={10} className="text-primary/70" />
-                    <span className="text-[11px] font-medium text-foreground">{td.collectionName}</span>
-                    <span className="ml-auto text-[10px] text-muted-foreground">
+                    <span className="text-[12px] font-medium text-foreground">{td.collectionName}</span>
+                    <span className="ml-auto text-[11px] text-muted-foreground">
                       {td.effectiveRuns} run{td.effectiveRuns !== 1 ? "s" : ""} per engine
                     </span>
                   </div>
@@ -420,8 +420,8 @@ const ModelDetailView: React.FC<{
                           ) : (
                             <Cloud size={8} className="text-blue-600/70 shrink-0" />
                           )}
-                          <span className="text-[10px] text-muted-foreground flex-1">{er.engineName}</span>
-                          <span className="text-[10px] tabular-nums text-right text-foreground">
+                          <span className="text-[11px] text-muted-foreground flex-1">{er.engineName}</span>
+                          <span className="text-[11px] tabular-nums text-right text-foreground">
                             {usedRuns} run{usedRuns !== 1 ? "s" : ""}
                           </span>
                         </div>
@@ -435,7 +435,7 @@ const ModelDetailView: React.FC<{
         </div>
 
         {/* Metadata footer */}
-        <div className="text-[10px] text-muted-foreground/60 pt-1 border-t border-border space-y-0.5">
+        <div className="text-[11px] text-muted-foreground/60 pt-1 border-t border-border space-y-0.5">
           <div>Created: {new Date(model.created_at).toLocaleString()}</div>
           {model.updated_at && (
             <div>Updated: {new Date(model.updated_at).toLocaleString()}</div>
@@ -571,14 +571,14 @@ const NewModelWizard: React.FC<{
           {([1, 2, 3] as WizardStep[]).map(s => (
             <React.Fragment key={s}>
               <div className={`flex items-center gap-1 ${s === step ? "text-primary" : s < step ? "text-emerald-600" : "text-muted-foreground/40"}`}>
-                <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold border ${
+                <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-bold border ${
                   s === step ? "border-primary bg-primary text-primary-foreground" :
                   s < step ? "border-emerald-500 bg-emerald-100 text-emerald-700" :
                   "border-border bg-background text-muted-foreground/40"
                 }`}>
                   {s < step ? <CheckCircle2 size={10} /> : s}
                 </div>
-                <span className="text-[10px] font-medium hidden sm:inline">{stepTitles[s]}</span>
+                <span className="text-[11px] font-medium hidden sm:inline">{stepTitles[s]}</span>
               </div>
               {s < 3 && <div className={`flex-1 h-px mx-1 ${s < step ? "bg-emerald-400" : "bg-border"}`} />}
             </React.Fragment>
@@ -619,7 +619,7 @@ const NewModelWizard: React.FC<{
       <div className="flex items-center justify-between px-4 py-3 border-t border-panel-border">
         <button
           onClick={() => step > 1 ? setStep((step - 1) as WizardStep) : onBack()}
-          className="flex items-center gap-1 px-3 py-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground border border-border rounded transition-colors"
+          className="flex items-center gap-1 px-3 py-1.5 text-[12px] font-medium text-muted-foreground hover:text-foreground border border-border rounded transition-colors"
         >
           <ChevronLeft size={12} />
           {step === 1 ? "Cancel" : "Back"}
@@ -628,7 +628,7 @@ const NewModelWizard: React.FC<{
           <button
             onClick={() => setStep((step + 1) as WizardStep)}
             disabled={step === 1 ? !canProceedStep1 : !canProceedStep2}
-            className="flex items-center gap-1 px-3 py-1.5 text-[11px] font-medium bg-primary text-primary-foreground rounded hover:bg-primary/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            className="flex items-center gap-1 px-3 py-1.5 text-[12px] font-medium bg-primary text-primary-foreground rounded hover:bg-primary/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             Next
             <ChevronRight size={12} />
@@ -636,7 +636,7 @@ const NewModelWizard: React.FC<{
         ) : (
           <button
             onClick={handleCreate}
-            className="flex items-center gap-1 px-4 py-1.5 text-[11px] font-medium bg-primary text-primary-foreground rounded hover:bg-primary/90 transition-colors"
+            className="flex items-center gap-1 px-4 py-1.5 text-[12px] font-medium bg-primary text-primary-foreground rounded hover:bg-primary/90 transition-colors"
           >
             <Plus size={11} />
             Create Model
@@ -669,7 +669,7 @@ const Step1Engines: React.FC<{
 
   return (
     <div className="px-4 py-3 space-y-3">
-      <p className="text-[11px] text-muted-foreground">
+      <p className="text-[12px] text-muted-foreground">
         Select the engines this model will route queries between. At least 2 engines required.
         Only engines with benchmark runs are available.
       </p>
@@ -679,7 +679,7 @@ const Step1Engines: React.FC<{
         <div>
           <div className="flex items-center gap-1.5 mb-1.5">
             <HardDrive size={10} className="text-emerald-600" />
-            <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">DuckDB</span>
+            <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">DuckDB</span>
           </div>
           <div className="space-y-0.5">
             {duckdbEngines.map(e => (
@@ -695,8 +695,8 @@ const Step1Engines: React.FC<{
                   onChange={() => toggleEngine(e.id)}
                   className="accent-primary"
                 />
-                <span className="text-[11px] font-medium text-foreground">{e.display_name}</span>
-                <span className="ml-auto text-[10px] text-muted-foreground">
+                <span className="text-[12px] font-medium text-foreground">{e.display_name}</span>
+                <span className="ml-auto text-[11px] text-muted-foreground">
                   {getDefCount(e.id)} collection{getDefCount(e.id) !== 1 ? "s" : ""}, {getTotalRuns(e.id)} run{getTotalRuns(e.id) !== 1 ? "s" : ""}
                 </span>
               </label>
@@ -710,7 +710,7 @@ const Step1Engines: React.FC<{
         <div>
           <div className="flex items-center gap-1.5 mb-1.5">
             <Cloud size={10} className="text-blue-600" />
-            <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Databricks SQL</span>
+            <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Databricks SQL</span>
           </div>
           <div className="space-y-0.5">
             {databricksEngines.map(e => (
@@ -726,8 +726,8 @@ const Step1Engines: React.FC<{
                   onChange={() => toggleEngine(e.id)}
                   className="accent-primary"
                 />
-                <span className="text-[11px] font-medium text-foreground">{e.display_name}</span>
-                <span className="ml-auto text-[10px] text-muted-foreground">
+                <span className="text-[12px] font-medium text-foreground">{e.display_name}</span>
+                <span className="ml-auto text-[11px] text-muted-foreground">
                   {getDefCount(e.id)} collection{getDefCount(e.id) !== 1 ? "s" : ""}, {getTotalRuns(e.id)} run{getTotalRuns(e.id) !== 1 ? "s" : ""}
                 </span>
               </label>
@@ -739,7 +739,7 @@ const Step1Engines: React.FC<{
       {/* Engines without benchmarks (informational) */}
       {enginesWithoutBenchmarks.length > 0 && (
         <div className="pt-1 border-t border-border">
-          <span className="text-[10px] text-muted-foreground/60">
+          <span className="text-[11px] text-muted-foreground/60">
             {enginesWithoutBenchmarks.length} engine{enginesWithoutBenchmarks.length !== 1 ? "s" : ""} without benchmark data:{" "}
             {enginesWithoutBenchmarks.map(e => e.display_name).join(", ")}
           </span>
@@ -747,7 +747,7 @@ const Step1Engines: React.FC<{
       )}
 
       {selectedEngines.size > 0 && selectedEngines.size < 2 && (
-        <div className="flex items-center gap-1.5 text-[10px] text-amber-600">
+        <div className="flex items-center gap-1.5 text-[11px] text-amber-600">
           <AlertTriangle size={10} />
           Select at least 2 engines for the model to route between.
         </div>
@@ -767,13 +767,13 @@ const Step2Collections: React.FC<{
 
   return (
     <div className="px-4 py-3 space-y-3">
-      <p className="text-[11px] text-muted-foreground">
+      <p className="text-[12px] text-muted-foreground">
         Select collections to use as training data. Only collections where <span className="font-medium">all</span> selected
         engines have at least 1 benchmark run are eligible.
       </p>
 
       {eligible.length === 0 ? (
-        <div className="py-4 text-center text-[11px] text-amber-600">
+        <div className="py-4 text-center text-[12px] text-amber-600">
           <AlertTriangle size={14} className="mx-auto mb-1" />
           No collections have benchmark runs for all selected engines. Go back and adjust engine selection.
         </div>
@@ -795,15 +795,15 @@ const Step2Collections: React.FC<{
                   onChange={() => toggleCollection(info.collectionId)}
                   className="accent-primary"
                 />
-                <span className="text-[11px] font-medium text-foreground">{info.collectionName}</span>
-                <span className="ml-auto text-[10px] text-muted-foreground">
+                <span className="text-[12px] font-medium text-foreground">{info.collectionName}</span>
+                <span className="ml-auto text-[11px] text-muted-foreground">
                   {info.effectiveRuns} run{info.effectiveRuns !== 1 ? "s" : ""} per engine
                 </span>
               </div>
               {/* Per-engine breakdown */}
               <div className="ml-6 mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
                 {info.runsByEngine.map(re => (
-                  <span key={re.engineId} className="text-[10px] text-muted-foreground">
+                  <span key={re.engineId} className="text-[11px] text-muted-foreground">
                     {re.engineName}: {re.runCount} run{re.runCount !== 1 ? "s" : ""}
                     {re.runCount > info.effectiveRuns && (
                       <span className="text-muted-foreground/50"> (using latest {info.effectiveRuns})</span>
@@ -819,20 +819,20 @@ const Step2Collections: React.FC<{
       {/* Ineligible collections (dimmed) */}
       {ineligible.length > 0 && (
         <div className="pt-2 border-t border-border space-y-1">
-          <span className="text-[10px] font-medium text-muted-foreground/60 uppercase tracking-wider">
+          <span className="text-[11px] font-medium text-muted-foreground/60 uppercase tracking-wider">
             Ineligible ({ineligible.length})
           </span>
           {ineligible.map(info => (
             <div key={info.collectionId} className="px-3 py-1.5 opacity-50">
               <div className="flex items-center gap-2">
                 <input type="checkbox" disabled className="accent-primary" />
-                <span className="text-[11px] text-muted-foreground">{info.collectionName}</span>
+                <span className="text-[12px] text-muted-foreground">{info.collectionName}</span>
               </div>
               <div className="ml-6 mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
                 {info.runsByEngine.map(re => (
                   <span
                     key={re.engineId}
-                    className={`text-[10px] ${re.runCount === 0 ? "text-red-400 font-medium" : "text-muted-foreground"}`}
+                    className={`text-[11px] ${re.runCount === 0 ? "text-red-400 font-medium" : "text-muted-foreground"}`}
                   >
                     {re.engineName}: {re.runCount === 0 ? "no runs" : `${re.runCount} run${re.runCount !== 1 ? "s" : ""}`}
                   </span>
@@ -862,18 +862,18 @@ const Step3Review: React.FC<{
 
   return (
     <div className="px-4 py-3 space-y-4">
-      <p className="text-[11px] text-muted-foreground">
+      <p className="text-[12px] text-muted-foreground">
         Review your selections below. The model will be trained on the latest runs for each collection.
       </p>
 
       {/* Engines */}
       <div>
-        <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+        <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
           Engines ({selectedEngineList.length})
         </span>
         <div className="mt-1.5 flex flex-wrap gap-1.5">
           {selectedEngineList.map(e => (
-            <span key={e.id} className="flex items-center gap-1 px-2 py-1 bg-muted/60 text-[11px] text-foreground rounded border border-border">
+            <span key={e.id} className="flex items-center gap-1 px-2 py-1 bg-muted/60 text-[12px] text-foreground rounded border border-border">
               {e.engine_type === "duckdb" ? <HardDrive size={9} className="text-emerald-600" /> : <Cloud size={9} className="text-blue-600" />}
               {e.display_name}
             </span>
@@ -883,21 +883,21 @@ const Step3Review: React.FC<{
 
       {/* Collections — aligned annotation format with Step 2 (UX #24) */}
       <div>
-        <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+        <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
           Training Data ({selectedCollectionInfos.length} collection{selectedCollectionInfos.length !== 1 ? "s" : ""})
         </span>
         <div className="mt-1.5 space-y-1.5">
           {selectedCollectionInfos.map(info => (
             <div key={info.collectionId} className="px-3 py-2 bg-muted/30 rounded border border-border">
               <div className="flex items-center justify-between">
-                <span className="text-[11px] font-medium text-foreground">{info.collectionName}</span>
-                <span className="text-[10px] text-muted-foreground">
+                <span className="text-[12px] font-medium text-foreground">{info.collectionName}</span>
+                <span className="text-[11px] text-muted-foreground">
                   {info.effectiveRuns} run{info.effectiveRuns !== 1 ? "s" : ""} per engine
                 </span>
               </div>
               <div className="mt-1 flex flex-wrap gap-x-3">
                 {info.runsByEngine.map(re => (
-                  <span key={re.engineId} className="text-[10px] text-muted-foreground">
+                  <span key={re.engineId} className="text-[11px] text-muted-foreground">
                     {re.engineName}: {re.runCount} run{re.runCount !== 1 ? "s" : ""}
                     {re.runCount > info.effectiveRuns && (
                       <span className="text-muted-foreground/50"> (using latest {info.effectiveRuns})</span>
@@ -912,8 +912,8 @@ const Step3Review: React.FC<{
 
       {/* Summary */}
       <div className="px-3 py-2 bg-primary/5 rounded border border-primary/20">
-        <span className="text-[10px] font-medium text-primary uppercase tracking-wider">Training Summary</span>
-        <div className="mt-1 text-[11px] text-foreground space-y-0.5">
+        <span className="text-[11px] font-medium text-primary uppercase tracking-wider">Training Summary</span>
+        <div className="mt-1 text-[12px] text-foreground space-y-0.5">
           <div>{selectedEngineList.length} engines x {totalEffectiveRuns} effective runs x {selectedCollectionInfos.length} collection{selectedCollectionInfos.length !== 1 ? "s" : ""}</div>
           <div className="text-muted-foreground">~{estimatedTrainingQueries} estimated training data points</div>
         </div>

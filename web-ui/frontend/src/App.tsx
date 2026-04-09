@@ -20,13 +20,13 @@ const LeftPanel = () => {
       <div className="flex border-b border-panel-border shrink-0">
         <button
           onClick={() => setLeftPanelTab("catalog")}
-          className={`flex-1 px-3 py-1.5 text-[12px] font-medium ${leftPanelTab === "catalog" ? "border-b-2 border-primary text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+          className={`flex-1 px-3 py-2 text-[12px] font-medium transition-colors ${leftPanelTab === "catalog" ? "border-b-2 border-primary text-foreground" : "text-muted-foreground hover:text-foreground"}`}
         >
           Catalog
         </button>
         <button
           onClick={() => setLeftPanelTab("collections")}
-          className={`flex-1 px-3 py-1.5 text-[12px] font-medium ${leftPanelTab === "collections" ? "border-b-2 border-primary text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+          className={`flex-1 px-3 py-2 text-[12px] font-medium transition-colors ${leftPanelTab === "collections" ? "border-b-2 border-primary text-foreground" : "text-muted-foreground hover:text-foreground"}`}
         >
           Collections &amp; Benchmarks
         </button>
@@ -41,11 +41,11 @@ const LeftPanel = () => {
 
 const AuthenticatedApp = () => (
   <AppProvider>
-    <div className="h-screen flex flex-col overflow-hidden min-w-[1280px]">
+    <div className="h-screen flex flex-col overflow-hidden min-w-[1280px] bg-muted/30">
       <TopBar />
       <div className="flex flex-1 min-h-0">
         {/* Left Panel - 20% — Workspaces + Catalog/Collections tabs */}
-        <div className="w-[20%] border-r border-panel-border bg-background overflow-hidden flex flex-col">
+        <div className="w-[20%] border-r border-panel-border bg-background overflow-hidden flex flex-col shadow-panel">
           <LeftPanel />
         </div>
         {/* Center Panel - 50% — Query editor + results */}
@@ -53,7 +53,7 @@ const AuthenticatedApp = () => (
           <CenterPanel />
         </div>
         {/* Right Panel - 30% — Routing (always visible) */}
-        <div className="w-[30%] bg-background overflow-hidden flex flex-col">
+        <div className="w-[30%] bg-background overflow-hidden flex flex-col shadow-panel">
           <RightPanel />
         </div>
       </div>

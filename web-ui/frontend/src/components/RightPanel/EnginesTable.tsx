@@ -47,8 +47,8 @@ export const EnginesTable: React.FC = () => {
 
   return (
     <div className="text-[12px]">
-      <div className="px-3 py-1.5 border-b border-panel-border flex items-center gap-2">
-        <Server size={12} className="text-primary shrink-0" />
+      <div className="px-3 py-2 border-b border-panel-border flex items-center gap-2 shadow-section">
+        <Server size={13} className="text-primary shrink-0" />
         <span className="font-semibold text-foreground">Routing Settings</span>
       </div>
 
@@ -63,10 +63,10 @@ export const EnginesTable: React.FC = () => {
 
       {/* Mode selector — 3-button segmented control */}
       <div className="px-3 py-2.5 border-b border-panel-border">
-        <div className="flex rounded-md border border-border overflow-hidden">
+        <div className="flex rounded-md border border-border overflow-hidden shadow-sm">
           <button
             onClick={() => setRoutingMode("single")}
-            className={`flex-1 py-1.5 text-[11px] font-medium transition-colors border-r border-border ${
+            className={`flex-1 py-1.5 text-[12px] font-medium transition-colors border-r border-border ${
               routingMode === "single"
                 ? "bg-primary text-primary-foreground"
                 : "bg-card text-muted-foreground hover:bg-muted/50"
@@ -76,7 +76,7 @@ export const EnginesTable: React.FC = () => {
           </button>
           <button
             onClick={() => setRoutingMode("smart")}
-            className={`flex-1 py-1.5 text-[11px] font-medium transition-colors border-r border-border ${
+            className={`flex-1 py-1.5 text-[12px] font-medium transition-colors border-r border-border ${
               routingMode === "smart"
                 ? "bg-primary text-primary-foreground"
                 : "bg-card text-muted-foreground hover:bg-muted/50"
@@ -86,7 +86,7 @@ export const EnginesTable: React.FC = () => {
           </button>
           <button
             onClick={() => setRoutingMode("benchmark")}
-            className={`flex-1 py-1.5 text-[11px] font-medium transition-colors ${
+            className={`flex-1 py-1.5 text-[12px] font-medium transition-colors ${
               routingMode === "benchmark"
                 ? "bg-amber-600 text-white"
                 : "bg-card text-muted-foreground hover:bg-muted/50"
@@ -163,33 +163,33 @@ const WorkspaceDependencyBanner: React.FC<{
     return (
       <div className="px-3 py-1.5 border-b border-panel-border bg-emerald-50">
         <div className="flex items-center gap-1.5">
-          <CheckCircle2 size={10} className="text-emerald-600 shrink-0" />
-          <span className="text-[10px] text-emerald-700 font-medium truncate">{binding.workspaceName}</span>
-          <span className="text-[9px] text-emerald-600">connected</span>
+          <CheckCircle2 size={11} className="text-emerald-600 shrink-0" />
+          <span className="text-[11px] text-emerald-700 font-medium truncate">{binding.workspaceName}</span>
+          <span className="text-[10px] text-emerald-600">connected</span>
           <button
             onClick={() => setConfirmUnlink(!confirmUnlink)}
-            className="ml-auto text-[9px] text-emerald-600 hover:text-emerald-800 transition-colors"
+            className="ml-auto text-[10px] text-emerald-600 hover:text-emerald-800 transition-colors"
             title="Remove workspace dependency"
           >
-            <Unlink size={9} />
+            <Unlink size={10} />
           </button>
         </div>
         {confirmUnlink && (
           <div className="mt-1.5 p-1.5 rounded bg-amber-50 border border-amber-200">
-            <p className="text-[10px] text-amber-800 mb-1.5">
+            <p className="text-[11px] text-amber-800 mb-1.5">
               This will remove the workspace dependency and clear all warehouse mappings for Databricks engines.
             </p>
             <div className="flex items-center gap-2">
               <button
                 onClick={handleUnlink}
-                className="flex items-center gap-1 text-[10px] text-amber-700 hover:text-amber-900 font-medium transition-colors"
+                className="flex items-center gap-1 text-[11px] text-amber-700 hover:text-amber-900 font-medium transition-colors"
               >
-                <Unlink size={9} />
+                <Unlink size={10} />
                 Confirm unlink
               </button>
               <button
                 onClick={() => setConfirmUnlink(false)}
-                className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
               >
                 Cancel
               </button>
@@ -204,10 +204,10 @@ const WorkspaceDependencyBanner: React.FC<{
   return (
     <div className="px-3 py-2 border-b border-panel-border bg-amber-50">
       <div className="flex items-center gap-1.5 mb-1">
-        <AlertTriangle size={10} className="text-amber-600 shrink-0" />
-        <span className="text-[10px] text-amber-800 font-medium">Workspace required</span>
+        <AlertTriangle size={11} className="text-amber-600 shrink-0" />
+        <span className="text-[11px] text-amber-800 font-medium">Workspace required</span>
       </div>
-      <div className="text-[10px] text-amber-700 mb-1.5">
+      <div className="text-[11px] text-amber-700 mb-1.5">
         {isWrongWorkspace ? (
           <>Profile needs <span className="font-medium">{binding.workspaceName}</span>, but you're connected to <span className="font-medium">{connectedWorkspace!.name}</span>.</>
         ) : (
@@ -216,9 +216,9 @@ const WorkspaceDependencyBanner: React.FC<{
       </div>
       <button
         onClick={onUnlink}
-        className="flex items-center gap-1 text-[10px] text-amber-700 hover:text-amber-900 transition-colors font-medium"
+        className="flex items-center gap-1 text-[11px] text-amber-700 hover:text-amber-900 transition-colors font-medium"
       >
-        <Unlink size={9} />
+        <Unlink size={10} />
         Unlink workspace &amp; clear mappings
       </button>
     </div>
@@ -239,7 +239,7 @@ const SingleEngineView: React.FC<{
 }> = ({ duckdbEngines, databricksEngines, singleEngineId, onSelect, hasConnectedWorkspace, workspaceSatisfied, discoveredWarehouses, warehouseMappings, setWarehouseMapping }) => {
   if (duckdbEngines.length === 0 && databricksEngines.length === 0) {
     return (
-      <div className="px-3 py-4 text-[11px] text-muted-foreground">
+      <div className="px-3 py-4 text-[12px] text-muted-foreground">
         No enabled engines available. Open <span className="font-medium text-primary">Manage Engines</span> to enable engines.
       </div>
     );
@@ -251,8 +251,8 @@ const SingleEngineView: React.FC<{
       {duckdbEngines.length > 0 && (
         <div>
           <div className="flex items-center gap-1.5 mb-1.5">
-            <HardDrive size={10} className="text-emerald-600" />
-            <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">DuckDB</span>
+            <HardDrive size={11} className="text-emerald-600" />
+            <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">DuckDB</span>
           </div>
           <div className="space-y-0.5">
             {duckdbEngines.map(e => (
@@ -269,11 +269,11 @@ const SingleEngineView: React.FC<{
                   onChange={() => onSelect(e.id)}
                   className="accent-primary"
                 />
-                <span className="flex items-center gap-1.5 text-[11px]">
+                <span className="flex items-center gap-1.5 text-[12px]">
                   <span className="inline-block w-[6px] h-[6px] rounded-full shrink-0 bg-status-success" />
                   <span className="font-medium text-foreground">{e.display_name}</span>
                 </span>
-                <span className="ml-auto text-[10px] text-muted-foreground">
+                <span className="ml-auto text-[11px] text-muted-foreground">
                   {e.config.memory_gb}GB / {e.config.cpu_count}CPU
                 </span>
               </label>
@@ -286,8 +286,8 @@ const SingleEngineView: React.FC<{
       {databricksEngines.length > 0 && (
         <div>
           <div className="flex items-center gap-1.5 mb-1.5">
-            <Cloud size={10} className="text-blue-600" />
-            <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Databricks SQL</span>
+            <Cloud size={11} className="text-blue-600" />
+            <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Databricks SQL</span>
           </div>
           <div className="space-y-1">
             {databricksEngines.map(e => {
@@ -314,7 +314,7 @@ const SingleEngineView: React.FC<{
         </div>
       )}
 
-      <p className="mt-2 text-[10px] text-muted-foreground">
+      <p className="mt-2 text-[11px] text-muted-foreground">
         All queries routed directly to the selected engine. No ML model used.
       </p>
     </div>
@@ -347,11 +347,11 @@ const DatabricksEngineRow: React.FC<{
         ) : (
           <input type="checkbox" checked={false} disabled className="accent-primary" />
         )}
-        <span className="flex items-center gap-1.5 text-[11px]">
-          <AlertTriangle size={10} className="text-amber-500 shrink-0" />
+        <span className="flex items-center gap-1.5 text-[12px]">
+          <AlertTriangle size={11} className="text-amber-500 shrink-0" />
           <span className="font-medium text-muted-foreground">{engine.display_name}</span>
         </span>
-        <span className="ml-auto text-[10px] text-amber-600 italic">No workspace</span>
+        <span className="ml-auto text-[11px] text-amber-600 italic">No workspace</span>
       </div>
     );
   }
@@ -366,16 +366,16 @@ const DatabricksEngineRow: React.FC<{
           ) : (
             <input type="checkbox" checked={isEnabled ?? false} disabled className="accent-primary" />
           )}
-          <span className="flex items-center gap-1.5 text-[11px]">
-            <AlertTriangle size={10} className="text-amber-500 shrink-0" />
+          <span className="flex items-center gap-1.5 text-[12px]">
+            <AlertTriangle size={11} className="text-amber-500 shrink-0" />
             <span className="font-medium text-muted-foreground">{engine.display_name}</span>
           </span>
-          <span className="ml-auto text-[10px] text-muted-foreground shrink-0">
+          <span className="ml-auto text-[11px] text-muted-foreground shrink-0">
             {engine.config.cluster_size}
           </span>
         </div>
         <div className="px-2 pb-1.5 pl-[30px]">
-          <span className="text-[10px] text-amber-600 italic">Wrong workspace connected</span>
+          <span className="text-[11px] text-amber-600 italic">Wrong workspace connected</span>
         </div>
       </div>
     );
@@ -413,10 +413,10 @@ const DatabricksEngineRow: React.FC<{
             title={!isMapped ? "Map a warehouse first to enable this engine" : undefined}
           />
         )}
-        <span className="flex items-center gap-1.5 text-[11px] flex-1 min-w-0">
+        <span className="flex items-center gap-1.5 text-[12px] flex-1 min-w-0">
           <span className="font-medium text-foreground">{engine.display_name}</span>
         </span>
-        <span className="text-[10px] text-muted-foreground shrink-0">
+        <span className="text-[11px] text-muted-foreground shrink-0">
           {engine.config.cluster_size}
         </span>
       </div>
@@ -424,17 +424,17 @@ const DatabricksEngineRow: React.FC<{
       {/* Warehouse mapping row */}
       <div className="px-2 pb-1.5 pl-[30px]">
         {warehouseCount === 0 ? (
-          <span className="text-[10px] text-muted-foreground/60 italic">No matching warehouses found</span>
+          <span className="text-[11px] text-muted-foreground/60 italic">No matching warehouses found</span>
         ) : mappedWarehouse ? (
           <div className="flex items-center gap-1.5">
             <span className={`inline-block w-[4px] h-[4px] rounded-full shrink-0 ${
               mappedWarehouse.state === "RUNNING" ? "bg-emerald-500" : "bg-muted-foreground/30"
             }`} />
-            <span className="text-[10px] text-foreground font-medium">{mappedWarehouse.name}</span>
-            <span className="text-[9px] text-muted-foreground">({mappedWarehouse.state.toLowerCase()})</span>
+            <span className="text-[11px] text-foreground font-medium">{mappedWarehouse.name}</span>
+            <span className="text-[10px] text-muted-foreground">({mappedWarehouse.state.toLowerCase()})</span>
             <button
               onClick={() => setWarehouseDropdownOpen(!warehouseDropdownOpen)}
-              className="ml-auto text-[9px] text-primary hover:text-primary/80 transition-colors"
+              className="ml-auto text-[10px] text-primary hover:text-primary/80 transition-colors"
             >
               Change
             </button>
@@ -442,7 +442,7 @@ const DatabricksEngineRow: React.FC<{
         ) : (
           <button
             onClick={() => setWarehouseDropdownOpen(!warehouseDropdownOpen)}
-            className="text-[10px] text-primary hover:text-primary/80 transition-colors"
+            className="text-[11px] text-primary hover:text-primary/80 transition-colors"
           >
             {warehouseCount} warehouse{warehouseCount !== 1 ? "s" : ""} available — select one
           </button>
@@ -450,7 +450,7 @@ const DatabricksEngineRow: React.FC<{
 
         {/* Warehouse dropdown */}
         {warehouseDropdownOpen && warehouseCount > 0 && (
-          <div className="mt-1 border border-border rounded bg-popover shadow-sm overflow-hidden">
+          <div className="mt-1 border border-border rounded bg-popover shadow-md overflow-hidden">
             {matchingWarehouses.map(wh => (
               <button
                 key={wh.id}
@@ -458,7 +458,7 @@ const DatabricksEngineRow: React.FC<{
                   setWarehouseMapping(engine.id, wh.id, wh.name);
                   setWarehouseDropdownOpen(false);
                 }}
-                className={`w-full flex items-center gap-2 px-2 py-1.5 text-left text-[10px] hover:bg-muted/50 transition-colors ${
+                className={`w-full flex items-center gap-2 px-2 py-1.5 text-left text-[11px] hover:bg-muted/50 transition-colors ${
                   currentMapping?.warehouseId === wh.id ? "bg-primary/5" : ""
                 }`}
               >
@@ -477,7 +477,7 @@ const DatabricksEngineRow: React.FC<{
                 setWarehouseMapping(engine.id, null, null);
                 setWarehouseDropdownOpen(false);
               }}
-              className="w-full px-2 py-1 text-left text-[10px] text-muted-foreground hover:bg-muted/50 transition-colors border-t border-border"
+              className="w-full px-2 py-1 text-left text-[11px] text-muted-foreground hover:bg-muted/50 transition-colors border-t border-border"
             >
               Clear mapping
             </button>
@@ -546,14 +546,14 @@ const SmartRoutingView: React.FC<{
     <div className="px-3 py-2 space-y-3">
       {/* Model selector — custom dropdown with "Manage Models..." action */}
       <div>
-        <label className="block text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1.5">
-          <Brain size={10} className="inline mr-1" />
+        <label className="block text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-1.5">
+          <Brain size={11} className="inline mr-1" />
           Model
         </label>
         <div className="relative" ref={dropdownRef}>
           <button
             onClick={() => setModelDropdownOpen(!modelDropdownOpen)}
-            className="w-full flex items-center justify-between bg-card border border-border rounded px-2 py-1.5 text-[11px] font-medium text-foreground cursor-pointer hover:bg-muted/50 transition-colors"
+            className="w-full flex items-center justify-between bg-card border border-border rounded px-2 py-1.5 text-[12px] font-medium text-foreground cursor-pointer hover:bg-muted/50 transition-colors shadow-sm"
           >
             <span className="truncate">
               {activeModel
@@ -571,18 +571,18 @@ const SmartRoutingView: React.FC<{
                 <button
                   key={m.id}
                   onClick={() => { onModelChange(m.id); setModelDropdownOpen(false); }}
-                  className={`w-full flex items-center gap-2 px-2 py-1.5 text-left text-[11px] transition-colors hover:bg-muted/50 ${
+                  className={`w-full flex items-center gap-2 px-2 py-1.5 text-left text-[12px] transition-colors hover:bg-muted/50 ${
                     m.id === activeModelId ? "bg-primary/5" : ""
                   }`}
                 >
                   <span className="font-medium text-foreground truncate">
                     Model #{m.id} — R²={m.latency_model.r_squared}
                   </span>
-                  <span className="ml-auto text-[10px] text-muted-foreground shrink-0">
+                  <span className="ml-auto text-[11px] text-muted-foreground shrink-0">
                     {m.linked_engines.length} engines
                   </span>
                   {m.id === activeModelId && (
-                    <CheckCircle2 size={10} className="text-primary shrink-0" />
+                    <CheckCircle2 size={11} className="text-primary shrink-0" />
                   )}
                 </button>
               ))}
@@ -590,9 +590,9 @@ const SmartRoutingView: React.FC<{
               <div className="border-t border-border">
                 <button
                   onClick={() => { setModelDropdownOpen(false); setModelsDialogOpen(true); }}
-                  className="w-full flex items-center gap-1.5 px-2 py-1.5 text-left text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+                  className="w-full flex items-center gap-1.5 px-2 py-1.5 text-left text-[12px] text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
                 >
-                  <Settings2 size={10} />
+                  <Settings2 size={11} />
                   Manage Models...
                 </button>
               </div>
@@ -608,9 +608,9 @@ const SmartRoutingView: React.FC<{
           {duckdbModelEngines.length > 0 && (
             <div>
               <div className="flex items-center gap-1.5 mb-1">
-                <HardDrive size={10} className="text-emerald-600" />
-                <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">DuckDB</span>
-                <span className="text-[10px] text-muted-foreground">
+                <HardDrive size={11} className="text-emerald-600" />
+                <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">DuckDB</span>
+                <span className="text-[11px] text-muted-foreground">
                   ({duckdbModelEngines.filter(e => enabledEngineIds.has(e.id)).length}/{duckdbModelEngines.length})
                 </span>
               </div>
@@ -630,13 +630,13 @@ const SmartRoutingView: React.FC<{
                         onChange={() => toggleEngineEnabled(e.id)}
                         className="accent-primary"
                       />
-                      <span className="flex items-center gap-1.5 text-[11px]">
+                      <span className="flex items-center gap-1.5 text-[12px]">
                         <span className={`inline-block w-[5px] h-[5px] rounded-full shrink-0 ${
                           e.runtime_state === "running" ? "bg-status-success" : "bg-muted-foreground/40"
                         }`} />
                         <span className="font-medium text-foreground">{e.display_name}</span>
                       </span>
-                      <span className="ml-auto text-[10px] text-muted-foreground">
+                      <span className="ml-auto text-[11px] text-muted-foreground">
                         {e.config.memory_gb}GB / {e.config.cpu_count}CPU
                       </span>
                     </label>
@@ -650,9 +650,9 @@ const SmartRoutingView: React.FC<{
           {databricksModelEngines.length > 0 && (
             <div>
               <div className="flex items-center gap-1.5 mb-1">
-                <Cloud size={10} className="text-blue-600" />
-                <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Databricks SQL</span>
-                <span className="text-[10px] text-muted-foreground">
+                <Cloud size={11} className="text-blue-600" />
+                <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Databricks SQL</span>
+                <span className="text-[11px] text-muted-foreground">
                   ({databricksModelEngines.filter(e => enabledEngineIds.has(e.id)).length}/{databricksModelEngines.length})
                 </span>
               </div>
@@ -683,7 +683,7 @@ const SmartRoutingView: React.FC<{
             </div>
           )}
 
-          <p className="text-[10px] text-muted-foreground">
+          <p className="text-[11px] text-muted-foreground">
             Only engines supported by the selected model are shown. Uncheck to exclude from routing.
           </p>
         </div>
@@ -722,7 +722,7 @@ const BenchmarkingView: React.FC<{
 
   if (allEngines.length === 0) {
     return (
-      <div className="px-3 py-4 text-[11px] text-muted-foreground">
+      <div className="px-3 py-4 text-[12px] text-muted-foreground">
         No engines available. Start a DuckDB engine or connect a workspace.
       </div>
     );
@@ -732,12 +732,12 @@ const BenchmarkingView: React.FC<{
     <div className="px-3 py-2 space-y-3">
       {/* Header with count */}
       <div className="flex items-center gap-1.5">
-        <FlaskConical size={10} className="text-amber-600" />
-        <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+        <FlaskConical size={11} className="text-amber-600" />
+        <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
           Select engines to benchmark
         </span>
         {selectedCount > 0 && (
-          <span className="ml-auto text-[10px] text-amber-700 font-medium">
+          <span className="ml-auto text-[11px] text-amber-700 font-medium">
             {selectedCount} selected
           </span>
         )}
@@ -747,9 +747,9 @@ const BenchmarkingView: React.FC<{
       {duckdbEngines.length > 0 && (
         <div>
           <div className="flex items-center gap-1.5 mb-1.5">
-            <HardDrive size={10} className="text-emerald-600" />
-            <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">DuckDB</span>
-            <span className="text-[10px] text-muted-foreground">
+            <HardDrive size={11} className="text-emerald-600" />
+            <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">DuckDB</span>
+            <span className="text-[11px] text-muted-foreground">
               ({duckdbEngines.filter(e => benchmarkEngineIds.has(e.id)).length}/{duckdbEngines.length})
             </span>
           </div>
@@ -769,11 +769,11 @@ const BenchmarkingView: React.FC<{
                     onChange={() => toggleBenchmarkEngine(e.id)}
                     className="accent-amber-600"
                   />
-                  <span className="flex items-center gap-1.5 text-[11px]">
+                  <span className="flex items-center gap-1.5 text-[12px]">
                     <span className="inline-block w-[5px] h-[5px] rounded-full shrink-0 bg-status-success" />
                     <span className="font-medium text-foreground">{e.display_name}</span>
                   </span>
-                  <span className="ml-auto text-[10px] text-muted-foreground">
+                  <span className="ml-auto text-[11px] text-muted-foreground">
                     {e.config.memory_gb}GB / {e.config.cpu_count}CPU
                   </span>
                 </label>
@@ -787,9 +787,9 @@ const BenchmarkingView: React.FC<{
       {databricksEngines.length > 0 && (
         <div>
           <div className="flex items-center gap-1.5 mb-1.5">
-            <Cloud size={10} className="text-blue-600" />
-            <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Databricks SQL</span>
-            <span className="text-[10px] text-muted-foreground">
+            <Cloud size={11} className="text-blue-600" />
+            <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Databricks SQL</span>
+            <span className="text-[11px] text-muted-foreground">
               ({databricksEngines.filter(e => benchmarkEngineIds.has(e.id)).length}/{databricksEngines.length})
             </span>
           </div>
@@ -821,7 +821,7 @@ const BenchmarkingView: React.FC<{
         </div>
       )}
 
-      <p className="text-[10px] text-muted-foreground">
+      <p className="text-[11px] text-muted-foreground">
         Select engines to include in the benchmark run. Each engine will be tested sequentially.
         {selectedCount === 0 && (
           <span className="block mt-1 text-amber-600 font-medium">

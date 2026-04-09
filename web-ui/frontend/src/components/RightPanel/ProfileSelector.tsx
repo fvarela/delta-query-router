@@ -57,26 +57,26 @@ export const ProfileSelector: React.FC = () => {
   return (
     <div className="px-3 py-2 border-b border-panel-border" ref={dropdownRef}>
       <div className="flex items-center justify-between mb-1.5">
-        <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+        <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
           Profile
         </span>
         <div className="flex items-center gap-2">
           {connectedWorkspace && (
             <button
               onClick={() => setFilterWorkspace(!filterWorkspace)}
-              className={`flex items-center gap-0.5 text-[9px] transition-colors ${
+              className={`flex items-center gap-0.5 text-[10px] transition-colors ${
                 filterWorkspace ? "text-primary font-medium" : "text-muted-foreground hover:text-foreground"
               }`}
               title={filterWorkspace ? "Show all profiles" : "Show only profiles for connected workspace"}
             >
-              <Filter size={9} />
+              <Filter size={10} />
               {filterWorkspace ? "Filtered" : "Filter"}
             </button>
           )}
           {activeProfileId !== null && (
             <button
               onClick={() => clearActiveProfile()}
-              className="text-[9px] text-muted-foreground hover:text-foreground transition-colors"
+              className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
               title="Work without a profile"
             >
               Detach
@@ -91,7 +91,7 @@ export const ProfileSelector: React.FC = () => {
           onClick={() => setIsOpen(!isOpen)}
           className="w-full flex items-center justify-between bg-card border border-border rounded px-2.5 py-1.5 text-left hover:bg-muted/50 transition-colors"
         >
-          <span className={`text-[11px] truncate ${activeProfileName ? "font-medium text-foreground" : "text-muted-foreground italic"}`}>
+          <span className={`text-[12px] truncate ${activeProfileName ? "font-medium text-foreground" : "text-muted-foreground italic"}`}>
             {activeProfileName ?? "No profile loaded"}
           </span>
           <ChevronDown size={12} className={`text-muted-foreground shrink-0 ml-1 transition-transform ${isOpen ? "rotate-180" : ""}`} />
@@ -101,7 +101,7 @@ export const ProfileSelector: React.FC = () => {
         {isOpen && (
           <div className="absolute top-full left-0 right-0 mt-1 bg-popover border border-border rounded-md shadow-md z-50 overflow-hidden max-h-[300px] overflow-y-auto">
             {visibleProfiles.length === 0 && (
-              <div className="px-3 py-2 text-[11px] text-muted-foreground italic">
+              <div className="px-3 py-2 text-[12px] text-muted-foreground italic">
                 {filterWorkspace ? "No profiles for this workspace" : "No saved profiles"}
               </div>
             )}
@@ -114,7 +114,7 @@ export const ProfileSelector: React.FC = () => {
               return (
                 <div
                   key={profile.id}
-                  className={`flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] cursor-pointer transition-colors group ${
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 text-[12px] cursor-pointer transition-colors group ${
                     isActive ? "bg-primary/10 text-foreground" : "hover:bg-muted/50 text-foreground"
                   }`}
                   onClick={() => {
@@ -136,24 +136,24 @@ export const ProfileSelector: React.FC = () => {
                     } transition-colors`}
                     title={profile.is_default ? "Default profile" : "Set as default"}
                   >
-                    <Star size={10} fill={profile.is_default ? "currentColor" : "none"} />
+                    <Star size={11} fill={profile.is_default ? "currentColor" : "none"} />
                   </button>
 
                   {/* Profile name + workspace indicator */}
                   <div className="flex-1 min-w-0">
                     <span className="font-medium truncate block">{profile.name}</span>
                     {wsName && (
-                      <span className={`flex items-center gap-0.5 text-[9px] ${
+                      <span className={`flex items-center gap-0.5 text-[10px] ${
                         wsMatch ? "text-emerald-600" : "text-amber-600"
                       }`}>
-                        <Cloud size={8} />
+                        <Cloud size={9} />
                         <span className="truncate">{wsName}</span>
                       </span>
                     )}
                   </div>
 
                   {/* Mode badge — full labels (UX #8) */}
-                  <span className="text-[9px] text-muted-foreground px-1 py-0.5 rounded bg-muted/50 shrink-0">
+                  <span className="text-[10px] text-muted-foreground px-1 py-0.5 rounded bg-muted/50 shrink-0">
                     {profile.config.routingMode === "single" ? "Single Engine" : "Smart Routing"}
                   </span>
 
@@ -168,13 +168,13 @@ export const ProfileSelector: React.FC = () => {
                           setDeletedMessage(`"${name}" deleted`);
                           setTimeout(() => setDeletedMessage(null), 2500);
                         }}
-                        className="px-1.5 py-0.5 text-[9px] font-medium text-red-600 hover:text-red-700 transition-colors"
+                        className="px-1.5 py-0.5 text-[10px] font-medium text-red-600 hover:text-red-700 transition-colors"
                       >
                         Delete
                       </button>
                       <button
                         onClick={() => setConfirmDeleteId(null)}
-                        className="px-1 py-0.5 text-[9px] text-muted-foreground hover:text-foreground transition-colors"
+                        className="px-1 py-0.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
                       >
                         Cancel
                       </button>
@@ -188,7 +188,7 @@ export const ProfileSelector: React.FC = () => {
                       className="shrink-0 ml-1 text-transparent group-hover:text-muted-foreground/50 hover:!text-destructive transition-colors"
                       title="Delete profile"
                     >
-                      <Trash2 size={10} />
+                      <Trash2 size={11} />
                     </button>
                   )}
                 </div>
@@ -199,7 +199,7 @@ export const ProfileSelector: React.FC = () => {
 
         {/* Deletion notification (UX #14) */}
         {deletedMessage && (
-          <div className="mt-1 text-[10px] text-amber-600 font-medium animate-pulse">
+          <div className="mt-1 text-[11px] text-amber-600 font-medium animate-pulse">
             {deletedMessage}
           </div>
         )}

@@ -3,9 +3,9 @@ import { useApp } from "@/contexts/AppContext";
 import { Zap, Scale, DollarSign, Brain, Radio, Bookmark, Cloud, AlertTriangle, CheckCircle2, FlaskConical } from "lucide-react";
 
 const priorityLabel = (costWeight: number): { label: string; icon: React.ReactNode } => {
-  if (costWeight < 0.01) return { label: "High Performance", icon: <Zap size={11} className="text-amber-500" /> };
-  if (costWeight > 0.99) return { label: "Low Cost", icon: <DollarSign size={11} className="text-emerald-500" /> };
-  return { label: "Balanced", icon: <Scale size={11} className="text-blue-500" /> };
+  if (costWeight < 0.01) return { label: "High Performance", icon: <Zap size={12} className="text-amber-500" /> };
+  if (costWeight > 0.99) return { label: "Low Cost", icon: <DollarSign size={12} className="text-emerald-500" /> };
+  return { label: "Balanced", icon: <Scale size={12} className="text-blue-500" /> };
 };
 
 /** Workspace dependency indicator — shows satisfied/unsatisfied state */
@@ -19,14 +19,14 @@ const WorkspaceDep: React.FC<{
 
   return (
     <>
-      <span className="text-[10px] text-muted-foreground/40">|</span>
-      <span className="flex items-center gap-1 text-[10px]">
+      <span className="text-[11px] text-muted-foreground/40">|</span>
+      <span className="flex items-center gap-1 text-[11px]">
         {isSatisfied ? (
-          <CheckCircle2 size={9} className="text-emerald-500" />
+          <CheckCircle2 size={10} className="text-emerald-500" />
         ) : (
-          <AlertTriangle size={9} className="text-amber-500" />
+          <AlertTriangle size={10} className="text-amber-500" />
         )}
-        <Cloud size={9} className={isSatisfied ? "text-emerald-500" : "text-amber-500"} />
+        <Cloud size={10} className={isSatisfied ? "text-emerald-500" : "text-amber-500"} />
         <span className={`truncate max-w-[120px] ${isSatisfied ? "text-muted-foreground" : "text-amber-600"}`}>
           {binding.workspaceName}
         </span>
@@ -50,25 +50,25 @@ export const CurrentSettings: React.FC = () => {
           {/* Profile name badge */}
           {activeProfileName && (
             <div className="flex items-center gap-1.5">
-              <Bookmark size={10} className="text-[hsl(217,91%,60%)] shrink-0" />
-              <span className="text-[10px] font-medium text-[hsl(217,91%,45%)] truncate">{activeProfileName}</span>
-              {hasUnsavedChanges && <span className="text-[9px] text-amber-600 font-medium">*</span>}
+              <Bookmark size={11} className="text-[hsl(217,91%,60%)] shrink-0" />
+              <span className="text-[11px] font-medium text-[hsl(217,91%,45%)] truncate">{activeProfileName}</span>
+              {hasUnsavedChanges && <span className="text-[10px] text-amber-600 font-medium">*</span>}
             </div>
           )}
 
           {/* Row 1: Single engine info */}
           <div className="flex items-start gap-2">
-            <Radio size={11} className="text-[hsl(217,91%,60%)] mt-[2px] shrink-0" />
+            <Radio size={12} className="text-[hsl(217,91%,60%)] mt-[2px] shrink-0" />
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-1.5">
-                <span className="text-[11px] font-semibold text-foreground">Single Engine</span>
+                <span className="text-[12px] font-semibold text-foreground">Single Engine</span>
               </div>
               {selectedEngine ? (
-                <div className="text-[10px] text-muted-foreground mt-0.5 truncate">
+                <div className="text-[11px] text-muted-foreground mt-0.5 truncate">
                   {selectedEngine.display_name}
                 </div>
               ) : (
-                <div className="text-[10px] text-muted-foreground/60 mt-0.5 italic">
+                <div className="text-[11px] text-muted-foreground/60 mt-0.5 italic">
                   No engine selected
                 </div>
               )}
@@ -77,7 +77,7 @@ export const CurrentSettings: React.FC = () => {
 
           {/* Row 2: Priority + Workspace dependency */}
           <div className="flex items-center gap-3 pl-[19px] flex-wrap">
-            <span className="flex items-center gap-1 text-[10px]">
+            <span className="flex items-center gap-1 text-[11px]">
               {priority.icon}
               <span className="font-medium text-foreground">{priority.label}</span>
             </span>
@@ -98,22 +98,22 @@ export const CurrentSettings: React.FC = () => {
         <div className="px-3 py-2.5 space-y-2">
           {/* Row 1: Benchmarking mode info */}
           <div className="flex items-start gap-2">
-            <FlaskConical size={11} className="text-amber-600 mt-[2px] shrink-0" />
+            <FlaskConical size={12} className="text-amber-600 mt-[2px] shrink-0" />
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-1.5">
-                <span className="text-[11px] font-semibold text-amber-800">Benchmarking</span>
+                <span className="text-[12px] font-semibold text-amber-800">Benchmarking</span>
                 {selectedCount > 0 && (
-                  <span className="text-[10px] text-amber-600">
+                  <span className="text-[11px] text-amber-600">
                     ({selectedCount} engine{selectedCount !== 1 ? "s" : ""})
                   </span>
                 )}
               </div>
               {selectedCount > 0 ? (
-                <div className="text-[10px] text-amber-700/70 mt-0.5 truncate">
+                <div className="text-[11px] text-amber-700/70 mt-0.5 truncate">
                   {selectedEngines.map(e => e.display_name).join(" · ")}
                 </div>
               ) : (
-                <div className="text-[10px] text-amber-600/60 mt-0.5 italic">
+                <div className="text-[11px] text-amber-600/60 mt-0.5 italic">
                   No engines selected
                 </div>
               )}
@@ -122,7 +122,7 @@ export const CurrentSettings: React.FC = () => {
 
           {/* Row 2: Status hint */}
           <div className="pl-[19px]">
-            <span className="text-[10px] text-amber-600/80">
+            <span className="text-[11px] text-amber-600/80">
               {selectedCount === 0
                 ? "Select engines below, then use Run Benchmark in the Collections panel"
                 : "Ready — select a collection and click Run Benchmark"}
@@ -150,28 +150,28 @@ export const CurrentSettings: React.FC = () => {
         {/* Profile name badge */}
         {activeProfileName && (
           <div className="flex items-center gap-1.5">
-            <Bookmark size={10} className="text-[hsl(217,91%,60%)] shrink-0" />
-            <span className="text-[10px] font-medium text-[hsl(217,91%,45%)] truncate">{activeProfileName}</span>
-            {hasUnsavedChanges && <span className="text-[9px] text-amber-600 font-medium">*</span>}
+            <Bookmark size={11} className="text-[hsl(217,91%,60%)] shrink-0" />
+            <span className="text-[11px] font-medium text-[hsl(217,91%,45%)] truncate">{activeProfileName}</span>
+            {hasUnsavedChanges && <span className="text-[10px] text-amber-600 font-medium">*</span>}
           </div>
         )}
 
         {/* Row 1: Smart Routing + engine names */}
         <div className="flex items-start gap-2">
-          <Radio size={11} className="text-[hsl(217,91%,60%)] mt-[2px] shrink-0" />
+          <Radio size={12} className="text-[hsl(217,91%,60%)] mt-[2px] shrink-0" />
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-1.5">
-              <span className="text-[11px] font-semibold text-[hsl(217,91%,45%)]">
+              <span className="text-[12px] font-semibold text-[hsl(217,91%,45%)]">
                 Smart Routing
               </span>
               {availableModelEngines.length > 0 && (
-                <span className="text-[10px] text-muted-foreground">
+                <span className="text-[11px] text-muted-foreground">
                   ({availableModelEngines.length} engine{availableModelEngines.length !== 1 ? "s" : ""})
                 </span>
               )}
             </div>
             {availableModelEngines.length > 0 && (
-              <div className="text-[10px] text-muted-foreground mt-0.5 truncate">
+              <div className="text-[11px] text-muted-foreground mt-0.5 truncate">
                 {availableModelEngines.map(e => e.display_name).join(" · ")}
               </div>
             )}
@@ -180,21 +180,21 @@ export const CurrentSettings: React.FC = () => {
 
         {/* Row 2: Priority + Model + Workspace dependency — compact inline */}
         <div className="flex items-center gap-3 pl-[19px] flex-wrap">
-          <span className="flex items-center gap-1 text-[10px]">
+          <span className="flex items-center gap-1 text-[11px]">
             {priority.icon}
             <span className="font-medium text-foreground">{priority.label}</span>
           </span>
-          <span className="text-[10px] text-muted-foreground/40">|</span>
-          <span className="flex items-center gap-1 text-[10px]">
+          <span className="text-[11px] text-muted-foreground/40">|</span>
+          <span className="flex items-center gap-1 text-[11px]">
             {activeModel ? (
               <>
-                <Brain size={10} className="text-[hsl(217,91%,60%)]" />
+                <Brain size={11} className="text-[hsl(217,91%,60%)]" />
                 <span className="font-medium text-foreground">Model #{activeModel.id}</span>
                 <span className="text-muted-foreground">(R²={activeModel.latency_model.r_squared})</span>
               </>
             ) : (
               <>
-                <Brain size={10} className="text-muted-foreground/40" />
+                <Brain size={11} className="text-muted-foreground/40" />
                 <span className="text-muted-foreground italic">No model</span>
               </>
             )}

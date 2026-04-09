@@ -210,7 +210,7 @@ export const CatalogBrowser: React.FC = () => {
       </div>
       {/* Warning banner when external access is disabled */}
       {metastoreAccess != null && !metastoreAccess.external_access_enabled && (
-        <div className="px-3 py-2 bg-amber-500/10 border-b border-amber-500/30 text-[11px] text-amber-200 flex items-start gap-1.5">
+        <div className="px-3 py-2 bg-amber-500/10 border-b border-amber-500/30 text-[12px] text-amber-200 flex items-start gap-1.5">
           <AlertTriangle size={12} className="shrink-0 mt-0.5 text-amber-400" />
           <span>
             Metastore external access is disabled. DuckDB cannot read managed tables.
@@ -220,7 +220,34 @@ export const CatalogBrowser: React.FC = () => {
       )}
       <div className="flex-1 overflow-y-auto text-[12px]">
         {loadingKeys.has("catalogs") && <div className="p-3"><LoadingSpinner /></div>}
-        {error && <div className="p-3 text-muted-foreground">{error}</div>}
+        {error && (
+          <div className="p-3 flex items-start gap-2">
+            <AlertTriangle size={14} className="text-amber-500 shrink-0 mt-0.5" />
+            <div>
+              <p className="text-[12px] text-muted-foreground">{error}</p>
+              {error === "Failed to load catalogs." && (
+                <button
+                  onClick={() => {
+                    setError(null);
+                    setLoadingKeys(new Set(["catalogs"]));
+                    api.get<CatalogInfo[]>("/api/databricks/catalogs")
+                      .then(c => {
+                        setCatalogs(c);
+                        setLoadingKeys(prev => { const n = new Set(prev); n.delete("catalogs"); return n; });
+                      })
+                      .catch(() => {
+                        setLoadingKeys(prev => { const n = new Set(prev); n.delete("catalogs"); return n; });
+                        setError("Failed to load catalogs.");
+                      });
+                  }}
+                  className="mt-1.5 text-[11px] text-primary hover:text-primary/80 font-medium transition-colors"
+                >
+                  Retry
+                </button>
+              )}
+            </div>
+          </div>
+        )}
         {catalogs.map(cat => (
           <div key={cat.name}>
             <button onClick={() => toggleCatalog(cat.name)} className="flex items-center gap-1 w-full px-3 py-1 hover:bg-muted text-left text-foreground">
@@ -246,7 +273,7 @@ export const CatalogBrowser: React.FC = () => {
                 </button>
                 {/* EUS grant/revoke controls (T88) — shown when schema is expanded */}
                 {expanded[schKey] && sch.external_use_schema != null && (
-                  <div className="pl-10 pr-3 py-1 flex items-center gap-2 text-[10px]">
+                  <div className="pl-10 pr-3 py-1 flex items-center gap-2 text-[11px]">
                     {eusLoading.has(schKey) ? (
                       <LoadingSpinner size={10} />
                     ) : sch.external_use_schema ? (
@@ -255,7 +282,7 @@ export const CatalogBrowser: React.FC = () => {
                         className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-status-warning hover:border-status-warning transition-colors"
                         title="Revoke EXTERNAL USE SCHEMA"
                       >
-                        <Lock size={10} />
+                        <Lock size={11} />
                         <span>Revoke External Use</span>
                       </button>
                     ) : (
@@ -264,7 +291,7 @@ export const CatalogBrowser: React.FC = () => {
                         className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-status-success hover:border-status-success transition-colors"
                         title="Grant EXTERNAL USE SCHEMA"
                       >
-                        <Unlock size={10} />
+                        <Unlock size={11} />
                         <span>Grant External Use</span>
                       </button>
                     )}
@@ -297,8 +324,8 @@ export const CatalogBrowser: React.FC = () => {
 
       {/* Table Detail */}
       {selectedTable && (
-        <div className="border-t border-panel-border p-3 overflow-y-auto text-[11px] max-h-[50%]">
-          <h4 className="font-semibold text-[12px] mb-2 text-foreground">{selectedTable.full_name}</h4>
+        <div className="border-t border-panel-border p-3 overflow-y-auto text-[12px] max-h-[50%]">
+          <h4 className="font-semibold text-[13px] mb-2 text-foreground">{selectedTable.full_name}</h4>
           <div className="space-y-1 text-muted-foreground">
             <p><span className="font-medium text-foreground">Type:</span> {selectedTable.table_type}</p>
             {selectedTable.data_source_format && (
@@ -348,14 +375,14 @@ export const CatalogBrowser: React.FC = () => {
               {selectedTable.columns.map(c => (
                 <div key={c.name} className="flex justify-between text-muted-foreground">
                   <span className="font-mono">{c.name}</span>
-                  <span className="font-mono text-[10px]">{c.type_text}</span>
+                  <span className="font-mono text-[11px]">{c.type_text}</span>
                 </div>
               ))}
             </div>
           </div>
           <button
             onClick={() => handleLoadSample(selectedTable)}
-            className="mt-2 px-3 py-1 bg-primary text-primary-foreground rounded text-[11px] font-medium"
+            className="mt-2 px-3 py-1 bg-primary text-primary-foreground rounded text-[12px] font-medium"
           >
             Load Sample Query
           </button>

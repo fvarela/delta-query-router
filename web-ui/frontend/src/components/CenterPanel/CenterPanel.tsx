@@ -156,17 +156,17 @@ export const CenterPanel: React.FC = () => {
           value={editorSql}
           onChange={e => setEditorSql(e.target.value)}
           placeholder={"-- Enter a SQL query here\nSELECT * FROM delta_router_dev.tpcds.customer LIMIT 10"}
-          className="w-full h-48 resize-y p-3 font-mono text-[13px] bg-background text-foreground border-0 outline-none"
+          className="sql-editor w-full h-48 resize-y p-3 font-mono text-[13px] text-foreground m-0 rounded-none border-x-0 border-t-0"
           spellCheck={false}
         />
       </div>
 
       {/* ── Action bar (fixed) ── */}
-      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-panel-border bg-card shrink-0">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-panel-border bg-card shrink-0 shadow-section">
         <button
           onClick={handleRun}
           disabled={executing || !editorSql.trim()}
-          className="flex items-center gap-1.5 px-4 py-1.5 bg-primary text-primary-foreground rounded-md text-[12px] font-medium disabled:opacity-50"
+          className="flex items-center gap-1.5 px-4 py-1.5 bg-primary text-primary-foreground rounded-md text-[12px] font-semibold disabled:opacity-50 hover:bg-primary/90 transition-colors shadow-sm"
         >
           {executing ? <LoadingSpinner size={14} /> : <Play size={13} />}
           Run
@@ -182,7 +182,7 @@ export const CenterPanel: React.FC = () => {
           <button
             onClick={handleAddToCollection}
             disabled={addingToCollection}
-            className="flex items-center gap-1 ml-auto px-3 py-1.5 border border-border rounded-md text-[11px] font-medium text-foreground hover:bg-muted disabled:opacity-50"
+            className="flex items-center gap-1 ml-auto px-3 py-1.5 border border-border rounded-md text-[11px] font-medium text-foreground hover:bg-muted disabled:opacity-50 transition-colors"
           >
             <FolderPlus size={12} />
             {addedConfirm ? "Added!" : "Add to Collection"}
@@ -203,7 +203,7 @@ export const CenterPanel: React.FC = () => {
           </div>
         )}
         {queryError && !executing && (
-          <div className="mx-3 my-2 p-3 rounded border border-status-error/30 bg-status-error/10">
+          <div className="mx-3 my-2 p-3 rounded-md border border-status-error/30 bg-status-error/10">
             <div className="flex items-start gap-2">
               <span className="text-status-error text-[12px] font-semibold shrink-0">Error</span>
               <p className="text-[12px] text-status-error/90 font-mono break-all">{queryError}</p>
@@ -215,8 +215,8 @@ export const CenterPanel: React.FC = () => {
 
       {/* ── Query History (scrollable, takes remaining space) ── */}
       <div className="flex-1 min-h-0 flex flex-col border-t border-panel-border">
-        <div className="flex items-center gap-2 px-3 py-1.5 bg-card shrink-0">
-          <Clock size={12} className="text-muted-foreground" />
+        <div className="flex items-center gap-2 px-3 py-2 bg-card shrink-0 shadow-section">
+          <Clock size={13} className="text-muted-foreground" />
           <span className="text-[12px] font-semibold text-foreground">Query History</span>
           <select
             value={logFilter}
@@ -229,14 +229,14 @@ export const CenterPanel: React.FC = () => {
           </select>
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto border-t border-border">
-          <table className="w-full text-[11px]">
+          <table className="w-full text-[12px]">
             <thead className="sticky top-0 z-10">
               <tr className="bg-muted">
-                <th className="text-left px-2 py-1 border-b border-border">Time</th>
-                <th className="text-left px-2 py-1 border-b border-border">Query</th>
-                <th className="text-left px-2 py-1 border-b border-border">Engine</th>
-                <th className="text-center px-2 py-1 border-b border-border">Status</th>
-                <th className="text-right px-2 py-1 border-b border-border">Latency</th>
+                <th className="text-left px-2 py-1.5 border-b border-border font-medium text-muted-foreground">Time</th>
+                <th className="text-left px-2 py-1.5 border-b border-border font-medium text-muted-foreground">Query</th>
+                <th className="text-left px-2 py-1.5 border-b border-border font-medium text-muted-foreground">Engine</th>
+                <th className="text-center px-2 py-1.5 border-b border-border font-medium text-muted-foreground">Status</th>
+                <th className="text-right px-2 py-1.5 border-b border-border font-medium text-muted-foreground">Latency</th>
               </tr>
             </thead>
             <tbody>
@@ -246,16 +246,16 @@ export const CenterPanel: React.FC = () => {
                   onClick={() => handleRowClick(l)}
                   className={`${i % 2 ? "bg-card" : ""} ${l.status !== "running" ? "cursor-pointer hover:bg-primary/5" : ""}`}
                 >
-                  <td className="px-2 py-1 border-b border-border whitespace-nowrap text-muted-foreground">
+                  <td className="px-2 py-1.5 border-b border-border whitespace-nowrap text-muted-foreground">
                     {l.timestamp.slice(11, 19) || l.timestamp}
                   </td>
-                  <td className="px-2 py-1 border-b border-border max-w-[200px] truncate font-mono text-foreground">
+                  <td className="px-2 py-1.5 border-b border-border max-w-[200px] truncate font-mono text-foreground">
                     {l.query_text.slice(0, 60)}
                   </td>
-                  <td className="px-2 py-1 border-b border-border whitespace-nowrap text-foreground">
+                  <td className="px-2 py-1.5 border-b border-border whitespace-nowrap text-foreground">
                     {l.status === "running" ? <span className="text-muted-foreground italic">routing...</span> : l.engine_display_name}
                   </td>
-                  <td className="px-2 py-1 border-b border-border text-center">
+                  <td className="px-2 py-1.5 border-b border-border text-center">
                     {l.status === "running" ? (
                       <span className="inline-flex items-center gap-1 text-primary text-[10px] font-medium">
                         <LoadingSpinner size={10} /> Running
@@ -266,7 +266,7 @@ export const CenterPanel: React.FC = () => {
                       </StatusBadge>
                     )}
                   </td>
-                  <td className={`px-2 py-1 border-b border-border text-right ${l.status === "running" ? "text-muted-foreground" : latencyColor(l.latency_ms)}`}>
+                  <td className={`px-2 py-1.5 border-b border-border text-right font-mono ${l.status === "running" ? "text-muted-foreground" : latencyColor(l.latency_ms)}`}>
                     {l.status === "running" ? "—" : `${l.latency_ms}ms`}
                   </td>
                 </tr>
@@ -304,12 +304,12 @@ const ResultsView: React.FC<{ result: QueryExecutionResult }> = ({ result }) => 
     </div>
 
     {/* Results Table (max 10 rows, horizontally scrollable) */}
-    <div className="border border-border rounded overflow-x-auto">
-      <table className="min-w-full text-[11px]">
+    <div className="border border-border rounded-md overflow-x-auto shadow-section">
+      <table className="min-w-full text-[12px]">
         <thead>
           <tr className="bg-muted">
             {result.columns.map(c => (
-              <th key={c} className="text-left px-2 py-1 border-b border-border font-mono font-medium text-foreground whitespace-nowrap">{c}</th>
+              <th key={c} className="text-left px-2 py-1.5 border-b border-border font-mono font-medium text-foreground whitespace-nowrap">{c}</th>
             ))}
           </tr>
         </thead>

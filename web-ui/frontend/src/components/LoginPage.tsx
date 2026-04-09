@@ -20,8 +20,8 @@ export const LoginPage: React.FC = () => {
       <div className="w-[340px]">
         {/* Header */}
         <div className="mb-8">
-          <h1 className="text-[15px] font-semibold text-foreground">Delta Router</h1>
-          <p className="text-[12px] text-muted-foreground mt-1">Sign in to continue</p>
+          <h1 className="text-[20px] font-semibold text-foreground">Delta Router</h1>
+          <p className="text-[13px] text-muted-foreground mt-1">Sign in to continue</p>
         </div>
 
         {/* Form */}

@@ -212,14 +212,14 @@ export const CollectionsPanel: React.FC = () => {
           <span className="font-semibold text-foreground">Benchmark #{benchmarkDetail.id}</span>
         </div>
         <div className="flex-1 overflow-y-auto p-3 space-y-3">
-          <div className="text-[11px] text-muted-foreground">
+          <div className="text-[12px] text-muted-foreground">
             <p>Date: {new Date(benchmarkDetail.created_at).toLocaleString()}</p>
             <p>Engines: {benchmarkDetail.engine_count} | Queries: {queryIds.length}</p>
           </div>
 
           <div>
             <h4 className="font-semibold mb-1 text-foreground">Warm-up Times</h4>
-            <table className="w-full border border-border text-[11px]">
+            <table className="w-full border border-border text-[12px]">
               <thead><tr className="bg-muted"><th className="text-left px-2 py-1 border-b border-border">Engine</th><th className="text-right px-2 py-1 border-b border-border">Cold Start (ms)</th></tr></thead>
               <tbody>
                 {benchmarkDetail.warmups.map(w => (
@@ -235,7 +235,7 @@ export const CollectionsPanel: React.FC = () => {
           <div>
             <h4 className="font-semibold mb-1 text-foreground">Results (ms)</h4>
             <div className="overflow-x-auto">
-              <table className="border-collapse border border-border text-[11px]" style={{ minWidth: "100%" }}>
+              <table className="border-collapse border border-border text-[12px]" style={{ minWidth: "100%" }}>
                 <thead>
                   <tr className="bg-muted">
                     <th className="text-left px-2 py-1 border-b border-r border-border sticky left-0 bg-muted z-10 min-w-[100px]">Engine</th>
@@ -295,7 +295,7 @@ export const CollectionsPanel: React.FC = () => {
             <button onClick={() => { setActiveCollection(null); setCollectionContext(null); }}><ArrowLeft size={14} /></button>
             <span className="font-semibold text-foreground">{activeCollection.name}</span>
             {readOnly && (
-              <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[9px] font-medium flex items-center gap-0.5">
+              <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[10px] font-medium flex items-center gap-0.5">
                 <Lock size={8} /> TPC-DS
               </span>
             )}
@@ -306,7 +306,7 @@ export const CollectionsPanel: React.FC = () => {
             </button>
           )}
         </div>
-        <p className="px-3 py-1 text-[11px] text-muted-foreground">{activeCollection.description}</p>
+        <p className="px-3 py-1 text-[12px] text-muted-foreground">{activeCollection.description}</p>
 
         {/* TPC-DS dataset not configured warning */}
         {tpcdsNotConfigured && (
@@ -331,7 +331,7 @@ export const CollectionsPanel: React.FC = () => {
               >
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="font-medium text-muted-foreground shrink-0">Q{q.sequence_number}</span>
-                  <span className="truncate font-mono text-[11px] text-foreground">{q.query_text.slice(0, 60)}</span>
+                  <span className="truncate font-mono text-[12px] text-foreground">{q.query_text.slice(0, 60)}</span>
                 </div>
                 {!readOnly && (
                   <button onClick={e => { e.stopPropagation(); setDeleteQueryId(q.id); }} className="text-muted-foreground hover:text-status-error shrink-0 ml-1">
@@ -348,7 +348,7 @@ export const CollectionsPanel: React.FC = () => {
               {runningBenchmark ? (
                 <div className="space-y-2">
                   <LoadingSpinner />
-                  <p className="text-[11px] text-muted-foreground">Running benchmark...</p>
+                  <p className="text-[12px] text-muted-foreground">Running benchmark...</p>
                 </div>
               ) : (
                 <>
@@ -361,7 +361,7 @@ export const CollectionsPanel: React.FC = () => {
                         <button
                           onClick={handleRunBenchmark}
                           disabled={isDisabled}
-                          className={`px-3 py-1.5 rounded-md text-[11px] font-medium w-full ${
+                          className={`px-3 py-1.5 rounded-md text-[12px] font-medium w-full ${
                             isDisabled
                               ? "bg-muted text-muted-foreground cursor-not-allowed"
                               : "bg-amber-600 text-white hover:bg-amber-700"
@@ -370,12 +370,12 @@ export const CollectionsPanel: React.FC = () => {
                           Run Benchmark
                         </button>
                         {!isBenchmarkMode && (
-                          <p className="text-[10px] text-muted-foreground mt-1">
+                          <p className="text-[11px] text-muted-foreground mt-1">
                             Switch to Benchmarking mode in the right panel to run benchmarks.
                           </p>
                         )}
                         {isBenchmarkMode && !hasEnginesSelected && (
-                          <p className="text-[10px] text-amber-600 mt-1">
+                          <p className="text-[11px] text-amber-600 mt-1">
                             Select engines in the right panel to enable.
                           </p>
                         )}
@@ -383,7 +383,7 @@ export const CollectionsPanel: React.FC = () => {
                     );
                   })()}
                   {benchmarkError && (
-                    <p className="text-[11px] text-status-error mt-1">{benchmarkError}</p>
+                    <p className="text-[12px] text-status-error mt-1">{benchmarkError}</p>
                   )}
                 </>
               )}
@@ -394,24 +394,24 @@ export const CollectionsPanel: React.FC = () => {
           {collectionEngineRuns.length > 0 && (
             <div className="px-3 py-2 border-t border-panel-border">
               <div className="flex items-center gap-1.5 mb-1.5">
-                <BarChart3 size={11} className="text-muted-foreground" />
-                <span className="text-[11px] font-semibold text-foreground">Runs by Engine</span>
+                <BarChart3 size={12} className="text-muted-foreground" />
+                <span className="text-[12px] font-semibold text-foreground">Runs by Engine</span>
               </div>
               {collectionEngineRuns.map(({ definitionId, engineName, runCount }) => (
                 <div
                   key={definitionId}
-                  className="flex items-center justify-between px-2 py-1.5 hover:bg-muted/30 rounded text-[11px]"
+                  className="flex items-center justify-between px-2 py-1.5 hover:bg-muted/30 rounded text-[12px]"
                 >
                   <span className="text-foreground font-medium truncate min-w-0">{engineName}</span>
                   {runCount > 0 ? (
                     <button
                       onClick={() => setRunsDialog({ definitionId, engineName })}
-                      className="text-[10px] text-primary hover:underline shrink-0 ml-2"
+                      className="text-[11px] text-primary hover:underline shrink-0 ml-2"
                     >
                       {runCount} run{runCount !== 1 ? "s" : ""}
                     </button>
                   ) : (
-                    <span className="text-[10px] text-muted-foreground shrink-0 ml-2">No runs</span>
+                    <span className="text-[11px] text-muted-foreground shrink-0 ml-2">No runs</span>
                   )}
                 </div>
               ))}
@@ -425,7 +425,7 @@ export const CollectionsPanel: React.FC = () => {
                 <button
                   key={b.id}
                   onClick={() => openBenchmarkDetail(b.id)}
-                  className="flex items-center justify-between w-full px-2 py-1 hover:bg-muted rounded text-[11px]"
+                  className="flex items-center justify-between w-full px-2 py-1 hover:bg-muted rounded text-[12px]"
                 >
                   <span className="text-foreground">{new Date(b.created_at).toLocaleDateString()}</span>
                   <div className="flex items-center gap-2">
@@ -465,7 +465,7 @@ export const CollectionsPanel: React.FC = () => {
         <button onClick={() => setShowCreate(true)} className="text-primary hover:text-primary/80" title="New collection"><Plus size={14} /></button>
       </div>
 
-      <div className="px-3 py-2 text-[10px] text-muted-foreground border-b border-border">
+      <div className="px-3 py-2 text-[11px] text-muted-foreground border-b border-border">
         Group queries into collections, then run benchmarks to measure engine performance.
       </div>
 
@@ -486,10 +486,10 @@ export const CollectionsPanel: React.FC = () => {
           <>
             <div className="px-3 py-1.5 flex items-center gap-1.5 bg-muted/30 border-b border-border">
               <Database size={11} className="text-amber-500" />
-              <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">TPC-DS Benchmarks</span>
+              <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">TPC-DS Benchmarks</span>
               {!tpcdsConfigured && (
-                <span className="ml-auto flex items-center gap-0.5 text-[9px] text-amber-600">
-                  <AlertTriangle size={9} /> Not configured
+                <span className="ml-auto flex items-center gap-0.5 text-[10px] text-amber-600">
+                  <AlertTriangle size={10} /> Not configured
                 </span>
               )}
             </div>
@@ -504,10 +504,10 @@ export const CollectionsPanel: React.FC = () => {
                     <Lock size={9} className="text-amber-500" />
                     <span className="text-foreground font-medium">{c.name}</span>
                   </div>
-                  <span className="text-[10px] text-muted-foreground">{c.queries.length} queries</span>
-                </div>
-                {c.description && (
-                  <span className="text-[10px] text-muted-foreground truncate pl-[18px]">{c.description}</span>
+                   <span className="text-[11px] text-muted-foreground">{c.queries.length} queries</span>
+                 </div>
+                 {c.description && (
+                   <span className="text-[11px] text-muted-foreground truncate pl-[18px]">{c.description}</span>
                 )}
               </button>
             ))}
@@ -518,7 +518,7 @@ export const CollectionsPanel: React.FC = () => {
         {userCollections.length > 0 && (
           <>
             <div className="px-3 py-1.5 flex items-center gap-1.5 bg-muted/30 border-b border-border">
-              <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">User Collections</span>
+              <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">User Collections</span>
             </div>
             {userCollections.map(c => (
               <button
@@ -528,10 +528,10 @@ export const CollectionsPanel: React.FC = () => {
               >
                 <div className="flex items-center justify-between w-full">
                   <span className="text-foreground font-medium">{c.name}</span>
-                  <span className="text-[10px] text-muted-foreground">{c.queries.length} queries</span>
+                  <span className="text-[11px] text-muted-foreground">{c.queries.length} queries</span>
                 </div>
                 {c.description && (
-                  <span className="text-[10px] text-muted-foreground truncate">{c.description}</span>
+                  <span className="text-[11px] text-muted-foreground truncate">{c.description}</span>
                 )}
               </button>
             ))}
@@ -539,7 +539,7 @@ export const CollectionsPanel: React.FC = () => {
         )}
 
         {tpcdsCollections.length === 0 && userCollections.length === 0 && (
-          <div className="px-3 py-6 text-center text-muted-foreground text-[11px]">
+          <div className="px-3 py-6 text-center text-muted-foreground text-[12px]">
             No collections yet. Create one or configure TPC-DS datasets.
           </div>
         )}
@@ -591,7 +591,7 @@ const RunsDialog: React.FC<{
                   ? `Run #${selectedRun.id} — ${new Date(selectedRun.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`
                   : `${engineName} — ${runs.length} run${runs.length !== 1 ? "s" : ""}`}
               </h3>
-              <p className="text-[10px] text-muted-foreground mt-0.5">
+              <p className="text-[11px] text-muted-foreground mt-0.5">
                 {selectedRun
                   ? `${selectedRun.results.length} queries`
                   : view === "statistics"
@@ -610,7 +610,7 @@ const RunsDialog: React.FC<{
           <div className="flex items-center gap-1 px-4 py-2 border-b border-border bg-muted/20 shrink-0">
             <button
               onClick={() => setView("runs")}
-              className={`px-2.5 py-1 text-[10px] font-medium rounded transition-colors ${
+              className={`px-2.5 py-1 text-[11px] font-medium rounded transition-colors ${
                 view === "runs" ? "bg-background text-foreground shadow-sm border border-border" : "text-muted-foreground hover:text-foreground"
               }`}
             >
@@ -618,7 +618,7 @@ const RunsDialog: React.FC<{
             </button>
             <button
               onClick={() => setView("statistics")}
-              className={`px-2.5 py-1 text-[10px] font-medium rounded transition-colors ${
+              className={`px-2.5 py-1 text-[11px] font-medium rounded transition-colors ${
                 view === "statistics" ? "bg-background text-foreground shadow-sm border border-border" : "text-muted-foreground hover:text-foreground"
               }`}
             >
@@ -650,7 +650,7 @@ const RunListView: React.FC<{
 }> = ({ runs, onViewDetail }) => {
   if (runs.length === 0) {
     return (
-      <div className="px-4 py-6 text-center text-[11px] text-muted-foreground">
+      <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">
         No run data available. Run a benchmark to see results.
       </div>
     );
@@ -669,7 +669,7 @@ const RunListView: React.FC<{
         return (
           <div
             key={run.id}
-            className={`flex items-center gap-3 px-4 py-2.5 text-[11px] ${
+            className={`flex items-center gap-3 px-4 py-2.5 text-[12px] ${
               idx > 0 ? "border-t border-border/50" : ""
             } hover:bg-muted/30 transition-colors`}
           >
@@ -679,7 +679,7 @@ const RunListView: React.FC<{
                 <span className="text-foreground font-medium">{dateStr}</span>
                 <span className="text-muted-foreground">{timeStr}</span>
               </div>
-              <div className="flex items-center gap-3 mt-0.5 text-[10px] text-muted-foreground">
+              <div className="flex items-center gap-3 mt-0.5 text-[11px] text-muted-foreground">
                 <span>Total: <span className="font-mono text-foreground">{totalMs >= 1000 ? `${(totalMs / 1000).toFixed(1)}s` : `${totalMs}ms`}</span></span>
                 <span>{queryCount} quer{queryCount !== 1 ? "ies" : "y"}</span>
                 {warmup && <span>Cold start: <span className={`font-mono ${latencyColor(warmup.cold_start_time_ms ?? 0)}`}>{warmup.cold_start_time_ms}ms</span></span>}
@@ -687,7 +687,7 @@ const RunListView: React.FC<{
             </div>
             <button
               onClick={() => onViewDetail(run)}
-              className="flex items-center gap-1 text-[10px] text-primary hover:underline shrink-0"
+              className="flex items-center gap-1 text-[11px] text-primary hover:underline shrink-0"
             >
               Details <ExternalLink size={9} />
             </button>
@@ -710,7 +710,7 @@ const RunDetailView: React.FC<{ runDetail: BenchmarkRunDetail }> = ({ runDetail 
   return (
     <div className="px-4 py-3">
       {/* Summary stats */}
-      <div className="flex items-center gap-4 mb-3 text-[11px]">
+      <div className="flex items-center gap-4 mb-3 text-[12px]">
         {warmup && (
           <div className="flex items-center gap-1.5">
             <span className="text-muted-foreground">Cold start:</span>
@@ -733,7 +733,7 @@ const RunDetailView: React.FC<{ runDetail: BenchmarkRunDetail }> = ({ runDetail 
 
       {/* Per-query results table */}
       <div className="border border-border rounded overflow-hidden">
-        <table className="w-full text-[10px]">
+        <table className="w-full text-[11px]">
           <thead>
             <tr className="bg-muted">
               <th className="text-left px-2 py-1.5 border-b border-border font-semibold">Query</th>
@@ -767,7 +767,7 @@ const RunDetailView: React.FC<{ runDetail: BenchmarkRunDetail }> = ({ runDetail 
       </div>
 
       {/* Bottom stats */}
-      <div className="flex items-center gap-4 mt-3 text-[10px] text-muted-foreground">
+      <div className="flex items-center gap-4 mt-3 text-[11px] text-muted-foreground">
         <span>Min: <span className="font-mono text-foreground">{minMs}ms</span></span>
         <span>Max: <span className="font-mono text-foreground">{maxMs}ms</span></span>
         <span>Avg: <span className="font-mono text-foreground">{avgMs}ms</span></span>
@@ -823,7 +823,7 @@ const RunStatisticsView: React.FC<{ runs: BenchmarkRunDetail[] }> = ({ runs }) =
 
   if (stats.length === 0) {
     return (
-      <div className="px-4 py-6 text-center text-[11px] text-muted-foreground">
+      <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">
         No data available to compute statistics.
       </div>
     );
@@ -837,7 +837,7 @@ const RunStatisticsView: React.FC<{ runs: BenchmarkRunDetail[] }> = ({ runs }) =
   return (
     <div className="px-4 py-3">
       {/* Summary */}
-      <div className="flex items-center gap-4 mb-3 text-[11px]">
+      <div className="flex items-center gap-4 mb-3 text-[12px]">
         <div className="flex items-center gap-1.5">
           <span className="text-muted-foreground">Runs:</span>
           <span className="font-mono text-foreground">{runs.length}</span>
@@ -854,7 +854,7 @@ const RunStatisticsView: React.FC<{ runs: BenchmarkRunDetail[] }> = ({ runs }) =
 
       {/* Per-query statistics table */}
       <div className="border border-border rounded overflow-hidden">
-        <table className="w-full text-[10px]">
+        <table className="w-full text-[11px]">
           <thead>
             <tr className="bg-muted">
               <th className="text-left px-2 py-1.5 border-b border-border font-semibold">Query</th>
@@ -911,7 +911,7 @@ const RunStatisticsView: React.FC<{ runs: BenchmarkRunDetail[] }> = ({ runs }) =
       </div>
 
       {/* Overall stats */}
-      <div className="flex items-center gap-4 mt-3 text-[10px] text-muted-foreground">
+      <div className="flex items-center gap-4 mt-3 text-[11px] text-muted-foreground">
         <span>Overall min: <span className="font-mono text-foreground">{globalMin}ms</span></span>
         <span>Overall max: <span className="font-mono text-foreground">{globalMaxVal}ms</span></span>
         <span>Mean avg: <span className="font-mono text-foreground">{globalAvg}ms</span></span>

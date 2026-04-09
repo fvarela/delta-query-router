@@ -5,8 +5,8 @@ export const TopBar: React.FC = () => {
   const { username, logout } = useAuth();
 
   return (
-    <div className="h-10 border-b border-panel-border bg-background flex items-center px-4 shrink-0">
-      <span className="text-[13px] font-semibold text-foreground">Delta Router</span>
+    <div className="h-11 border-b border-panel-border bg-background flex items-center px-4 shrink-0 shadow-panel">
+      <span className="text-[15px] font-bold text-foreground tracking-tight">Delta Router</span>
       <div className="ml-auto flex items-center gap-3">
         {username && (
           <span className="text-[12px] text-muted-foreground">{username}</span>
