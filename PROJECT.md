@@ -86,7 +86,7 @@ A warm-up phase precedes each benchmark run: a probe query is sent to each engin
 **Decision (2026-03-14):** Each engine (Databricks SQL Warehouse or DuckDB configuration) is a row in the `engines` table. DuckDB configurations are separate K8s Deployments, each with its own Service and resource limits — Cluster Autoscaler handles node provisioning when pods can't be scheduled. The `engines` table is built with the first feature that needs it (likely benchmarks), not as a standalone migration. Engine IDs in existing benchmark and model tables become FKs once the engines table lands.
 
 **Engine registry schema:**
-- `engines`: id (text PK, e.g. `duckdb:1gb-1cpu`, `databricks:serverless-2xs`), engine_type (text: `databricks_sql` / `duckdb`), display_name, config (JSONB — memory_gb, cpu_cores for DuckDB; cluster_size for Databricks), k8s_service_name (for DuckDB engines — the K8s Service the routing-service calls), cost_tier (integer 1–10), is_active (boolean), created_at, updated_at. **Simplified in Phase 15:** No `catalog_id` FK — the separate `engine_catalog` table concept was abandoned (see ODQ-7 revision). No `is_temporary` or `benchmark_run_id` — temporary engine provisioning deferred. 6 predefined engines (3 DuckDB + 3 Databricks) seeded by schema migration.
+- `engines`: id (text PK, e.g. `duckdb:1gb-1cpu`, `databricks:serverless-2xs`), engine_type (text: `databricks_sql` / `duckdb`), display_name, config (JSONB — memory_gb, cpu_cores for DuckDB; cluster_size for Databricks), k8s_service_name (for DuckDB engines — the K8s Service the routing-service calls), cost_tier (integer 1–10), is_active (boolean), scale_policy (text: `always_on` / `scale_to_zero`, default `always_on`), created_at, updated_at. **Simplified in Phase 15:** No `catalog_id` FK — the separate `engine_catalog` table concept was abandoned (see ODQ-7 revision). No `is_temporary` or `benchmark_run_id` — temporary engine provisioning deferred. 6 predefined engines (3 DuckDB + 3 Databricks) seeded by schema migration.
 - `engine_preferences`: id, engine_id (FK to engines), preference_order (int), created_at — stores user-defined engine ordering for fallback routing when no ML model is available
 
 **DuckDB multi-config deployment model:**
@@ -159,7 +159,7 @@ See ODQ-7 (revised 2026-04-09) for full details on engine management, routing pr
 - Databricks engine rows show three-tier disabled state: (1) no workspace connected → grayed out, (2) wrong workspace connected → disabled + warning, (3) correct workspace → interactive, gated by warehouse mapping.
 
 **Engine lifecycle:**
-- **DuckDB active engines: always-on (replicas=1).** Scale-to-0 was evaluated and rejected — DuckDB on K8s cold start is ~6-18s and requires significant K8s tuning. Active DuckDB engines stay running.
+- **DuckDB engines have a `scale_policy` field: `always_on` or `scale_to_zero`.** Engines used for active routing (in a profile's `enabledEngineIds`) default to `always_on` (replicas=1) for low-latency queries. Engines used only for benchmarking or not currently in use can be set to `scale_to_zero` — they spin up on demand (~6-18s cold start on K8s) and scale back down when idle. The cold start is acceptable for benchmark runs but not for production query routing. Actual K8s replica management (adjusting Deployment replicas based on `scale_policy`) is deferred — this phase stores the preference only.
 - **Databricks engines** follow their normal warehouse auto-stop behavior. Warehouses are mapped to engine types per routing profile (see routing profiles below).
 - **Temporary engine provisioning** (creating K8s Deployments for benchmark-only DuckDB workers) is deferred — benchmarks run on the permanently deployed engines.
 
@@ -775,7 +775,7 @@ The routing-service is the single API backend. The web-ui proxies all calls thro
 - `GET /api/databricks/catalogs/{catalog}/schemas/{schema}/tables` — list tables with type and external access flags
 
 **Query execution:**
-- `POST /api/query` — submit SQL with `routing_mode` (duckdb / databricks / smart). Routing pipeline is configured server-side (rules, ML model, preferences) — no per-query parameters.
+- `POST /api/query` — submit SQL with optional `profile_id` (uses default profile if omitted). Routing pipeline configured by the profile's config (mode, enabled engines, priority). Also accepts legacy `routing_mode` (duckdb / databricks / smart) for backward compatibility.
 - `GET /api/query/{correlation_id}` — retrieve past query result and routing decision
 
 **Collections:**
@@ -820,6 +820,7 @@ The routing-service is the single API backend. The web-ui proxies all calls thro
 **Engines:**
 - `GET /api/engines` — list all 6 predefined engines (active and inactive)
 - `GET /api/engines/{id}` — get engine details
+- `PUT /api/engines/{id}` — update engine settings (scale_policy, is_active). Cannot change engine_type, config, or other immutable fields
 - `PUT /api/engines/preferences` — set engine preference order (for fallback routing)
 - `GET /api/engines/preferences` — get current engine preference order
 
@@ -947,6 +948,9 @@ Small items that don't warrant their own phase but should be addressed. These ar
 - [ ] **PostgreSQL schema: add training_collection_ids to models.** JSONB array column tracking which collections were used during model training. Enables Model Detail View to show training provenance. *(Phase 15 Stage B.)*
 - [ ] **PostgreSQL schema: add tag column to collections.** `tag TEXT DEFAULT 'user'` — values: `'tpcds'` (system, read-only in UI) or `'user'` (default). TPC-DS collections seeded with `tag = 'tpcds'`. *(Phase 15 Stage B.)*
 - [ ] **Add GET /api/tpcds/detect endpoint.** Returns `{ sf1: bool, sf10: bool, sf100: bool }` by checking for existence of `delta_router_tpcds.sf{n}` schemas. No database lookup needed — deterministic paths. *(Phase 15 Stage B.)*
+- [ ] **PostgreSQL schema: add scale_policy to engines table.** `scale_policy TEXT NOT NULL DEFAULT 'always_on' CHECK (scale_policy IN ('always_on', 'scale_to_zero'))`. DuckDB engines default to `always_on`. Databricks engines default to `scale_to_zero` (external, auto-stop managed by Databricks). *(Phase 15 Stage B.)*
+- [ ] **Add PUT /api/engines/{id} endpoint.** Update mutable engine fields: `scale_policy`, `is_active`. Immutable fields (engine_type, config, display_name) cannot be changed. *(Phase 15 Stage B.)*
+- [ ] **POST /api/query: add optional profile_id parameter.** When provided, routing uses that profile's config. When omitted, uses the default profile. Enables SDK clients to specify routing profiles programmatically. *(Phase 15 Stage B.)*
 - [ ] **Routing-service RBAC: extend to Deployments and Services.** The routing-service Role currently only covers Secrets. Extend to include `apiGroups: ["apps"]`, `resources: ["deployments"]`, `verbs: ["get", "create", "delete"]` and `apiGroups: [""]`, `resources: ["services"]`, `verbs: ["get", "create", "delete"]` for temporary DuckDB engine provisioning during benchmarks. *(Deferred — temporary engine provisioning not in Phase 15 scope. DuckDB engines are always-on.)*
 - [x] **PostgreSQL schema: add storage_latency_probes table.** *(Created in Phase 10, Task 35.)*
 - [x] **PostgreSQL schema: update models table for latency-only architecture.** *(Done in Phase 13, Task 72. `models` table created with latency-only JSONB, training_queries, linked_engines. No model_type or cost_model fields.)*
