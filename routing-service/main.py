@@ -384,6 +384,72 @@ class WarehouseSelection(BaseModel):
 class QueryExecutionRequest(BaseModel):
     sql: str
     routing_mode: str = "smart"  # "smart", "duckdb", or "databricks"
+    profile_id: int | None = None  # use this profile's routing config
+
+
+def _load_profile_config(profile_id: int | None) -> dict | None:
+    """Load a routing profile's config from DB.
+
+    If profile_id is given, loads that profile (raises 404 if not found).
+    If profile_id is None, loads the default profile.
+    Returns None if no default profile exists.
+    """
+    if profile_id is not None:
+        row = db.fetch_one(
+            "SELECT config FROM routing_profiles WHERE id = %s", (profile_id,)
+        )
+        if not row:
+            raise HTTPException(
+                status_code=404, detail=f"Profile {profile_id} not found"
+            )
+        return row["config"] if isinstance(row["config"], dict) else {}
+    # No explicit profile_id → load default
+    row = db.fetch_one("SELECT config FROM routing_profiles WHERE is_default = true")
+    if not row:
+        return None
+    return row["config"] if isinstance(row["config"], dict) else {}
+
+
+def _profile_config_to_routing_params(
+    config: dict,
+) -> tuple[str, routing_engine.RoutingSettings | None]:
+    """Convert a profile config dict to (routing_mode, RoutingSettings | None).
+
+    Returns:
+        routing_mode: 'smart', 'duckdb', 'databricks', or a specific engine_id for single mode
+        settings_override: RoutingSettings if routingPriority maps to non-default weights, else None
+    """
+    routing_mode = config.get("routingMode", "smart")
+
+    # Single-engine mode: map to forced duckdb/databricks
+    if routing_mode == "single":
+        engine_id = config.get("singleEngineId")
+        if engine_id:
+            # Map engine_id to engine type for the routing engine
+            eng = db.fetch_one(
+                "SELECT engine_type FROM engines WHERE id = %s", (engine_id,)
+            )
+            if eng:
+                etype = eng["engine_type"]
+                if etype == "duckdb":
+                    return "duckdb", None
+                elif etype.startswith("databricks"):
+                    return "databricks", None
+        # Fallback: if no engine found, use smart
+        return "smart", None
+
+    # Map routingPriority to fit_weight/cost_weight
+    priority = config.get("routingPriority", 0.5)
+    # priority: 0 = cost-optimized, 0.5 = balanced, 1 = fit-optimized (performance)
+    fit_weight = float(priority)
+    cost_weight = round(1.0 - fit_weight, 10)
+
+    settings_override = routing_engine.RoutingSettings(
+        fit_weight=fit_weight,
+        cost_weight=cost_weight,
+    )
+
+    return routing_mode, settings_override
 
 
 @app.put("/api/settings/warehouse")
@@ -735,6 +801,35 @@ async def execute_query(
         else routing_engine.RoutingSettings()
     )
 
+    # 4b. Profile-aware routing: resolve effective routing_mode and settings
+    effective_mode = body.routing_mode
+    if body.routing_mode in ("duckdb", "databricks"):
+        # Legacy forced mode — ignore profiles entirely
+        pass
+    else:
+        # Load profile config (explicit profile_id or default)
+        try:
+            profile_config = _load_profile_config(body.profile_id)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.warning("Failed to load profile config: %s", exc)
+            profile_config = None
+
+        if profile_config is not None:
+            profile_mode, profile_settings = _profile_config_to_routing_params(
+                profile_config
+            )
+            effective_mode = profile_mode
+            if profile_settings is not None:
+                # Profile overrides weights; keep global running bonuses
+                r_settings = routing_engine.RoutingSettings(
+                    fit_weight=profile_settings.fit_weight,
+                    cost_weight=profile_settings.cost_weight,
+                    running_bonus_duckdb=r_settings.running_bonus_duckdb,
+                    running_bonus_databricks=r_settings.running_bonus_databricks,
+                )
+
     # Probe DuckDB: any active engine responding to health?
     duckdb_running = False
     async with httpx.AsyncClient(timeout=2.0) as probe:
@@ -768,7 +863,7 @@ async def execute_query(
         routing_result = routing_engine.route_query(
             analysis,
             table_metadata,
-            body.routing_mode,
+            effective_mode,
             settings=r_settings,
             engine_states=e_states,
         )
