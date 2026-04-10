@@ -16,18 +16,18 @@
 //   - benchmarks:       CRUD + execution via /api/benchmarks — Phase 10
 //   - probes:           storage latency probes via /api/latency-probes — Phase 10
 //   - models:           ML model listing, activation, training via /api/models — Phase 13
+//   - routing profiles: CRUD + default via /api/routing/profiles — Phase 15
+//   - model training:   POST /api/models/train with collection_ids — Phase 15
 //
-// MOCKED (backend endpoints not yet implemented):
-//   (none currently — all endpoints wired to backend)
+// MOCKED (only used when ?mock=true):
+//   - executeQuery:     simulated routing + execution with streaming logs
+//   - getQueryLogs:     in-memory query history (populated by executeQuery)
 //
-// All components import exclusively from this file via `mockApi`.
-// When a real endpoint is available, replace the corresponding mock function
-// body with a fetch/axios call — the function signature stays the same.
+// Thin API wrappers below delegate to api.* and work in both real and mock mode.
 // =============================================================================
 
 import type {
   Collection, CollectionWithQueries, Query,
-  RoutingRule, RoutingSettings,
   QueryExecutionResult, BenchmarkSummary, BenchmarkDetail,
   Model, LogEntry,
   RoutingLogEvent, RoutingLogLevel, StorageLatencyProbe,
@@ -46,16 +46,9 @@ const mkLog = (level: RoutingLogLevel, stage: string, message: string): RoutingL
   timestamp: logTs(), level, stage, message,
 });
 
-// ---- Mutable state ----
-let nextRuleId = 100;
+// ---- Mutable state (mock-only — used by executeQuery/getQueryLogs) ----
 
-let routingRules: RoutingRule[] = [
-  { id: 1, priority: 1, condition_type: "table_type", condition_value: "VIEW", target_engine: "databricks", is_system: true, enabled: true },
-  { id: 2, priority: 2, condition_type: "has_governance", condition_value: "row_filter", target_engine: "databricks", is_system: true, enabled: true },
-  { id: 3, priority: 10, condition_type: "table_name", condition_value: "store_sales", target_engine: "duckdb", is_system: false, enabled: true },
-];
-
-let routingSettings: RoutingSettings = { fit_weight: 0.5, cost_weight: 0.5, running_bonus_duckdb: 0.05, running_bonus_databricks: 0.15 };
+const routingSettings = { running_bonus_duckdb: 0.05, running_bonus_databricks: 0.15 };
 
 let queryLogs: LogEntry[] = [
   { correlation_id: "log-1", timestamp: "2026-03-15 10:45:12", query_text: "SELECT c_customer_sk, c_first_name, c_last_name FROM delta_router_dev.tpcds.customer WHERE c_birth_country = 'UNITED STATES' LIMIT 100", engine: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", status: "success", latency_ms: 45 },
@@ -72,7 +65,7 @@ let queryLogs: LogEntry[] = [
 
 // ---- Mock API ----
 export const mockApi = {
-  // Collections (real — wired to /api/collections)
+  // Collections (thin wrappers — work in both real and mock mode)
   async getCollections(): Promise<Collection[]> {
     return api.get<Collection[]>('/api/collections');
   },
@@ -83,10 +76,6 @@ export const mockApi = {
 
   async createCollection(name: string, description: string): Promise<Collection> {
     return api.post<Collection>('/api/collections', { name, description });
-  },
-
-  async updateCollection(id: number, data: Partial<Collection>): Promise<Collection> {
-    return api.put<Collection>(`/api/collections/${id}`, data);
   },
 
   async deleteCollection(id: number): Promise<void> {
@@ -101,9 +90,8 @@ export const mockApi = {
     await api.del(`/api/collections/${collectionId}/queries/${queryId}`);
   },
 
-  // Query Execution
+  // Query Execution (mock-only — simulates routing pipeline with streaming logs)
   async executeQuery(sql: string, routingMode: string, onLog?: (event: RoutingLogEvent) => void): Promise<QueryExecutionResult> {
-    // TODO: Replace with real API call — POST /api/query/execute
     const collectedEvents: RoutingLogEvent[] = [];
     const emit = async (level: RoutingLogLevel, stage: string, message: string, delayMs = 80 + Math.random() * 120) => {
       const ev = mkLog(level, stage, message);
@@ -263,7 +251,7 @@ export const mockApi = {
     };
   },
 
-  // Benchmarks (real — wired to /api/benchmarks)
+  // Benchmarks (thin wrappers — work in both real and mock mode)
   async getBenchmarks(collectionId?: number): Promise<BenchmarkSummary[]> {
     const params = collectionId != null ? `?collection_id=${collectionId}` : '';
     return api.get<BenchmarkSummary[]>(`/api/benchmarks${params}`);
@@ -277,66 +265,9 @@ export const mockApi = {
     return api.post<BenchmarkSummary>('/api/benchmarks', { collection_id: collectionId, engine_ids: engineIds });
   },
 
-  async deleteBenchmark(id: number): Promise<void> {
-    await api.del(`/api/benchmarks/${id}`);
-  },
-
-  // Routing Rules
-  async getRoutingRules(): Promise<RoutingRule[]> {
-    // TODO: Replace with real API call — GET /api/routing/rules
-    await delay(200);
-    return JSON.parse(JSON.stringify(routingRules));
-  },
-
-  async createRoutingRule(rule: Omit<RoutingRule, "id">): Promise<RoutingRule> {
-    // TODO: Replace with real API call — POST /api/routing/rules
-    await delay(200);
-    const r: RoutingRule = { ...rule, id: nextRuleId++ };
-    routingRules.push(r);
-    return { ...r };
-  },
-
-  async updateRoutingRule(id: number, data: Partial<RoutingRule>): Promise<RoutingRule> {
-    // TODO: Replace with real API call — PUT /api/routing/rules/:id
-    await delay(200);
-    const r = routingRules.find(r => r.id === id);
-    if (!r) throw new Error("Not found");
-    Object.assign(r, data);
-    return { ...r };
-  },
-
-  async deleteRoutingRule(id: number): Promise<void> {
-    // TODO: Replace with real API call — DELETE /api/routing/rules/:id
-    await delay(200);
-    routingRules = routingRules.filter(r => r.id !== id);
-  },
-
-  async toggleRoutingRule(id: number, enabled: boolean): Promise<RoutingRule> {
-    // TODO: Replace with real API call — PUT /api/routing/rules/:id/toggle
-    await delay(200);
-    const r = routingRules.find(r => r.id === id);
-    if (!r) throw new Error("Not found");
-    r.enabled = enabled;
-    return { ...r };
-  },
-
-  async resetRoutingRules(): Promise<RoutingRule[]> {
-    // TODO: Replace with real API call — POST /api/routing/rules/reset
-    await delay(300);
-    routingRules = [
-      { id: 1, priority: 1, condition_type: "table_type", condition_value: "VIEW", target_engine: "databricks", is_system: true, enabled: true },
-      { id: 2, priority: 2, condition_type: "has_governance", condition_value: "row_filter", target_engine: "databricks", is_system: true, enabled: true },
-    ];
-    return JSON.parse(JSON.stringify(routingRules));
-  },
-
-  // Models (real — wired to /api/models)
+  // Models (thin wrappers — work in both real and mock mode)
   async getModels(): Promise<Model[]> {
     return api.get<Model[]>('/api/models');
-  },
-
-  async trainModel(_enabledEngineIds?: string[], _trainingConfig?: { collections?: { id: number; runs: number }[]; benchmarkIds?: number[] }): Promise<Model> {
-    return api.post<Model>('/api/models/train');
   },
 
   async activateModel(id: number): Promise<Model> {
@@ -351,9 +282,8 @@ export const mockApi = {
     await api.del(`/api/models/${id}`);
   },
 
-  // Query Log
+  // Query Log (mock-only — in-memory history populated by executeQuery)
   async getQueryLogs(engineFilter?: string): Promise<LogEntry[]> {
-    // TODO: Replace with real API call — GET /api/query/logs
     await delay(200);
     let logs = [...queryLogs];
     if (engineFilter && engineFilter !== "all") {
@@ -362,7 +292,7 @@ export const mockApi = {
     return logs.slice(0, 20);
   },
 
-  // Storage Latency Probes (real — wired to /api/latency-probes)
+  // Storage Latency Probes (thin wrappers — work in both real and mock mode)
   async getStorageLatencyProbes(): Promise<StorageLatencyProbe[]> {
     return api.get<StorageLatencyProbe[]>('/api/latency-probes');
   },
@@ -370,19 +300,5 @@ export const mockApi = {
   async runStorageLatencyProbes(): Promise<StorageLatencyProbe[]> {
     const resp = await api.post<{ probes: StorageLatencyProbe[] }>('/api/latency-probes/run', {});
     return resp.probes;
-  },
-
-  // Routing Settings
-  async getRoutingSettings(): Promise<RoutingSettings> {
-    // TODO: Replace with real API call — GET /api/routing/settings
-    await delay(100);
-    return { ...routingSettings };
-  },
-
-  async updateRoutingSettings(settings: Partial<RoutingSettings>): Promise<RoutingSettings> {
-    // TODO: Replace with real API call — PUT /api/routing/settings
-    await delay(200);
-    Object.assign(routingSettings, settings);
-    return { ...routingSettings };
   },
 };

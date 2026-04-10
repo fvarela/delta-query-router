@@ -43,6 +43,8 @@ export interface Warehouse {
   state: string;
   cluster_size?: string;
   warehouse_type?: string;
+  /** Engine ID matched by backend based on warehouse size (e.g. "databricks-serverless-2xs") */
+  matched_engine_id?: string | null;
 }
 
 // --- Collections & Queries ---
@@ -114,6 +116,11 @@ export interface RoutingSettings {
   cost_weight: number;
   running_bonus_duckdb: number;
   running_bonus_databricks: number;
+}
+
+/** GET /api/routing/settings response — includes active_profile_id from default profile */
+export interface RoutingSettingsResponse extends RoutingSettings {
+  active_profile_id: number | null;
 }
 
 // --- Run mode ---

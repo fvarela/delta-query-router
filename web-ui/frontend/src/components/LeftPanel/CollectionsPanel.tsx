@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { mockApi } from "@/mocks/api";
+import { api } from "@/lib/api";
 import { useApp } from "@/contexts/AppContext";
 import { isMockMode } from "@/lib/mockMode";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
@@ -7,7 +8,7 @@ import { StatusBadge } from "@/components/shared/StatusBadge";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 import { MOCK_COLLECTIONS_WITH_QUERIES, MOCK_TPCDS_CONFIGURED, MOCK_BENCHMARK_RUN_DETAILS, getRunsForDefinition } from "@/mocks/engineSetupData";
 import { TpcdsSetupDialog } from "@/components/LeftPanel/TpcdsWizard";
-import type { CollectionWithQueries, BenchmarkSummary, BenchmarkDetail, BenchmarkRunDetail } from "@/types";
+import type { CollectionWithQueries, BenchmarkSummary, BenchmarkDetail, BenchmarkRunDetail, BenchmarkRunSummary } from "@/types";
 import { ArrowLeft, Plus, Trash2, X, Database, AlertTriangle, Lock, BarChart3, Clock, ExternalLink, Settings2 } from "lucide-react";
 
 export const CollectionsPanel: React.FC = () => {
@@ -32,11 +33,24 @@ export const CollectionsPanel: React.FC = () => {
   const [benchmarkError, setBenchmarkError] = useState<string | null>(null);
   const [runsDialog, setRunsDialog] = useState<{ definitionId: number; engineName: string } | null>(null);
 
-  // TPC-DS dataset configured check — starts unconfigured in mock mode to show the gate
-  const [tpcdsConfigured, setTpcdsConfigured] = useState(MOCK_TPCDS_CONFIGURED);
+  const mock = isMockMode();
+
+  // TPC-DS dataset configured check — detect via API in real mode
+  const [tpcdsConfigured, setTpcdsConfigured] = useState(mock ? MOCK_TPCDS_CONFIGURED : false);
   const [showTpcdsSetup, setShowTpcdsSetup] = useState(false);
 
-  const mock = isMockMode();
+  // Detect TPC-DS on mount (real mode only)
+  useEffect(() => {
+    if (mock) return;
+    api.get<Record<string, boolean>>("/api/tpcds/detect")
+      .then(result => {
+        const anyExists = Object.values(result).some(v => v);
+        setTpcdsConfigured(anyExists);
+      })
+      .catch(() => {
+        // Detect failed (no workspace connected, etc.) — leave as unconfigured
+      });
+  }, [mock]);
 
   // Per-engine benchmark runs for the active collection
   const collectionEngineRuns = useMemo(() => {
@@ -590,9 +604,37 @@ const RunsDialog: React.FC<{
   engineName: string;
   onClose: () => void;
 }> = ({ definitionId, engineName, onClose }) => {
-  const runs = useMemo(() => getRunsForDefinition(definitionId), [definitionId]);
+  const mock = isMockMode();
+  const [runs, setRuns] = useState<BenchmarkRunDetail[]>(() =>
+    mock ? getRunsForDefinition(definitionId) : []
+  );
+  const [runsLoading, setRunsLoading] = useState(!mock);
   const [selectedRun, setSelectedRun] = useState<BenchmarkRunDetail | null>(null);
   const [view, setView] = useState<"runs" | "statistics">("runs");
+
+  // Fetch runs from API in real mode
+  useEffect(() => {
+    if (mock) return;
+    let cancelled = false;
+    const fetchRuns = async () => {
+      setRunsLoading(true);
+      try {
+        // First get run summaries
+        const summaries = await api.get<BenchmarkRunSummary[]>(`/api/benchmarks/${definitionId}/runs`);
+        // Fetch full detail for each run (warmups + results)
+        const details = await Promise.all(
+          summaries.map(s => api.get<BenchmarkRunDetail>(`/api/benchmarks/${definitionId}/runs/${s.id}`))
+        );
+        if (!cancelled) setRuns(details);
+      } catch {
+        if (!cancelled) setRuns([]);
+      } finally {
+        if (!cancelled) setRunsLoading(false);
+      }
+    };
+    fetchRuns();
+    return () => { cancelled = true; };
+  }, [definitionId, mock]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
@@ -615,8 +657,10 @@ const RunsDialog: React.FC<{
             <div>
               <h3 className="text-[13px] font-semibold text-foreground">
                 {selectedRun
-                  ? `Run #${selectedRun.id} — ${new Date(selectedRun.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`
-                  : `${engineName} — ${runs.length} run${runs.length !== 1 ? "s" : ""}`}
+                   ? `Run #${selectedRun.id} — ${new Date(selectedRun.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`
+                   : runsLoading
+                     ? `${engineName} — loading...`
+                     : `${engineName} — ${runs.length} run${runs.length !== 1 ? "s" : ""}`}
               </h3>
               <p className="text-[11px] text-muted-foreground mt-0.5">
                 {selectedRun
@@ -656,7 +700,9 @@ const RunsDialog: React.FC<{
 
         {/* Body */}
         <div className="overflow-y-auto flex-1">
-          {selectedRun ? (
+          {runsLoading ? (
+            <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">Loading runs...</div>
+          ) : selectedRun ? (
             <RunDetailView runDetail={selectedRun} />
           ) : view === "statistics" && runs.length >= 2 ? (
             <RunStatisticsView runs={runs} />

@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useMemo } from "react";
-import type { RunMode, RoutingMode, PanelMode, LeftPanelTab, RoutingConfig, RoutingProfile, WorkspaceBinding, WarehouseMapping, DiscoveredWarehouse, QueryExecutionResult, Workspace, Warehouse, DatabricksSettings, EngineCatalogEntry, Model, RoutingSettings, StorageLatencyProbe, BenchmarkDefinition } from "../types";
+import type { RunMode, RoutingMode, PanelMode, LeftPanelTab, RoutingConfig, RoutingProfile, WorkspaceBinding, WarehouseMapping, DiscoveredWarehouse, QueryExecutionResult, Workspace, Warehouse, DatabricksSettings, EngineCatalogEntry, Model, RoutingSettings, RoutingSettingsResponse, StorageLatencyProbe, BenchmarkDefinition } from "../types";
 import { mockApi } from "@/mocks/api";
 import { api } from "@/lib/api";
 import { isMockMode } from "@/lib/mockMode";
@@ -74,7 +74,7 @@ interface AppContextType {
   deleteModel: (id: number) => void;
   activateModel: (id: number) => void;
   deactivateModel: (id: number) => void;
-  createModel: (linkedEngines: string[], trainingCollectionIds: number[]) => Model;
+  createModel: (linkedEngines: string[], trainingCollectionIds: number[]) => Promise<Model>;
 
   // Routing settings (ODQ-10)
   routingSettings: RoutingSettings;
@@ -97,7 +97,7 @@ interface AppContextType {
   // Saved routing config (persistent settings — Round 8)
   savedRoutingConfig: RoutingConfig;
   hasUnsavedChanges: boolean;
-  saveRoutingConfig: () => void;
+  saveRoutingConfig: () => Promise<void>;
   rollbackRoutingConfig: () => void;
 
   // Routing profiles (persistent named configs — Round 13)
@@ -105,10 +105,10 @@ interface AppContextType {
   activeProfileId: number | null;
   activeProfileName: string | null;
   loadProfile: (id: number) => void;
-  saveProfile: () => void;
-  saveProfileAs: (name: string) => void;
-  deleteProfile: (id: number) => void;
-  setDefaultProfile: (id: number) => void;
+  saveProfile: () => Promise<void>;
+  saveProfileAs: (name: string) => Promise<void>;
+  deleteProfile: (id: number) => Promise<void>;
+  setDefaultProfile: (id: number) => Promise<void>;
   clearActiveProfile: () => void;
 
   // Workspace binding for current profile (Round 16 → Round 17: implicit, derived from warehouse mappings)
@@ -459,6 +459,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return routingProfiles.find(p => p.id === activeProfileId)?.name ?? null;
   }, [activeProfileId, routingProfiles]);
 
+  // Reload profiles from backend (non-mock)
+  const reloadProfiles = useCallback(async () => {
+    if (mock) {
+      setRoutingProfiles([...MOCK_ROUTING_PROFILES]);
+      return;
+    }
+    try {
+      const profiles = await api.get<RoutingProfile[]>("/api/routing/profiles");
+      setRoutingProfiles(profiles);
+    } catch {
+      // API error — keep current state
+    }
+  }, [mock]);
+
   // UX #5/#7: Remember the profile that was active before entering benchmark mode, so we can restore it when leaving
   // MUST be declared after activeProfileId (uses it in setRoutingMode callback)
   const [preBenchmarkProfileId, setPreBenchmarkProfileId] = useState<number | null>(null);
@@ -562,17 +576,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setDiscoveredWarehouses(MOCK_DISCOVERED_WAREHOUSES);
       return;
     }
-    // TODO: fetch from real API — transform warehouse list into DiscoveredWarehouse[]
     try {
       const list = await api.get<Warehouse[]>("/api/databricks/warehouses");
-      // Map to DiscoveredWarehouse with engine matching
+      // Map to DiscoveredWarehouse with engine matching from backend
       const discovered: DiscoveredWarehouse[] = list.map(w => ({
         id: w.id,
         name: w.name,
         state: w.state,
         cluster_size: w.cluster_size ?? "Unknown",
         warehouse_type: w.warehouse_type ?? "UNKNOWN",
-        matchingEngineId: null, // TODO: implement size-based matching
+        matchingEngineId: w.matched_engine_id ?? null,
       }));
       setDiscoveredWarehouses(discovered);
     } catch {
@@ -602,7 +615,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [routingProfiles]);
 
   // Save current config to the active profile (update in place)
-  const saveProfile = useCallback(() => {
+  const saveProfile = useCallback(async () => {
     const currentConfig: RoutingConfig = {
       routingMode,
       singleEngineId,
@@ -613,18 +626,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       warehouseMappings: [...warehouseMappings],
     };
     if (activeProfileId !== null) {
-      // Update existing profile
-      setRoutingProfiles(prev => prev.map(p =>
-        p.id === activeProfileId
-          ? { ...p, config: currentConfig, updated_at: new Date().toISOString() }
-          : p
-      ));
+      if (mock) {
+        // Mock mode: update local state only
+        setRoutingProfiles(prev => prev.map(p =>
+          p.id === activeProfileId
+            ? { ...p, config: currentConfig, updated_at: new Date().toISOString() }
+            : p
+        ));
+      } else {
+        // Real mode: persist to backend
+        try {
+          await api.put(`/api/routing/profiles/${activeProfileId}`, { config: currentConfig });
+          await reloadProfiles();
+        } catch {
+          // API error — update local state as fallback
+          setRoutingProfiles(prev => prev.map(p =>
+            p.id === activeProfileId
+              ? { ...p, config: currentConfig, updated_at: new Date().toISOString() }
+              : p
+          ));
+        }
+      }
     }
     setSavedRoutingConfig(currentConfig);
-  }, [routingMode, singleEngineId, enabledEngineIds, routingSettings.cost_weight, activeModelId, activeProfileId, profileWorkspaceBinding, warehouseMappings]);
+  }, [routingMode, singleEngineId, enabledEngineIds, routingSettings.cost_weight, activeModelId, activeProfileId, profileWorkspaceBinding, warehouseMappings, mock, reloadProfiles]);
 
   // Save As — create a new profile from current config
-  const saveProfileAs = useCallback((name: string) => {
+  const saveProfileAs = useCallback(async (name: string) => {
     const currentConfig: RoutingConfig = {
       routingMode,
       singleEngineId,
@@ -634,36 +662,76 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       workspaceBinding: profileWorkspaceBinding,
       warehouseMappings: [...warehouseMappings],
     };
-    const newId = Math.max(0, ...routingProfiles.map(p => p.id)) + 1;
-    const now = new Date().toISOString();
-    const newProfile: RoutingProfile = {
-      id: newId,
-      name,
-      is_default: false,
-      config: currentConfig,
-      created_at: now,
-      updated_at: now,
-    };
-    setRoutingProfiles(prev => [...prev, newProfile]);
-    setActiveProfileId(newId);
+    if (mock) {
+      // Mock mode: create locally
+      const newId = Math.max(0, ...routingProfiles.map(p => p.id)) + 1;
+      const now = new Date().toISOString();
+      const newProfile: RoutingProfile = {
+        id: newId,
+        name,
+        is_default: false,
+        config: currentConfig,
+        created_at: now,
+        updated_at: now,
+      };
+      setRoutingProfiles(prev => [...prev, newProfile]);
+      setActiveProfileId(newId);
+    } else {
+      // Real mode: persist to backend
+      try {
+        const created = await api.post<RoutingProfile>("/api/routing/profiles", { name, config: currentConfig });
+        await reloadProfiles();
+        setActiveProfileId(created.id);
+      } catch {
+        // Fallback: create locally
+        const newId = Math.max(0, ...routingProfiles.map(p => p.id)) + 1;
+        const now = new Date().toISOString();
+        const newProfile: RoutingProfile = { id: newId, name, is_default: false, config: currentConfig, created_at: now, updated_at: now };
+        setRoutingProfiles(prev => [...prev, newProfile]);
+        setActiveProfileId(newId);
+      }
+    }
     setSavedRoutingConfig(currentConfig);
-  }, [routingMode, singleEngineId, enabledEngineIds, routingSettings.cost_weight, activeModelId, routingProfiles, profileWorkspaceBinding, warehouseMappings]);
+  }, [routingMode, singleEngineId, enabledEngineIds, routingSettings.cost_weight, activeModelId, routingProfiles, profileWorkspaceBinding, warehouseMappings, mock, reloadProfiles]);
 
   // Delete a profile
-  const deleteProfile = useCallback((id: number) => {
-    setRoutingProfiles(prev => prev.filter(p => p.id !== id));
+  const deleteProfile = useCallback(async (id: number) => {
+    if (mock) {
+      setRoutingProfiles(prev => prev.filter(p => p.id !== id));
+    } else {
+      try {
+        await api.del(`/api/routing/profiles/${id}`);
+        await reloadProfiles();
+      } catch {
+        // Fallback: remove locally
+        setRoutingProfiles(prev => prev.filter(p => p.id !== id));
+      }
+    }
     if (activeProfileId === id) {
       setActiveProfileId(null);
     }
-  }, [activeProfileId]);
+  }, [activeProfileId, mock, reloadProfiles]);
 
   // Set a profile as the default (used by API when accessed programmatically)
-  const setDefaultProfile = useCallback((id: number) => {
-    setRoutingProfiles(prev => prev.map(p => ({
-      ...p,
-      is_default: p.id === id,
-    })));
-  }, []);
+  const setDefaultProfile = useCallback(async (id: number) => {
+    if (mock) {
+      setRoutingProfiles(prev => prev.map(p => ({
+        ...p,
+        is_default: p.id === id,
+      })));
+    } else {
+      try {
+        await api.put(`/api/routing/profiles/${id}/default`, {});
+        await reloadProfiles();
+      } catch {
+        // Fallback: update locally
+        setRoutingProfiles(prev => prev.map(p => ({
+          ...p,
+          is_default: p.id === id,
+        })));
+      }
+    }
+  }, [mock, reloadProfiles]);
 
   // Clear active profile (work with unsaved config)
   const clearActiveProfile = useCallback(() => {
@@ -701,9 +769,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return false;
   }, [routingMode, singleEngineId, enabledEngineIds, routingSettings.cost_weight, activeModelId, savedRoutingConfig, profileWorkspaceBinding, warehouseMappings]);
 
-  const saveRoutingConfig = useCallback(() => {
+  const saveRoutingConfig = useCallback(async () => {
     // When a profile is loaded, update it in place
-    saveProfile();
+    await saveProfile();
   }, [saveProfile]);
 
   const rollbackRoutingConfig = useCallback(() => {
@@ -735,41 +803,69 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setBenchmarkDefinitions(MOCK_BENCHMARK_DEFINITIONS);
       return;
     }
-    // TODO: fetch from real API when backend is ready
+    try {
+      const defs = await api.get<BenchmarkDefinition[]>("/api/benchmarks");
+      setBenchmarkDefinitions(defs);
+    } catch {
+      // API error — keep current state
+    }
   }, [mock]);
 
   // createModel — declared here because it depends on benchmarkDefinitions (state ordering matters in React)
-  const createModel = useCallback((linkedEngines: string[], trainingCollectionIds: number[]): Model => {
-    const newId = Math.max(0, ...models.map(m => m.id)) + 1;
-    // Compute training query count from benchmark definitions
-    const relevantDefs = benchmarkDefinitions.filter(d =>
-      trainingCollectionIds.includes(d.collection_id) && linkedEngines.includes(d.engine_id)
-    );
-    // Per-collection, runs used = min across engines. Total queries = sum of (min_runs * queries_per_collection).
-    // For mock, approximate: sum run_counts for relevant defs
-    const totalRuns = relevantDefs.reduce((sum, d) => sum + d.run_count, 0);
-    const newModel: Model = {
-      id: newId,
-      linked_engines: linkedEngines,
-      latency_model: {
-        r_squared: +(0.8 + Math.random() * 0.15).toFixed(2),
-        mae_ms: +(8 + Math.random() * 15).toFixed(1),
-        model_path: `/models/latency_v${newId}.joblib`,
-      },
-      is_active: false,
-      created_at: new Date().toISOString(),
-      benchmark_count: relevantDefs.length,
-      training_queries: totalRuns * 10, // approximate: 10 queries per run
-      training_collection_ids: trainingCollectionIds,
-    };
-    setModels(prev => [...prev, newModel]);
+  const createModel = useCallback(async (linkedEngines: string[], trainingCollectionIds: number[]): Promise<Model> => {
+    if (mock) {
+      const newId = Math.max(0, ...models.map(m => m.id)) + 1;
+      const relevantDefs = benchmarkDefinitions.filter(d =>
+        trainingCollectionIds.includes(d.collection_id) && linkedEngines.includes(d.engine_id)
+      );
+      const totalRuns = relevantDefs.reduce((sum, d) => sum + d.run_count, 0);
+      const newModel: Model = {
+        id: newId,
+        linked_engines: linkedEngines,
+        latency_model: {
+          r_squared: +(0.8 + Math.random() * 0.15).toFixed(2),
+          mae_ms: +(8 + Math.random() * 15).toFixed(1),
+          model_path: `/models/latency_v${newId}.joblib`,
+        },
+        is_active: false,
+        created_at: new Date().toISOString(),
+        benchmark_count: relevantDefs.length,
+        training_queries: totalRuns * 10,
+        training_collection_ids: trainingCollectionIds,
+      };
+      setModels(prev => [...prev, newModel]);
+      return newModel;
+    }
+    // Real mode: POST /api/models/train with collection_ids
+    const newModel = await api.post<Model>("/api/models/train", {
+      collection_ids: trainingCollectionIds,
+    });
+    // Refresh the full models list from the server
+    await reloadModels();
     return newModel;
-  }, [models, benchmarkDefinitions]);
+  }, [mock, models, benchmarkDefinitions, reloadModels]);
 
   // Re-load engines when workspace connection changes (backend returns both DuckDB + Databricks)
   useEffect(() => {
     reloadEngines();
   }, [connectedWorkspace]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Helper: apply a profile's config to all working state (used at startup and by loadProfile)
+  const applyProfileConfig = useCallback((profile: RoutingProfile) => {
+    setActiveProfileId(profile.id);
+    setSavedRoutingConfig({ ...profile.config });
+    setRoutingModeRaw(profile.config.routingMode);
+    setSingleEngineId(profile.config.singleEngineId);
+    setActiveModelId(profile.config.activeModelId);
+    setEnabledEngineIds(new Set(profile.config.enabledEngineIds));
+    setRoutingSettings(prev => ({
+      ...prev,
+      cost_weight: profile.config.routingPriority,
+      fit_weight: 1 - profile.config.routingPriority,
+    }));
+    setProfileWorkspaceBinding(profile.config.workspaceBinding ?? null);
+    setWarehouseMappings(profile.config.warehouseMappings ?? []);
+  }, []);
 
   // Initial data load
   useEffect(() => {
@@ -777,13 +873,47 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // In mock mode, data is already initialized from MOCK_* constants
       return;
     }
+    // Startup sequence: fetch settings + profiles, then hydrate default profile
+    const initProfiles = async () => {
+      try {
+        // 1. Fetch routing settings (includes active_profile_id)
+        const settingsResp = await api.get<RoutingSettingsResponse>("/api/routing/settings");
+        setRoutingSettings({
+          fit_weight: settingsResp.fit_weight,
+          cost_weight: settingsResp.cost_weight,
+          running_bonus_duckdb: settingsResp.running_bonus_duckdb,
+          running_bonus_databricks: settingsResp.running_bonus_databricks,
+        });
+
+        // 2. Fetch profiles
+        const profiles = await api.get<RoutingProfile[]>("/api/routing/profiles");
+        setRoutingProfiles(profiles);
+
+        // 3. Determine which profile to load
+        const targetId = settingsResp.active_profile_id;
+        const targetProfile = targetId != null
+          ? profiles.find(p => p.id === targetId)
+          : undefined;
+        const defaultProfile = profiles.find(p => p.is_default);
+        const profileToLoad = targetProfile ?? defaultProfile;
+
+        // 4. Apply profile config to working state
+        if (profileToLoad) {
+          applyProfileConfig(profileToLoad);
+        }
+      } catch {
+        // Backend unreachable — defaults remain (single mode, empty state)
+      }
+    };
+
+    initProfiles();
     reloadWorkspaces().then(() => {
       // Load warehouses after workspaces — needs connected workspace
       reloadWarehouses();
     });
     reloadModels();
     reloadStorageProbes();
-    api.get<RoutingSettings>("/api/routing/settings").then(setRoutingSettings).catch(() => {});
+    reloadBenchmarkDefinitions();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (

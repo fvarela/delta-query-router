@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from "react";
 import { useApp } from "@/contexts/AppContext";
-import { X, Plus, Trash2, CheckCircle2, Circle, Brain, ChevronRight, ChevronLeft, HardDrive, Cloud, AlertTriangle, Database, BarChart3 } from "lucide-react";
+import { X, Plus, Trash2, CheckCircle2, Circle, Brain, ChevronRight, ChevronLeft, HardDrive, Cloud, AlertTriangle, Database, BarChart3, Loader2 } from "lucide-react";
 import type { Model, BenchmarkDefinition, EngineCatalogEntry } from "@/types";
 
 interface ModelsDialogProps {
@@ -456,6 +456,8 @@ const NewModelWizard: React.FC<{
   const [step, setStep] = useState<WizardStep>(1);
   const [selectedEngines, setSelectedEngines] = useState<Set<string>>(new Set());
   const [selectedCollections, setSelectedCollections] = useState<Set<number>>(new Set());
+  const [training, setTraining] = useState(false);
+  const [trainingError, setTrainingError] = useState<string | null>(null);
 
   // Step 1: All engines that have at least one benchmark definition
   const enginesWithBenchmarks = useMemo(() => {
@@ -530,9 +532,18 @@ const NewModelWizard: React.FC<{
   const canProceedStep1 = selectedEngines.size >= 2;
   const canProceedStep2 = selectedCollections.size >= 1;
 
-  const handleCreate = () => {
-    createModel([...selectedEngines], [...selectedCollections]);
-    onBack(); // Return to model list — user can activate manually
+  const handleCreate = async () => {
+    setTraining(true);
+    setTrainingError(null);
+    try {
+      await createModel([...selectedEngines], [...selectedCollections]);
+      onBack(); // Return to model list — user can activate manually
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Training failed";
+      setTrainingError(msg);
+    } finally {
+      setTraining(false);
+    }
   };
 
   // Total effective training runs
@@ -616,10 +627,18 @@ const NewModelWizard: React.FC<{
       </div>
 
       {/* Footer navigation */}
-      <div className="flex items-center justify-between px-4 py-3 border-t border-panel-border">
+      <div className="flex flex-col gap-2 px-4 py-3 border-t border-panel-border">
+        {trainingError && (
+          <div className="flex items-center gap-1.5 text-[11px] text-red-600 bg-red-50 px-2 py-1.5 rounded border border-red-200">
+            <AlertTriangle size={10} />
+            {trainingError}
+          </div>
+        )}
+        <div className="flex items-center justify-between">
         <button
           onClick={() => step > 1 ? setStep((step - 1) as WizardStep) : onBack()}
-          className="flex items-center gap-1 px-3 py-1.5 text-[12px] font-medium text-muted-foreground hover:text-foreground border border-border rounded transition-colors"
+          disabled={training}
+          className="flex items-center gap-1 px-3 py-1.5 text-[12px] font-medium text-muted-foreground hover:text-foreground border border-border rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <ChevronLeft size={12} />
           {step === 1 ? "Cancel" : "Back"}
@@ -636,12 +655,23 @@ const NewModelWizard: React.FC<{
         ) : (
           <button
             onClick={handleCreate}
-            className="flex items-center gap-1 px-4 py-1.5 text-[12px] font-medium bg-primary text-primary-foreground rounded hover:bg-primary/90 transition-colors"
+            disabled={training}
+            className="flex items-center gap-1 px-4 py-1.5 text-[12px] font-medium bg-primary text-primary-foreground rounded hover:bg-primary/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            <Plus size={11} />
-            Create Model
+            {training ? (
+              <>
+                <Loader2 size={11} className="animate-spin" />
+                Training...
+              </>
+            ) : (
+              <>
+                <Plus size={11} />
+                Create Model
+              </>
+            )}
           </button>
         )}
+        </div>
       </div>
     </>
   );
