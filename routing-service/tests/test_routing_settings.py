@@ -43,8 +43,12 @@ class TestAuthRequired:
 # GET /api/routing/settings
 # ---------------------------------------------------------------------------
 class TestGetSettings:
-    @patch("main.db.fetch_one", return_value=_default_settings())
-    def test_returns_defaults(self, _):
+    @patch("main.db.fetch_one")
+    def test_returns_defaults(self, mock_fetch):
+        mock_fetch.side_effect = [
+            _default_settings(),  # routing_settings
+            {"id": 1},  # default profile
+        ]
         resp = client.get("/api/routing/settings", headers=_auth_header())
         assert resp.status_code == 200
         data = resp.json()
@@ -52,18 +56,27 @@ class TestGetSettings:
         assert data["cost_weight"] == 0.5
         assert data["running_bonus_duckdb"] == 0.05
         assert data["running_bonus_databricks"] == 0.15
+        assert data["active_profile_id"] == 1
 
-    @patch("main.db.fetch_one", return_value=_default_settings())
-    def test_excludes_id_and_updated_at(self, _):
+    @patch("main.db.fetch_one")
+    def test_excludes_id_and_updated_at(self, mock_fetch):
+        mock_fetch.side_effect = [_default_settings(), {"id": 1}]
         resp = client.get("/api/routing/settings", headers=_auth_header())
         data = resp.json()
-        assert "id" not in data
         assert "updated_at" not in data
 
-    @patch("main.db.fetch_one", return_value=None)
-    def test_uninitialized_returns_500(self, _):
+    @patch("main.db.fetch_one")
+    def test_uninitialized_returns_500(self, mock_fetch):
+        mock_fetch.return_value = None
         resp = client.get("/api/routing/settings", headers=_auth_header())
         assert resp.status_code == 500
+
+    @patch("main.db.fetch_one")
+    def test_no_default_profile_returns_null(self, mock_fetch):
+        mock_fetch.side_effect = [_default_settings(), None]
+        resp = client.get("/api/routing/settings", headers=_auth_header())
+        assert resp.status_code == 200
+        assert resp.json()["active_profile_id"] is None
 
 
 # ---------------------------------------------------------------------------

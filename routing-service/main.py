@@ -331,6 +331,27 @@ async def health_backends():
     return backends
 
 
+# Predefined cluster-size → engine-ID mapping for serverless warehouses
+_CLUSTER_SIZE_TO_ENGINE: dict[str, str] = {
+    "2X-Small": "databricks-serverless-2xs",
+    "X-Small": "databricks-serverless-xs",
+    "Small": "databricks-serverless-s",
+}
+
+
+def _match_warehouse_to_engine(wh) -> str | None:
+    """Match a Databricks warehouse to a predefined engine ID.
+
+    Only matches serverless warehouses with known cluster sizes.
+    Returns None for non-serverless or unrecognized sizes.
+    """
+    wh_type = wh.warehouse_type.value if wh.warehouse_type else None
+    if wh_type != "PRO":
+        return None
+    size = wh.cluster_size if wh.cluster_size else None
+    return _CLUSTER_SIZE_TO_ENGINE.get(size)
+
+
 @app.get("/api/databricks/warehouses")
 async def list_warehouses(user: auth.UserContext = Depends(verify_token)):
     if not user.is_admin:
@@ -348,6 +369,7 @@ async def list_warehouses(user: auth.UserContext = Depends(verify_token)):
                 "warehouse_type": wh.warehouse_type.value
                 if wh.warehouse_type
                 else None,
+                "matched_engine_id": _match_warehouse_to_engine(wh),
             }
             for wh in warehouses
         ]
@@ -1069,11 +1091,18 @@ async def get_routing_settings(user: auth.UserContext = Depends(verify_token)):
     row = db.fetch_one("SELECT * FROM routing_settings WHERE id = 1")
     if not row:
         raise HTTPException(status_code=500, detail="Routing settings not initialized")
+
+    # Include the active (default) profile ID for frontend awareness
+    default_profile = db.fetch_one(
+        "SELECT id FROM routing_profiles WHERE is_default = true"
+    )
+
     return {
         "fit_weight": row["fit_weight"],
         "cost_weight": row["cost_weight"],
         "running_bonus_duckdb": row["running_bonus_duckdb"],
         "running_bonus_databricks": row["running_bonus_databricks"],
+        "active_profile_id": default_profile["id"] if default_profile else None,
     }
 
 
