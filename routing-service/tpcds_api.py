@@ -151,6 +151,39 @@ async def tpcds_preflight(
 
 
 # ---------------------------------------------------------------------------
+# Detect TPC-DS scale factors in workspace  (T104 / REQ-005)
+# ---------------------------------------------------------------------------
+
+TPCDS_CATALOG = "delta_router_tpcds"
+TPCDS_SCALE_FACTORS = ["sf1", "sf10", "sf100"]
+
+
+@router.get("/detect")
+async def detect_tpcds(
+    user: auth.UserContext = Depends(auth.verify_token),
+):
+    """Detect which TPC-DS scale factors exist in the connected workspace.
+
+    Returns: {"sf1": bool, "sf10": bool, "sf100": bool}
+    If no workspace is connected, returns all false with 200.
+    """
+    _main = _get_main()
+    wc = _main._workspace_client
+    if not wc:
+        return {sf: False for sf in TPCDS_SCALE_FACTORS}
+
+    result = {}
+    for sf in TPCDS_SCALE_FACTORS:
+        try:
+            wc.schemas.get(f"{TPCDS_CATALOG}.{sf}")
+            result[sf] = True
+        except Exception:
+            result[sf] = False
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Create TPC-DS catalog  (T90 SF1 CTAS / T91 SF10/SF100 Job)
 # ---------------------------------------------------------------------------
 

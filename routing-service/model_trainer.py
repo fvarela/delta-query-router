@@ -63,7 +63,9 @@ def _compute_target(row: dict) -> float:
     return exec_ms
 
 
-def train_model(model_dir: str = "/models/") -> dict:
+def train_model(
+    model_dir: str = "/models/", collection_ids: list[int] | None = None
+) -> dict:
     """Train a RandomForestRegressor from benchmark data.
 
     1. Reads benchmark results from DB
@@ -146,8 +148,8 @@ def train_model(model_dir: str = "/models/") -> dict:
     linked_engines = sorted(engine_ids)
     record = db.fetch_one(
         """
-        INSERT INTO models (linked_engines, latency_model, training_queries)
-        VALUES (%s, %s, %s)
+        INSERT INTO models (linked_engines, latency_model, training_queries, training_collection_ids)
+        VALUES (%s, %s, %s, %s)
         RETURNING *
         """,
         (
@@ -160,6 +162,7 @@ def train_model(model_dir: str = "/models/") -> dict:
                 }
             ),
             len(X_rows),
+            json.dumps(collection_ids) if collection_ids else None,
         ),
     )
 

@@ -626,3 +626,59 @@ class TestTpcdsTablesConstant:
 
     def test_no_duplicates(self):
         assert len(set(tpcds_api.TPCDS_TABLES)) == len(tpcds_api.TPCDS_TABLES)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/tpcds/detect — detect TPC-DS scale factors
+# ---------------------------------------------------------------------------
+
+
+class TestDetectTpcds:
+    """GET /api/tpcds/detect — detect available scale factors."""
+
+    def test_requires_auth(self):
+        resp = client.get("/api/tpcds/detect")
+        assert resp.status_code == 401
+
+    @patch.object(_main_module, "_workspace_client", None)
+    def test_no_workspace_returns_all_false(self):
+        resp = client.get("/api/tpcds/detect", headers=_admin_header())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data == {"sf1": False, "sf10": False, "sf100": False}
+
+    @patch.object(_main_module, "_workspace_client")
+    def test_all_schemas_exist(self, mock_wc):
+        """All 3 scale factors detected."""
+        mock_wc.schemas.get.return_value = MagicMock()  # no exception = exists
+        resp = client.get("/api/tpcds/detect", headers=_admin_header())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data == {"sf1": True, "sf10": True, "sf100": True}
+        assert mock_wc.schemas.get.call_count == 3
+
+    @patch.object(_main_module, "_workspace_client")
+    def test_mixed_results(self, mock_wc):
+        """sf1 exists, sf10 missing, sf100 exists."""
+
+        def schema_side_effect(full_name):
+            if full_name.endswith(".sf10"):
+                raise Exception("NOT_FOUND")
+            return MagicMock()
+
+        mock_wc.schemas.get.side_effect = schema_side_effect
+        resp = client.get("/api/tpcds/detect", headers=_admin_header())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["sf1"] is True
+        assert data["sf10"] is False
+        assert data["sf100"] is True
+
+    @patch.object(_main_module, "_workspace_client")
+    def test_all_missing(self, mock_wc):
+        """Catalog doesn't exist — all SFs false."""
+        mock_wc.schemas.get.side_effect = Exception("CATALOG_DOES_NOT_EXIST")
+        resp = client.get("/api/tpcds/detect", headers=_admin_header())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data == {"sf1": False, "sf10": False, "sf100": False}

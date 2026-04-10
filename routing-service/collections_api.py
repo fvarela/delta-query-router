@@ -19,6 +19,7 @@ router = APIRouter(prefix="/api/collections", tags=["collections"])
 class CreateCollection(BaseModel):
     name: str
     description: str | None = None
+    tag: str = "user"
 
 
 class UpdateCollection(BaseModel):
@@ -39,9 +40,30 @@ class UpdateQuery(BaseModel):
 # --- Collection endpoints ---
 
 
+def _check_tpcds_readonly(collection: dict, action: str = "modify"):
+    """Raise 403 if collection is TPC-DS (read-only)."""
+    if collection.get("tag") == "tpcds":
+        raise HTTPException(
+            status_code=403,
+            detail=f"Cannot {action} TPC-DS collection (read-only)",
+        )
+
+
 @router.get("")
-async def list_collections():
-    """List all collections with query count."""
+async def list_collections(tag: str | None = None):
+    """List all collections with query count, optionally filtered by tag."""
+    if tag is not None:
+        return db.fetch_all(
+            """
+            SELECT c.*, COUNT(q.id) AS query_count
+            FROM collections c
+            LEFT JOIN collection_queries q ON q.collection_id = c.id
+            WHERE c.tag = %s
+            GROUP BY c.id
+            ORDER BY c.created_at DESC
+            """,
+            (tag,),
+        )
     return db.fetch_all(
         """
         SELECT c.*, COUNT(q.id) AS query_count
@@ -71,9 +93,11 @@ async def get_collection(collection_id: int):
 @router.post("", status_code=201)
 async def create_collection(body: CreateCollection):
     """Create a new collection."""
+    if body.tag not in ("user", "tpcds"):
+        raise HTTPException(status_code=400, detail="tag must be 'user' or 'tpcds'")
     return db.fetch_one(
-        "INSERT INTO collections (name, description) VALUES (%s, %s) RETURNING *",
-        (body.name, body.description),
+        "INSERT INTO collections (name, description, tag) VALUES (%s, %s, %s) RETURNING *",
+        (body.name, body.description, body.tag),
     )
 
 
@@ -83,6 +107,7 @@ async def update_collection(collection_id: int, body: UpdateCollection):
     existing = db.fetch_one("SELECT * FROM collections WHERE id = %s", (collection_id,))
     if not existing:
         raise HTTPException(status_code=404, detail="Collection not found")
+    _check_tpcds_readonly(existing, "update")
     fields: dict = {}
     if body.name is not None:
         fields["name"] = body.name
@@ -105,6 +130,7 @@ async def delete_collection(collection_id: int):
     existing = db.fetch_one("SELECT * FROM collections WHERE id = %s", (collection_id,))
     if not existing:
         raise HTTPException(status_code=404, detail="Collection not found")
+    _check_tpcds_readonly(existing, "delete")
     db.execute("DELETE FROM collections WHERE id = %s", (collection_id,))
     return Response(status_code=204)
 
@@ -118,6 +144,7 @@ async def add_query(collection_id: int, body: AddQuery):
     existing = db.fetch_one("SELECT * FROM collections WHERE id = %s", (collection_id,))
     if not existing:
         raise HTTPException(status_code=404, detail="Collection not found")
+    _check_tpcds_readonly(existing, "add queries to")
     if body.sequence_number is not None:
         seq = body.sequence_number
     else:
@@ -137,6 +164,12 @@ async def add_query(collection_id: int, body: AddQuery):
 @router.delete("/{collection_id}/queries/{query_id}", status_code=204)
 async def delete_query(collection_id: int, query_id: int):
     """Delete a query from a collection."""
+    collection = db.fetch_one(
+        "SELECT * FROM collections WHERE id = %s", (collection_id,)
+    )
+    if not collection:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    _check_tpcds_readonly(collection, "delete queries from")
     existing = db.fetch_one(
         "SELECT * FROM collection_queries WHERE id = %s AND collection_id = %s",
         (query_id, collection_id),

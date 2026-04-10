@@ -111,6 +111,14 @@ class TestListCollections:
         assert data[0]["query_count"] == 3
         assert data[1]["query_count"] == 0
 
+    @patch("collections_api.db.fetch_all")
+    def test_filter_by_tag(self, mock_fetch):
+        mock_fetch.return_value = []
+        resp = client.get("/api/collections?tag=tpcds", headers=_auth_header())
+        assert resp.status_code == 200
+        sql = mock_fetch.call_args[0][0]
+        assert "tag" in sql
+
 
 # ---------------------------------------------------------------------------
 # Get collection
@@ -148,7 +156,9 @@ class TestGetCollection:
 class TestCreateCollection:
     @patch("collections_api.db.fetch_one")
     def test_creates_collection(self, mock_one):
-        mock_one.return_value = _collection_row(id=1, name="New", description="desc")
+        mock_one.return_value = _collection_row(
+            id=1, name="New", description="desc", tag="user"
+        )
         resp = client.post(
             "/api/collections",
             json={"name": "New", "description": "desc"},
@@ -160,11 +170,11 @@ class TestCreateCollection:
         # Verify the SQL was called with correct params
         sql, params = mock_one.call_args[0]
         assert "INSERT INTO collections" in sql
-        assert params == ("New", "desc")
+        assert params == ("New", "desc", "user")
 
     @patch("collections_api.db.fetch_one")
     def test_creates_without_description(self, mock_one):
-        mock_one.return_value = _collection_row(id=2, name="No Desc")
+        mock_one.return_value = _collection_row(id=2, name="No Desc", tag="user")
         resp = client.post(
             "/api/collections",
             json={"name": "No Desc"},
@@ -172,7 +182,28 @@ class TestCreateCollection:
         )
         assert resp.status_code == 201
         sql, params = mock_one.call_args[0]
-        assert params == ("No Desc", None)
+        assert params == ("No Desc", None, "user")
+
+    @patch("collections_api.db.fetch_one")
+    def test_creates_with_tpcds_tag(self, mock_one):
+        mock_one.return_value = _collection_row(id=3, name="TPC-DS SF1", tag="tpcds")
+        resp = client.post(
+            "/api/collections",
+            json={"name": "TPC-DS SF1", "tag": "tpcds"},
+            headers=_auth_header(),
+        )
+        assert resp.status_code == 201
+        sql, params = mock_one.call_args[0]
+        assert params == ("TPC-DS SF1", None, "tpcds")
+
+    def test_creates_with_invalid_tag(self):
+        resp = client.post(
+            "/api/collections",
+            json={"name": "Bad", "tag": "invalid"},
+            headers=_auth_header(),
+        )
+        assert resp.status_code == 400
+        assert "tag" in resp.json()["detail"].lower()
 
     def test_missing_name_returns_422(self):
         resp = client.post(
@@ -226,6 +257,17 @@ class TestUpdateCollection:
         assert resp.status_code == 200
         assert resp.json()["name"] == "Same"
 
+    @patch("collections_api.db.fetch_one")
+    def test_tpcds_collection_returns_403(self, mock_one):
+        mock_one.return_value = _collection_row(id=1, name="TPC-DS", tag="tpcds")
+        resp = client.put(
+            "/api/collections/1",
+            json={"name": "Renamed"},
+            headers=_auth_header(),
+        )
+        assert resp.status_code == 403
+        assert "TPC-DS" in resp.json()["detail"]
+
 
 # ---------------------------------------------------------------------------
 # Delete collection
@@ -248,6 +290,13 @@ class TestDeleteCollection:
         mock_one.return_value = None
         resp = client.delete("/api/collections/999", headers=_auth_header())
         assert resp.status_code == 404
+
+    @patch("collections_api.db.fetch_one")
+    def test_tpcds_collection_returns_403(self, mock_one):
+        mock_one.return_value = _collection_row(id=1, name="TPC-DS", tag="tpcds")
+        resp = client.delete("/api/collections/1", headers=_auth_header())
+        assert resp.status_code == 403
+        assert "TPC-DS" in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -310,6 +359,18 @@ class TestAddQuery:
         )
         assert resp.status_code == 422
 
+    @patch("collections_api.db.fetch_one")
+    def test_tpcds_collection_returns_403(self, mock_one):
+        """Cannot add queries to a TPC-DS collection."""
+        mock_one.return_value = _collection_row(id=1, name="TPC-DS", tag="tpcds")
+        resp = client.post(
+            "/api/collections/1/queries",
+            json={"query_text": "SELECT 1"},
+            headers=_auth_header(),
+        )
+        assert resp.status_code == 403
+        assert "TPC-DS" in resp.json()["detail"]
+
 
 # ---------------------------------------------------------------------------
 # Delete query
@@ -320,7 +381,11 @@ class TestDeleteQuery:
     @patch("collections_api.db.execute")
     @patch("collections_api.db.fetch_one")
     def test_deletes(self, mock_one, mock_exec):
-        mock_one.return_value = _query_row(id=5, collection_id=1)
+        # First call: collection lookup, second call: query lookup
+        mock_one.side_effect = [
+            _collection_row(id=1, tag="user"),
+            _query_row(id=5, collection_id=1),
+        ]
         resp = client.delete("/api/collections/1/queries/5", headers=_auth_header())
         assert resp.status_code == 204
         sql, params = mock_exec.call_args[0]
@@ -329,13 +394,22 @@ class TestDeleteQuery:
 
     @patch("collections_api.db.fetch_one")
     def test_not_found(self, mock_one):
-        mock_one.return_value = None
+        # Collection exists but query doesn't
+        mock_one.side_effect = [_collection_row(id=1, tag="user"), None]
         resp = client.delete("/api/collections/1/queries/999", headers=_auth_header())
         assert resp.status_code == 404
 
     @patch("collections_api.db.fetch_one")
     def test_wrong_collection_not_found(self, mock_one):
         """Query exists but belongs to a different collection."""
-        mock_one.return_value = None  # AND collection_id = %s won't match
+        mock_one.return_value = None  # collection not found
         resp = client.delete("/api/collections/99/queries/5", headers=_auth_header())
         assert resp.status_code == 404
+
+    @patch("collections_api.db.fetch_one")
+    def test_tpcds_collection_returns_403(self, mock_one):
+        """Cannot delete queries from a TPC-DS collection."""
+        mock_one.return_value = _collection_row(id=1, name="TPC-DS", tag="tpcds")
+        resp = client.delete("/api/collections/1/queries/5", headers=_auth_header())
+        assert resp.status_code == 403
+        assert "TPC-DS" in resp.json()["detail"]

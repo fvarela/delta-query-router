@@ -1,4 +1,11 @@
-"""Benchmark execution API — run collections against engines, store results."""
+"""Benchmark execution API — definitions (collection×engine) and runs.
+
+Schema:
+  benchmark_definitions: immutable (collection_id, engine_id) pairs
+  benchmark_runs: individual executions of a definition
+  benchmark_engine_warmups: cold-start probes per run
+  benchmark_results: per-query per-engine execution results per run
+"""
 
 import logging
 import time
@@ -180,12 +187,31 @@ def _lookup_io_latency_ms(query_text: str) -> float | None:
     return max_io
 
 
+def _get_or_create_definition(collection_id: int, engine_id: str) -> dict:
+    """Get or create a benchmark definition for a (collection, engine) pair."""
+    row = db.fetch_one(
+        "SELECT * FROM benchmark_definitions WHERE collection_id = %s AND engine_id = %s",
+        (collection_id, engine_id),
+    )
+    if row:
+        return row
+    return db.fetch_one(
+        "INSERT INTO benchmark_definitions (collection_id, engine_id) VALUES (%s, %s) RETURNING *",
+        (collection_id, engine_id),
+    )
+
+
 # --- Endpoints ---
 
 
 @router.post("", status_code=201)
 async def create_benchmark(body: CreateBenchmark):
-    """Run a benchmark: warm up engines, execute all queries, store results."""
+    """Run a benchmark: create definitions + runs, warm up engines, execute queries.
+
+    For each engine_id, a definition (collection×engine) is upserted and a new
+    run is created. Engines are warmed up, queries executed, and results stored
+    against each run.
+    """
     # 1. Validate collection
     collection = db.fetch_one(
         "SELECT * FROM collections WHERE id = %s", (body.collection_id,)
@@ -213,19 +239,22 @@ async def create_benchmark(body: CreateBenchmark):
             raise HTTPException(status_code=400, detail=f"Engine is not active: {eid}")
         engines[eid] = eng
 
-    # 3. Create benchmark row
-    benchmark = db.fetch_one(
-        "INSERT INTO benchmarks (collection_id, status) VALUES (%s, 'warming_up') RETURNING *",
-        (body.collection_id,),
-    )
-    benchmark_id = benchmark["id"]
-
-    # 4. Warm-up phase
-    # Import workspace state from main module for Databricks execution
+    # 3. Create definitions + runs for each engine
     import main as _main
 
+    runs = {}  # engine_id → {definition, run}
+    for eid in body.engine_ids:
+        definition = _get_or_create_definition(body.collection_id, eid)
+        run = db.fetch_one(
+            "INSERT INTO benchmark_runs (definition_id, status) VALUES (%s, 'warming_up') RETURNING *",
+            (definition["id"],),
+        )
+        runs[eid] = {"definition": definition, "run": run}
+
+    # 4. Warm-up phase
     try:
         for eid, eng in engines.items():
+            run_id = runs[eid]["run"]["id"]
             try:
                 if eng["engine_type"] == "duckdb":
                     cold_start_ms = await _warmup_duckdb(eng)
@@ -240,41 +269,47 @@ async def create_benchmark(body: CreateBenchmark):
                     raise RuntimeError(f"Unknown engine type: {eng['engine_type']}")
 
                 db.execute(
-                    "INSERT INTO benchmark_engine_warmups (benchmark_id, engine_id, cold_start_time_ms) "
+                    "INSERT INTO benchmark_engine_warmups (run_id, engine_id, cold_start_time_ms) "
                     "VALUES (%s, %s, %s)",
-                    (benchmark_id, eid, cold_start_ms),
+                    (run_id, eid, cold_start_ms),
                 )
             except Exception as e:
                 logger.warning("Warmup failed for engine %s: %s", eid, e)
                 db.execute(
-                    "INSERT INTO benchmark_engine_warmups (benchmark_id, engine_id, cold_start_time_ms) "
+                    "INSERT INTO benchmark_engine_warmups (run_id, engine_id, cold_start_time_ms) "
                     "VALUES (%s, %s, NULL)",
-                    (benchmark_id, eid),
+                    (run_id, eid),
                 )
-                db.execute(
-                    "UPDATE benchmarks SET status = 'failed', updated_at = NOW() WHERE id = %s",
-                    (benchmark_id,),
-                )
+                # Mark all runs as failed
+                for r in runs.values():
+                    db.execute(
+                        "UPDATE benchmark_runs SET status = 'failed', updated_at = NOW() WHERE id = %s",
+                        (r["run"]["id"],),
+                    )
+                run_ids = [r["run"]["id"] for r in runs.values()]
                 return {
-                    "id": benchmark_id,
+                    "run_ids": run_ids,
                     "status": "failed",
                     "error": f"Warmup failed for engine {eid}: {e}",
                 }
     except Exception as e:
-        db.execute(
-            "UPDATE benchmarks SET status = 'failed', updated_at = NOW() WHERE id = %s",
-            (benchmark_id,),
-        )
+        for r in runs.values():
+            db.execute(
+                "UPDATE benchmark_runs SET status = 'failed', updated_at = NOW() WHERE id = %s",
+                (r["run"]["id"],),
+            )
         raise HTTPException(status_code=500, detail=f"Warmup phase error: {e}")
 
-    # 5. Running phase
-    db.execute(
-        "UPDATE benchmarks SET status = 'running', updated_at = NOW() WHERE id = %s",
-        (benchmark_id,),
-    )
+    # 5. Running phase — mark all runs as running
+    for r in runs.values():
+        db.execute(
+            "UPDATE benchmark_runs SET status = 'running', updated_at = NOW() WHERE id = %s",
+            (r["run"]["id"],),
+        )
 
     for query in queries:
         for eid, eng in engines.items():
+            run_id = runs[eid]["run"]["id"]
             try:
                 if eng["engine_type"] == "duckdb":
                     result = await _execute_query_on_duckdb(
@@ -304,10 +339,10 @@ async def create_benchmark(body: CreateBenchmark):
             io_latency = _lookup_io_latency_ms(query["query_text"])
 
             db.execute(
-                "INSERT INTO benchmark_results (benchmark_id, engine_id, query_id, execution_time_ms, io_latency_ms, error_message) "
+                "INSERT INTO benchmark_results (run_id, engine_id, query_id, execution_time_ms, io_latency_ms, error_message) "
                 "VALUES (%s, %s, %s, %s, %s, %s)",
                 (
-                    benchmark_id,
+                    run_id,
                     eid,
                     query["id"],
                     result.get("execution_time_ms"),
@@ -316,67 +351,153 @@ async def create_benchmark(body: CreateBenchmark):
                 ),
             )
 
-    # 6. Complete
-    db.execute(
-        "UPDATE benchmarks SET status = 'complete', updated_at = NOW() WHERE id = %s",
-        (benchmark_id,),
-    )
+    # 6. Complete — mark all runs as complete
+    for r in runs.values():
+        db.execute(
+            "UPDATE benchmark_runs SET status = 'complete', updated_at = NOW() WHERE id = %s",
+            (r["run"]["id"],),
+        )
 
-    return {"id": benchmark_id, "status": "complete"}
+    run_ids = [r["run"]["id"] for r in runs.values()]
+    return {"run_ids": run_ids, "status": "complete"}
 
 
 @router.get("")
-async def list_benchmarks(collection_id: int | None = None):
-    """List benchmarks, optionally filtered by collection_id."""
+async def list_definitions(
+    collection_id: int | None = None,
+    engine_id: str | None = None,
+):
+    """List benchmark definitions, optionally filtered by collection_id and/or engine_id.
+
+    Each definition includes run_count and the latest_run summary.
+    """
+    where_clauses = []
+    params: list = []
     if collection_id is not None:
-        rows = db.fetch_all(
-            """
-            SELECT b.*, c.name AS collection_name,
-                   (SELECT COUNT(DISTINCT br.engine_id) FROM benchmark_results br WHERE br.benchmark_id = b.id) AS engine_count
-            FROM benchmarks b
-            JOIN collections c ON c.id = b.collection_id
-            WHERE b.collection_id = %s
-            ORDER BY b.created_at DESC
-            """,
-            (collection_id,),
-        )
-    else:
-        rows = db.fetch_all(
-            """
-            SELECT b.*, c.name AS collection_name,
-                   (SELECT COUNT(DISTINCT br.engine_id) FROM benchmark_results br WHERE br.benchmark_id = b.id) AS engine_count
-            FROM benchmarks b
-            JOIN collections c ON c.id = b.collection_id
-            ORDER BY b.created_at DESC
-            """
-        )
-    return rows
+        where_clauses.append("bd.collection_id = %s")
+        params.append(collection_id)
+    if engine_id is not None:
+        where_clauses.append("bd.engine_id = %s")
+        params.append(engine_id)
 
+    where_sql = ""
+    if where_clauses:
+        where_sql = "WHERE " + " AND ".join(where_clauses)
 
-@router.get("/{benchmark_id}")
-async def get_benchmark(benchmark_id: int):
-    """Get full benchmark detail: warmups + results with query texts."""
-    benchmark = db.fetch_one(
-        """
-        SELECT b.*, c.name AS collection_name
-        FROM benchmarks b
-        JOIN collections c ON c.id = b.collection_id
-        WHERE b.id = %s
+    rows = db.fetch_all(
+        f"""
+        SELECT bd.*,
+               c.name AS collection_name,
+               e.display_name AS engine_display_name,
+               (SELECT COUNT(*) FROM benchmark_runs br WHERE br.definition_id = bd.id) AS run_count
+        FROM benchmark_definitions bd
+        JOIN collections c ON c.id = bd.collection_id
+        LEFT JOIN engines e ON e.id = bd.engine_id
+        {where_sql}
+        ORDER BY bd.created_at DESC
         """,
-        (benchmark_id,),
+        tuple(params) if params else None,
     )
-    if not benchmark:
-        raise HTTPException(status_code=404, detail="Benchmark not found")
+
+    # Attach latest_run for each definition
+    result = []
+    for row in rows:
+        latest_run = db.fetch_one(
+            """
+            SELECT id, definition_id, status, created_at, updated_at
+            FROM benchmark_runs
+            WHERE definition_id = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (row["id"],),
+        )
+        entry = dict(row)
+        entry["latest_run"] = dict(latest_run) if latest_run else None
+        result.append(entry)
+
+    return result
+
+
+@router.get("/{definition_id}")
+async def get_definition(definition_id: int):
+    """Get a benchmark definition with all its runs."""
+    definition = db.fetch_one(
+        """
+        SELECT bd.*,
+               c.name AS collection_name,
+               e.display_name AS engine_display_name
+        FROM benchmark_definitions bd
+        JOIN collections c ON c.id = bd.collection_id
+        LEFT JOIN engines e ON e.id = bd.engine_id
+        WHERE bd.id = %s
+        """,
+        (definition_id,),
+    )
+    if not definition:
+        raise HTTPException(status_code=404, detail="Benchmark definition not found")
+
+    runs = db.fetch_all(
+        """
+        SELECT id, definition_id, status, created_at, updated_at
+        FROM benchmark_runs
+        WHERE definition_id = %s
+        ORDER BY created_at DESC
+        """,
+        (definition_id,),
+    )
+
+    return {
+        **definition,
+        "run_count": len(runs),
+        "runs": runs,
+    }
+
+
+@router.get("/{definition_id}/runs")
+async def list_runs(definition_id: int):
+    """List runs for a benchmark definition, ordered by created_at desc."""
+    definition = db.fetch_one(
+        "SELECT * FROM benchmark_definitions WHERE id = %s",
+        (definition_id,),
+    )
+    if not definition:
+        raise HTTPException(status_code=404, detail="Benchmark definition not found")
+
+    runs = db.fetch_all(
+        """
+        SELECT id, definition_id, status, created_at, updated_at
+        FROM benchmark_runs
+        WHERE definition_id = %s
+        ORDER BY created_at DESC
+        """,
+        (definition_id,),
+    )
+    return runs
+
+
+@router.get("/{definition_id}/runs/{run_id}")
+async def get_run(definition_id: int, run_id: int):
+    """Get run details with warmup results and query results."""
+    run = db.fetch_one(
+        """
+        SELECT * FROM benchmark_runs
+        WHERE id = %s AND definition_id = %s
+        """,
+        (run_id, definition_id),
+    )
+    if not run:
+        raise HTTPException(status_code=404, detail="Benchmark run not found")
 
     warmups = db.fetch_all(
         """
         SELECT bw.*, e.display_name AS engine_display_name
         FROM benchmark_engine_warmups bw
         LEFT JOIN engines e ON e.id = bw.engine_id
-        WHERE bw.benchmark_id = %s
+        WHERE bw.run_id = %s
         ORDER BY bw.started_at
         """,
-        (benchmark_id,),
+        (run_id,),
     )
 
     results = db.fetch_all(
@@ -386,24 +507,39 @@ async def get_benchmark(benchmark_id: int):
         FROM benchmark_results br
         LEFT JOIN engines e ON e.id = br.engine_id
         LEFT JOIN collection_queries cq ON cq.id = br.query_id
-        WHERE br.benchmark_id = %s
+        WHERE br.run_id = %s
         ORDER BY cq.sequence_number, br.engine_id
         """,
-        (benchmark_id,),
+        (run_id,),
     )
 
     return {
-        **benchmark,
+        **run,
         "warmups": warmups,
         "results": results,
     }
 
 
-@router.delete("/{benchmark_id}", status_code=204)
-async def delete_benchmark(benchmark_id: int):
-    """Delete a benchmark and all its warmups/results (CASCADE)."""
-    existing = db.fetch_one("SELECT * FROM benchmarks WHERE id = %s", (benchmark_id,))
+@router.delete("/{definition_id}", status_code=204)
+async def delete_definition(definition_id: int):
+    """Delete a benchmark definition and all its runs/warmups/results (CASCADE)."""
+    existing = db.fetch_one(
+        "SELECT * FROM benchmark_definitions WHERE id = %s", (definition_id,)
+    )
     if not existing:
-        raise HTTPException(status_code=404, detail="Benchmark not found")
-    db.execute("DELETE FROM benchmarks WHERE id = %s", (benchmark_id,))
+        raise HTTPException(status_code=404, detail="Benchmark definition not found")
+    db.execute("DELETE FROM benchmark_definitions WHERE id = %s", (definition_id,))
+    return Response(status_code=204)
+
+
+@router.delete("/{definition_id}/runs/{run_id}", status_code=204)
+async def delete_run(definition_id: int, run_id: int):
+    """Delete a specific benchmark run and its warmups/results (CASCADE)."""
+    existing = db.fetch_one(
+        "SELECT * FROM benchmark_runs WHERE id = %s AND definition_id = %s",
+        (run_id, definition_id),
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Benchmark run not found")
+    db.execute("DELETE FROM benchmark_runs WHERE id = %s", (run_id,))
     return Response(status_code=204)

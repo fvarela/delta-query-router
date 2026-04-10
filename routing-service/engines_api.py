@@ -22,6 +22,7 @@ class UpdateEngine(BaseModel):
     config: dict | None = None
     cost_tier: int | None = None
     is_active: bool | None = None
+    scale_policy: str | None = None
 
 
 class ScaleRequest(BaseModel):
@@ -77,6 +78,7 @@ async def list_engines():
                 "enabled": row["is_active"],
                 "cost_tier": row["cost_tier"],
                 "k8s_service_name": row.get("k8s_service_name"),
+                "scale_policy": row.get("scale_policy", "always_on"),
                 "created_at": row["created_at"].isoformat()
                 if row.get("created_at") and hasattr(row["created_at"], "isoformat")
                 else row.get("created_at"),
@@ -138,6 +140,13 @@ async def update_engine(engine_id: str, body: UpdateEngine):
         fields["cost_tier"] = body.cost_tier
     if body.is_active is not None:
         fields["is_active"] = body.is_active
+    if body.scale_policy is not None:
+        if body.scale_policy not in ("always_on", "scale_to_zero"):
+            raise HTTPException(
+                status_code=400,
+                detail="scale_policy must be 'always_on' or 'scale_to_zero'",
+            )
+        fields["scale_policy"] = body.scale_policy
 
     if not fields:
         return existing

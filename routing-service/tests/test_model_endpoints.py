@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 import auth
 from main import app
+import models_api
 
 client = TestClient(app)
 
@@ -235,7 +236,22 @@ class TestTrainEndpoint:
         resp = client.post("/api/models/train", headers=_admin_header())
         assert resp.status_code == 200
         assert resp.json()["id"] == 1
-        mock_train.assert_called_once()
+        mock_train.assert_called_once_with(
+            model_dir=models_api.MODEL_DIR, collection_ids=None
+        )
+
+    @patch("models_api.model_trainer.train_model")
+    def test_train_with_collection_ids(self, mock_train):
+        mock_train.return_value = _model_row(1)
+        resp = client.post(
+            "/api/models/train",
+            json={"collection_ids": [1, 3, 5]},
+            headers=_admin_header(),
+        )
+        assert resp.status_code == 200
+        mock_train.assert_called_once_with(
+            model_dir=models_api.MODEL_DIR, collection_ids=[1, 3, 5]
+        )
 
     @patch("models_api.model_trainer.train_model")
     def test_train_too_few_samples(self, mock_train):

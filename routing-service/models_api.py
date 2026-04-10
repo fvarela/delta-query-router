@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
+from pydantic import BaseModel
 
 import auth
 import db
@@ -18,6 +20,13 @@ logger = logging.getLogger("routing-service.models_api")
 router = APIRouter(prefix="/api/models", tags=["models"])
 
 MODEL_DIR = os.environ.get("MODEL_DIR", "/models/")
+
+
+# --- Request models ---
+
+
+class TrainRequest(BaseModel):
+    collection_ids: Optional[list[int]] = None
 
 
 # --- List / detail ---
@@ -35,17 +44,23 @@ async def list_models(user: auth.UserContext = Depends(auth.verify_token)):
 
 @router.post("/train")
 async def train_model_endpoint(
+    body: TrainRequest | None = None,
     user: auth.UserContext = Depends(auth.verify_token),
 ):
     """Train a new latency prediction model from benchmark data.
 
     Admin-only. Runs synchronously (training data is small, typically <1000 rows).
+    Optionally accepts collection_ids to record which collections were used.
     """
     if not user.is_admin:
         raise HTTPException(status_code=403, detail="Admin access required")
 
+    collection_ids = body.collection_ids if body else None
+
     try:
-        result = model_trainer.train_model(model_dir=MODEL_DIR)
+        result = model_trainer.train_model(
+            model_dir=MODEL_DIR, collection_ids=collection_ids
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

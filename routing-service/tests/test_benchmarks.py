@@ -1,4 +1,4 @@
-"""Tests for benchmarks_api.py — benchmark execution + CRUD."""
+"""Tests for benchmarks_api.py — benchmark definitions + runs CRUD and execution."""
 
 import json
 from unittest.mock import patch, MagicMock, AsyncMock
@@ -61,10 +61,19 @@ def _engine_row(id="duckdb-1", engine_type="duckdb", active=True):
     }
 
 
-def _benchmark_row(id=1, collection_id=1, status="warming_up"):
+def _definition_row(id=1, collection_id=1, engine_id="duckdb-1"):
     return {
         "id": id,
         "collection_id": collection_id,
+        "engine_id": engine_id,
+        "created_at": _NOW,
+    }
+
+
+def _run_row(id=1, definition_id=1, status="warming_up"):
+    return {
+        "id": id,
+        "definition_id": definition_id,
         "status": status,
         "created_at": _NOW,
         "updated_at": _NOW,
@@ -154,11 +163,12 @@ class TestCreateBenchmark:
         """Full flow: 1 DuckDB engine, 1 query → complete."""
         mock_run_query.return_value = {"execution_time_ms": 12.5, "error_message": None}
 
-        # fetch_one calls: collection, engine, INSERT benchmark
+        # fetch_one calls: collection, engine, definition (get_or_create), run
         mock_one.side_effect = [
             _collection_row(),
             _engine_row(),
-            _benchmark_row(id=42),
+            _definition_row(id=10),  # _get_or_create_definition SELECT hit
+            _run_row(id=42, definition_id=10),  # INSERT run
         ]
         mock_all.return_value = [_query_row()]
 
@@ -170,7 +180,7 @@ class TestCreateBenchmark:
 
         assert resp.status_code == 201
         data = resp.json()
-        assert data["id"] == 42
+        assert data["run_ids"] == [42]
         assert data["status"] == "complete"
 
         # Verify warmup was called
@@ -184,7 +194,6 @@ class TestCreateBenchmark:
         exec_sqls = [c[0][0] for c in exec_calls]
         assert any("benchmark_engine_warmups" in s for s in exec_sqls)
         assert any("benchmark_results" in s for s in exec_sqls)
-        # Status transitions are embedded in SQL strings
         assert any("running" in s for s in exec_sqls)
         assert any("complete" in s for s in exec_sqls)
 
@@ -197,11 +206,12 @@ class TestCreateBenchmark:
     @patch("benchmarks_api.db.fetch_all")
     @patch("benchmarks_api.db.fetch_one")
     def test_warmup_failure(self, mock_one, mock_all, mock_exec, mock_warmup):
-        """Warmup failure → benchmark marked 'failed'."""
+        """Warmup failure → run marked 'failed'."""
         mock_one.side_effect = [
             _collection_row(),
             _engine_row(),
-            _benchmark_row(id=10),
+            _definition_row(id=5),
+            _run_row(id=10, definition_id=5),
         ]
         mock_all.return_value = [_query_row()]
 
@@ -213,7 +223,7 @@ class TestCreateBenchmark:
 
         assert resp.status_code == 201
         data = resp.json()
-        assert data["id"] == 10
+        assert data["run_ids"] == [10]
         assert data["status"] == "failed"
         assert "Warmup failed" in data["error"]
 
@@ -229,7 +239,7 @@ class TestCreateBenchmark:
     def test_query_failure_continues(
         self, mock_one, mock_all, mock_exec, mock_run_query, mock_warmup
     ):
-        """One query fails → error recorded, benchmark still completes."""
+        """One query fails → error recorded, run still completes."""
         queries = [
             _query_row(id=1, seq=1, sql="SELECT 1"),
             _query_row(id=2, seq=2, sql="SELECT bad"),
@@ -242,7 +252,8 @@ class TestCreateBenchmark:
         mock_one.side_effect = [
             _collection_row(),
             _engine_row(),
-            _benchmark_row(id=7),
+            _definition_row(id=3),
+            _run_row(id=7, definition_id=3),
         ]
         mock_all.return_value = queries
 
@@ -269,14 +280,21 @@ class TestCreateBenchmark:
     def test_multiple_engines(
         self, mock_one, mock_all, mock_exec, mock_run_query, mock_warmup
     ):
-        """2 engines × 1 query = 2 warmups + 2 results."""
+        """2 engines × 1 query = 2 warmups + 2 results, 2 run_ids returned."""
         mock_run_query.return_value = {"execution_time_ms": 8.0, "error_message": None}
 
         mock_one.side_effect = [
             _collection_row(),
             _engine_row(id="duckdb-1"),
             _engine_row(id="duckdb-2"),
-            _benchmark_row(id=99),
+            # get_or_create for engine 1
+            _definition_row(id=1, engine_id="duckdb-1"),
+            # run for engine 1
+            _run_row(id=90, definition_id=1),
+            # get_or_create for engine 2
+            _definition_row(id=2, engine_id="duckdb-2"),
+            # run for engine 2
+            _run_row(id=91, definition_id=2),
         ]
         mock_all.return_value = [_query_row()]
 
@@ -287,7 +305,11 @@ class TestCreateBenchmark:
         )
 
         assert resp.status_code == 201
-        assert resp.json()["status"] == "complete"
+        data = resp.json()
+        assert data["status"] == "complete"
+        assert len(data["run_ids"]) == 2
+        assert 90 in data["run_ids"]
+        assert 91 in data["run_ids"]
 
         # 2 warmup calls
         assert mock_warmup.call_count == 2
@@ -296,24 +318,31 @@ class TestCreateBenchmark:
 
 
 # ---------------------------------------------------------------------------
-# GET /api/benchmarks — list
+# GET /api/benchmarks — list definitions
 # ---------------------------------------------------------------------------
 
 
-class TestListBenchmarks:
-    """GET /api/benchmarks — list benchmarks."""
+class TestListDefinitions:
+    """GET /api/benchmarks — list benchmark definitions."""
 
+    @patch("benchmarks_api.db.fetch_all", return_value=[])
+    def test_list_empty(self, mock_all):
+        resp = client.get("/api/benchmarks", headers=_auth_header())
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    @patch("benchmarks_api.db.fetch_one", return_value=None)  # no latest_run
     @patch("benchmarks_api.db.fetch_all")
-    def test_list_all(self, mock_all):
+    def test_list_returns_definitions(self, mock_all, mock_one):
         mock_all.return_value = [
             {
                 "id": 1,
                 "collection_id": 1,
+                "engine_id": "duckdb-1",
                 "collection_name": "C1",
-                "status": "complete",
-                "engine_count": 2,
+                "engine_display_name": "DuckDB Small",
+                "run_count": 3,
                 "created_at": _NOW,
-                "updated_at": _NOW,
             },
         ]
         resp = client.get("/api/benchmarks", headers=_auth_header())
@@ -321,15 +350,42 @@ class TestListBenchmarks:
         data = resp.json()
         assert len(data) == 1
         assert data[0]["collection_name"] == "C1"
+        assert data[0]["run_count"] == 3
+        assert data[0]["latest_run"] is None
 
+    @patch("benchmarks_api.db.fetch_one")
     @patch("benchmarks_api.db.fetch_all")
-    def test_list_filtered(self, mock_all):
-        mock_all.return_value = []
+    def test_list_with_latest_run(self, mock_all, mock_one):
+        mock_all.return_value = [
+            {
+                "id": 1,
+                "collection_id": 1,
+                "engine_id": "duckdb-1",
+                "collection_name": "C1",
+                "engine_display_name": "DuckDB Small",
+                "run_count": 1,
+                "created_at": _NOW,
+            },
+        ]
+        mock_one.return_value = _run_row(id=5, definition_id=1, status="complete")
+        resp = client.get("/api/benchmarks", headers=_auth_header())
+        data = resp.json()
+        assert data[0]["latest_run"]["id"] == 5
+        assert data[0]["latest_run"]["status"] == "complete"
+
+    @patch("benchmarks_api.db.fetch_all", return_value=[])
+    def test_filter_by_collection_id(self, mock_all):
         resp = client.get("/api/benchmarks?collection_id=5", headers=_auth_header())
         assert resp.status_code == 200
-        # Verify filter was passed
         sql = mock_all.call_args[0][0]
         assert "collection_id" in sql
+
+    @patch("benchmarks_api.db.fetch_all", return_value=[])
+    def test_filter_by_engine_id(self, mock_all):
+        resp = client.get("/api/benchmarks?engine_id=duckdb-1", headers=_auth_header())
+        assert resp.status_code == 200
+        sql = mock_all.call_args[0][0]
+        assert "engine_id" in sql
 
     def test_requires_auth(self):
         resp = client.get("/api/benchmarks")
@@ -337,30 +393,91 @@ class TestListBenchmarks:
 
 
 # ---------------------------------------------------------------------------
-# GET /api/benchmarks/{id} — detail
+# GET /api/benchmarks/{id} — definition detail
 # ---------------------------------------------------------------------------
 
 
-class TestGetBenchmark:
-    """GET /api/benchmarks/{id} — full benchmark detail."""
+class TestGetDefinition:
+    """GET /api/benchmarks/{id} — definition with runs."""
 
     @patch("benchmarks_api.db.fetch_all")
     @patch("benchmarks_api.db.fetch_one")
-    def test_get_detail(self, mock_one, mock_all):
+    def test_get_with_runs(self, mock_one, mock_all):
         mock_one.return_value = {
             "id": 1,
             "collection_id": 1,
+            "engine_id": "duckdb-1",
             "collection_name": "Test",
-            "status": "complete",
+            "engine_display_name": "DuckDB Small",
             "created_at": _NOW,
-            "updated_at": _NOW,
         }
+        mock_all.return_value = [
+            _run_row(id=10, definition_id=1, status="complete"),
+            _run_row(id=11, definition_id=1, status="running"),
+        ]
+
+        resp = client.get("/api/benchmarks/1", headers=_auth_header())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["collection_name"] == "Test"
+        assert data["run_count"] == 2
+        assert len(data["runs"]) == 2
+
+    @patch("benchmarks_api.db.fetch_one", return_value=None)
+    def test_not_found(self, mock_one):
+        resp = client.get("/api/benchmarks/999", headers=_auth_header())
+        assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /api/benchmarks/{id}/runs — list runs
+# ---------------------------------------------------------------------------
+
+
+class TestListRuns:
+    """GET /api/benchmarks/{id}/runs — runs for a definition."""
+
+    @patch("benchmarks_api.db.fetch_all")
+    @patch("benchmarks_api.db.fetch_one")
+    def test_list_runs(self, mock_one, mock_all):
+        mock_one.return_value = _definition_row(id=1)
+        mock_all.return_value = [
+            _run_row(id=10, definition_id=1, status="complete"),
+        ]
+        resp = client.get("/api/benchmarks/1/runs", headers=_auth_header())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["id"] == 10
+
+    @patch("benchmarks_api.db.fetch_one", return_value=None)
+    def test_definition_not_found(self, mock_one):
+        resp = client.get("/api/benchmarks/999/runs", headers=_auth_header())
+        assert resp.status_code == 404
+
+    def test_requires_auth(self):
+        resp = client.get("/api/benchmarks/1/runs")
+        assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# GET /api/benchmarks/{id}/runs/{run_id} — run detail
+# ---------------------------------------------------------------------------
+
+
+class TestGetRun:
+    """GET /api/benchmarks/{id}/runs/{run_id} — run with warmups and results."""
+
+    @patch("benchmarks_api.db.fetch_all")
+    @patch("benchmarks_api.db.fetch_one")
+    def test_get_run_detail(self, mock_one, mock_all):
+        mock_one.return_value = _run_row(id=10, definition_id=1, status="complete")
         mock_all.side_effect = [
             # warmups
             [
                 {
                     "id": 1,
-                    "benchmark_id": 1,
+                    "run_id": 10,
                     "engine_id": "duckdb-1",
                     "engine_display_name": "DuckDB Small",
                     "cold_start_time_ms": 50.0,
@@ -371,7 +488,7 @@ class TestGetBenchmark:
             [
                 {
                     "id": 1,
-                    "benchmark_id": 1,
+                    "run_id": 10,
                     "engine_id": "duckdb-1",
                     "engine_display_name": "DuckDB Small",
                     "query_id": 1,
@@ -384,10 +501,9 @@ class TestGetBenchmark:
             ],
         ]
 
-        resp = client.get("/api/benchmarks/1", headers=_auth_header())
+        resp = client.get("/api/benchmarks/1/runs/10", headers=_auth_header())
         assert resp.status_code == 200
         data = resp.json()
-        assert data["collection_name"] == "Test"
         assert data["status"] == "complete"
         assert len(data["warmups"]) == 1
         assert data["warmups"][0]["cold_start_time_ms"] == 50.0
@@ -395,23 +511,27 @@ class TestGetBenchmark:
         assert data["results"][0]["execution_time_ms"] == 12.0
 
     @patch("benchmarks_api.db.fetch_one", return_value=None)
-    def test_not_found(self, mock_one):
-        resp = client.get("/api/benchmarks/999", headers=_auth_header())
+    def test_run_not_found(self, mock_one):
+        resp = client.get("/api/benchmarks/1/runs/999", headers=_auth_header())
         assert resp.status_code == 404
 
+    def test_requires_auth(self):
+        resp = client.get("/api/benchmarks/1/runs/1")
+        assert resp.status_code == 401
+
 
 # ---------------------------------------------------------------------------
-# DELETE /api/benchmarks/{id}
+# DELETE /api/benchmarks/{id} — delete definition
 # ---------------------------------------------------------------------------
 
 
-class TestDeleteBenchmark:
-    """DELETE /api/benchmarks/{id} — cascade delete."""
+class TestDeleteDefinition:
+    """DELETE /api/benchmarks/{id} — cascade delete definition."""
 
     @patch("benchmarks_api.db.execute")
     @patch("benchmarks_api.db.fetch_one")
     def test_delete_existing(self, mock_one, mock_exec):
-        mock_one.return_value = _benchmark_row(id=5)
+        mock_one.return_value = _definition_row(id=5)
         resp = client.delete("/api/benchmarks/5", headers=_auth_header())
         assert resp.status_code == 204
         mock_exec.assert_called_once()
@@ -423,6 +543,32 @@ class TestDeleteBenchmark:
 
     def test_requires_auth(self):
         resp = client.delete("/api/benchmarks/1")
+        assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/benchmarks/{id}/runs/{run_id} — delete single run
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteRun:
+    """DELETE /api/benchmarks/{id}/runs/{run_id} — cascade delete run."""
+
+    @patch("benchmarks_api.db.execute")
+    @patch("benchmarks_api.db.fetch_one")
+    def test_delete_existing(self, mock_one, mock_exec):
+        mock_one.return_value = _run_row(id=10, definition_id=1)
+        resp = client.delete("/api/benchmarks/1/runs/10", headers=_auth_header())
+        assert resp.status_code == 204
+        mock_exec.assert_called_once()
+
+    @patch("benchmarks_api.db.fetch_one", return_value=None)
+    def test_delete_not_found(self, mock_one):
+        resp = client.delete("/api/benchmarks/1/runs/999", headers=_auth_header())
+        assert resp.status_code == 404
+
+    def test_requires_auth(self):
+        resp = client.delete("/api/benchmarks/1/runs/1")
         assert resp.status_code == 401
 
 
@@ -569,3 +715,32 @@ class TestLookupIoLatencyMs:
             "SELECT * FROM cat.sch.t1 JOIN cat.sch.t2 ON t1.id = t2.id"
         )
         assert result == 30.0
+
+
+# ---------------------------------------------------------------------------
+# _get_or_create_definition unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestGetOrCreateDefinition:
+    """_get_or_create_definition — upsert logic."""
+
+    @patch("benchmarks_api.db.fetch_one")
+    def test_existing_returned(self, mock_one):
+        """If definition exists, return it without INSERT."""
+        existing = _definition_row(id=5, collection_id=1, engine_id="duckdb-1")
+        mock_one.return_value = existing
+        result = benchmarks_api._get_or_create_definition(1, "duckdb-1")
+        assert result["id"] == 5
+        # Only one SELECT, no INSERT
+        assert mock_one.call_count == 1
+
+    @patch("benchmarks_api.db.fetch_one")
+    def test_created_when_missing(self, mock_one):
+        """If no definition, INSERT and return new row."""
+        new_row = _definition_row(id=10, collection_id=2, engine_id="duckdb-2")
+        mock_one.side_effect = [None, new_row]
+        result = benchmarks_api._get_or_create_definition(2, "duckdb-2")
+        assert result["id"] == 10
+        # First call: SELECT (miss), second: INSERT RETURNING
+        assert mock_one.call_count == 2
