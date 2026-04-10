@@ -30,15 +30,60 @@ class TestPollAllEngines:
         engine_state._engine_states.clear()
         engine_state._get_workspace_client = None
 
+    @patch("engine_state.httpx.get")
     @patch("engine_state.db.fetch_all")
-    def test_duckdb_always_running(self, mock_fetch):
+    def test_duckdb_health_probe_running(self, mock_fetch, mock_httpx_get):
+        """DuckDB engines with a reachable health endpoint are marked 'running'."""
         mock_fetch.return_value = [
-            {"id": "duckdb-1", "engine_type": "duckdb", "config": {}},
-            {"id": "duckdb-2", "engine_type": "duckdb", "config": {}},
+            {
+                "id": "duckdb-1",
+                "engine_type": "duckdb",
+                "config": {},
+                "k8s_service_name": "duckdb-worker-small",
+            },
+            {
+                "id": "duckdb-2",
+                "engine_type": "duckdb",
+                "config": {},
+                "k8s_service_name": "duckdb-worker-medium",
+            },
         ]
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_httpx_get.return_value = mock_resp
+
         engine_state._poll_all_engines()
         assert engine_state._engine_states["duckdb-1"] == "running"
         assert engine_state._engine_states["duckdb-2"] == "running"
+
+    @patch("engine_state.httpx.get", side_effect=Exception("connection refused"))
+    @patch("engine_state.db.fetch_all")
+    def test_duckdb_health_probe_stopped(self, mock_fetch, mock_httpx_get):
+        """DuckDB engines with unreachable health endpoint are marked 'stopped'."""
+        mock_fetch.return_value = [
+            {
+                "id": "duckdb-1",
+                "engine_type": "duckdb",
+                "config": {},
+                "k8s_service_name": "duckdb-worker-small",
+            },
+        ]
+        engine_state._poll_all_engines()
+        assert engine_state._engine_states["duckdb-1"] == "stopped"
+
+    @patch("engine_state.db.fetch_all")
+    def test_duckdb_no_service_name_unknown(self, mock_fetch):
+        """DuckDB engines without k8s_service_name are marked 'unknown'."""
+        mock_fetch.return_value = [
+            {
+                "id": "duckdb-1",
+                "engine_type": "duckdb",
+                "config": {},
+                "k8s_service_name": None,
+            },
+        ]
+        engine_state._poll_all_engines()
+        assert engine_state._engine_states["duckdb-1"] == "unknown"
 
     @patch("engine_state.db.fetch_all")
     def test_databricks_no_client_unknown(self, mock_fetch):

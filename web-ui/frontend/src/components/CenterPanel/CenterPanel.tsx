@@ -408,7 +408,6 @@ const QueryDetailModal: React.FC<{
                     <span className="text-muted-foreground">Latency</span>
                     <span className="text-foreground font-mono">
                       Compute: {decision.compute_time_ms ?? "?"}ms
-                      {decision.io_latency_ms != null && <> + I/O: {decision.io_latency_ms}ms</>}
                       {decision.cold_start_ms != null && decision.cold_start_ms > 0 && <> + Cold: {decision.cold_start_ms}ms</>}
                       {" "}= <span className={latencyColor(decision.total_latency_ms)}>{decision.total_latency_ms}ms</span>
                     </span>

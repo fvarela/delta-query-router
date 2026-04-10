@@ -35,13 +35,11 @@ def _fetch_training_data() -> list[dict]:
     """Fetch benchmark results joined with query text and engine info.
 
     Returns list of dicts with keys:
-        execution_time_ms, io_latency_ms, engine_id, sql_text,
-        engine_type, cost_tier
+        execution_time_ms, engine_id, sql_text, engine_type, cost_tier
     """
     return db.fetch_all(
         """
         SELECT br.execution_time_ms,
-               br.io_latency_ms,
                br.engine_id,
                cq.query_text AS sql_text,
                e.engine_type,
@@ -55,12 +53,8 @@ def _fetch_training_data() -> list[dict]:
 
 
 def _compute_target(row: dict) -> float:
-    """Compute training target: compute_time = execution - io (if available)."""
-    exec_ms = row["execution_time_ms"]
-    io_ms = row.get("io_latency_ms")
-    if io_ms is not None:
-        return max(0.0, exec_ms - io_ms)
-    return exec_ms
+    """Compute training target: raw execution time (includes I/O)."""
+    return row["execution_time_ms"]
 
 
 def train_model(

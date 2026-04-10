@@ -3,12 +3,13 @@ import { useApp } from "@/contexts/AppContext";
 import { CurrentSettings } from "./CurrentSettings";
 import { ProfileSelector } from "./ProfileSelector";
 import { EnginesTable } from "./EnginesTable";
-import { Save, SaveAll, Undo2 } from "lucide-react";
+import { Save, SaveAll, Undo2, Database } from "lucide-react";
 
 export const RightPanel: React.FC = () => {
   const {
     routingMode,
     routingSettings, updateRoutingSettings,
+    logSettings, updateLogSettings,
     hasUnsavedChanges, saveRoutingConfig, rollbackRoutingConfig,
     activeProfileId, saveProfileAs,
   } = useApp();
@@ -67,6 +68,46 @@ export const RightPanel: React.FC = () => {
           </div>
         </div>
         )}
+
+        {/* Log Retention Settings (Phase 17) */}
+        <div className="px-3 py-2.5 border-t border-panel-border">
+          <div className="flex items-center gap-1.5 mb-2">
+            <Database size={11} className="text-muted-foreground" />
+            <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Log Retention</span>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5">
+              <label className="text-[10px] text-muted-foreground whitespace-nowrap">Keep</label>
+              <input
+                type="number"
+                min={1}
+                max={365}
+                value={logSettings.retention_days}
+                onChange={e => {
+                  const v = parseInt(e.target.value, 10);
+                  if (v >= 1) updateLogSettings({ retention_days: v });
+                }}
+                className="w-14 px-1.5 py-1 text-[11px] bg-background border border-border rounded text-center focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+              <span className="text-[10px] text-muted-foreground">days</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <label className="text-[10px] text-muted-foreground whitespace-nowrap">Max</label>
+              <input
+                type="number"
+                min={1}
+                max={10240}
+                value={logSettings.max_size_mb}
+                onChange={e => {
+                  const v = parseInt(e.target.value, 10);
+                  if (v >= 1) updateLogSettings({ max_size_mb: v });
+                }}
+                className="w-16 px-1.5 py-1 text-[11px] bg-background border border-border rounded text-center focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+              <span className="text-[10px] text-muted-foreground">MB</span>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Save / Save As / Rollback bar — fixed at bottom (hidden in benchmark mode) */}

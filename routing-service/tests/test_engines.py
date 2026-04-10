@@ -304,31 +304,6 @@ class TestUpdateEngine:
         assert resp.status_code == 200
         assert resp.json()["is_active"] is False
 
-    @patch("engines_api.db.fetch_one")
-    def test_update_scale_policy(self, mock_fetch):
-        original = _duckdb_engine()
-        updated = {**original, "scale_policy": "scale_to_zero"}
-        mock_fetch.side_effect = [original, updated]
-
-        resp = client.put(
-            "/api/engines/duckdb-1",
-            json={"scale_policy": "scale_to_zero"},
-            headers=_auth_header(),
-        )
-        assert resp.status_code == 200
-        assert resp.json()["scale_policy"] == "scale_to_zero"
-
-    @patch("engines_api.db.fetch_one")
-    def test_update_scale_policy_invalid(self, mock_fetch):
-        mock_fetch.return_value = _duckdb_engine()
-        resp = client.put(
-            "/api/engines/duckdb-1",
-            json={"scale_policy": "auto_scale"},
-            headers=_auth_header(),
-        )
-        assert resp.status_code == 400
-        assert "scale_policy" in resp.json()["detail"]
-
 
 # ---------------------------------------------------------------------------
 # POST /api/engines/{engine_id}/scale

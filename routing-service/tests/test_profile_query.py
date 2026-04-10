@@ -35,8 +35,6 @@ _FAKE_DUCKDB_ENGINES = [
 _MOCK_SETTINGS_ROW = {
     "fit_weight": 0.5,
     "cost_weight": 0.5,
-    "running_bonus_duckdb": 0.2,
-    "running_bonus_databricks": 0.1,
 }
 
 
@@ -397,62 +395,3 @@ class TestProfileAwareQuery:
         # Still routes normally with global settings
         data = resp.json()
         assert data["routing_decision"]["engine"] in ("duckdb", "databricks")
-
-    @patch("engines_api.get_duckdb_engines", return_value=_FAKE_DUCKDB_ENGINES)
-    @patch("main.catalog_service.get_tables_metadata", return_value={})
-    @patch("routing_engine._load_rules", side_effect=_mock_routing_rules_empty)
-    @patch("main.httpx.AsyncClient")
-    def test_profile_preserves_global_running_bonuses(
-        self, mock_client_cls, _rules, _meta, _engines
-    ):
-        """Profile overrides weights but keeps global running bonuses."""
-        _make_httpx_mock(mock_client_cls)
-
-        fit_config = {"routingMode": "smart", "routingPriority": 1}
-        custom_settings = {
-            "fit_weight": 0.3,
-            "cost_weight": 0.7,
-            "running_bonus_duckdb": 0.99,
-            "running_bonus_databricks": 0.88,
-        }
-        with patch("main.db.fetch_one") as mock_fetch:
-            mock_fetch.side_effect = [
-                custom_settings,  # routing_settings (with custom bonuses)
-                {"config": fit_config},  # profile
-            ]
-            with patch("routing_engine.route_query") as mock_route:
-                mock_route.return_value = routing_engine.RoutingResult(
-                    decision=routing_engine.RoutingDecision(
-                        engine="duckdb",
-                        stage="SCORING",
-                        reason="test",
-                        complexity_score=0,
-                    ),
-                    events=[],
-                )
-
-                resp = client.post(
-                    "/api/query",
-                    json={"sql": "SELECT 1", "profile_id": 1},
-                    headers=_auth_header(),
-                )
-
-            # Verify route_query was called with merged settings
-            call_kwargs = mock_route.call_args
-            settings_arg = call_kwargs.kwargs.get("settings") or call_kwargs[1].get(
-                "settings"
-            )
-            if settings_arg is None:
-                # Positional arg: route_query(analysis, meta, mode, settings=..., engine_states=...)
-                settings_arg = (
-                    call_kwargs[0][3]
-                    if len(call_kwargs[0]) > 3
-                    else call_kwargs.kwargs["settings"]
-                )
-
-            # Profile priority=1 → fit_weight=1, cost_weight=0
-            assert settings_arg.fit_weight == 1.0
-            assert settings_arg.cost_weight == 0.0
-            # Global bonuses preserved
-            assert settings_arg.running_bonus_duckdb == 0.99
-            assert settings_arg.running_bonus_databricks == 0.88

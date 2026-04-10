@@ -1,7 +1,6 @@
 """Tests for routing settings endpoints."""
 
 from unittest.mock import patch
-import pytest
 from fastapi.testclient import TestClient
 import auth
 from main import app
@@ -20,8 +19,6 @@ def _default_settings(**overrides):
         "id": 1,
         "fit_weight": 0.5,
         "cost_weight": 0.5,
-        "running_bonus_duckdb": 0.05,
-        "running_bonus_databricks": 0.15,
         "updated_at": "2026-03-27T00:00:00+00:00",
     }
     base.update(overrides)
@@ -54,8 +51,6 @@ class TestGetSettings:
         data = resp.json()
         assert data["fit_weight"] == 0.5
         assert data["cost_weight"] == 0.5
-        assert data["running_bonus_duckdb"] == 0.05
-        assert data["running_bonus_databricks"] == 0.15
         assert data["active_profile_id"] == 1
 
     @patch("main.db.fetch_one")
@@ -132,28 +127,7 @@ class TestUpdateWeights:
 
 
 # ---------------------------------------------------------------------------
-# PUT /api/routing/settings — validation
-# ---------------------------------------------------------------------------
-class TestUpdateValidation:
-    def test_negative_bonus_duckdb(self):
-        resp = client.put(
-            "/api/routing/settings",
-            json={"running_bonus_duckdb": -0.1},
-            headers=_auth_header(),
-        )
-        assert resp.status_code == 400
-
-    def test_negative_bonus_databricks(self):
-        resp = client.put(
-            "/api/routing/settings",
-            json={"running_bonus_databricks": -0.5},
-            headers=_auth_header(),
-        )
-        assert resp.status_code == 400
-
-
-# ---------------------------------------------------------------------------
-# PUT /api/routing/settings — empty body / bonus updates
+# PUT /api/routing/settings — empty body
 # ---------------------------------------------------------------------------
 class TestUpdateMisc:
     @patch("main.db.fetch_one", return_value=_default_settings())
@@ -163,25 +137,11 @@ class TestUpdateMisc:
         assert resp.json()["fit_weight"] == 0.5
 
     @patch("main.db.fetch_one")
-    def test_update_bonus_only(self, mock_fetch):
-        mock_fetch.return_value = _default_settings(running_bonus_duckdb=0.1)
-        resp = client.put(
-            "/api/routing/settings",
-            json={"running_bonus_duckdb": 0.1},
-            headers=_auth_header(),
-        )
-        assert resp.status_code == 200
-        assert resp.json()["running_bonus_duckdb"] == 0.1
-        # Verify weights were NOT included in the update
-        sql_arg = mock_fetch.call_args[0][0]
-        assert "fit_weight" not in sql_arg
-
-    @patch("main.db.fetch_one")
     def test_update_sets_updated_at(self, mock_fetch):
-        mock_fetch.return_value = _default_settings()
+        mock_fetch.return_value = _default_settings(fit_weight=0.3, cost_weight=0.7)
         resp = client.put(
             "/api/routing/settings",
-            json={"running_bonus_duckdb": 0.0},
+            json={"fit_weight": 0.3},
             headers=_auth_header(),
         )
         assert resp.status_code == 200

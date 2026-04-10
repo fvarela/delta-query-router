@@ -14,11 +14,11 @@ import auth
 import collections_api
 import engines_api
 import benchmarks_api
-import probes_api
 import models_api
 import permissions_api
 import tpcds_api
 import routing_profiles_api
+import log_cleaner
 from auth import verify_token
 from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.responses import Response
@@ -45,7 +45,6 @@ app.include_router(auth.router)
 app.include_router(collections_api.router, dependencies=[Depends(verify_token)])
 app.include_router(engines_api.router, dependencies=[Depends(verify_token)])
 app.include_router(benchmarks_api.router, dependencies=[Depends(verify_token)])
-app.include_router(probes_api.router, dependencies=[Depends(verify_token)])
 app.include_router(models_api.router, dependencies=[Depends(verify_token)])
 app.include_router(permissions_api.router, dependencies=[Depends(verify_token)])
 app.include_router(tpcds_api.router, dependencies=[Depends(verify_token)])
@@ -168,8 +167,14 @@ async def init_database():
     db.init_db()
 
 
+@app.on_event("startup")
+async def start_log_cleaner():
+    log_cleaner.start(interval_seconds=3600)
+
+
 @app.on_event("shutdown")
 async def close_database():
+    log_cleaner.stop()
     query_logger.shutdown()
     db.close_db()
 
@@ -794,8 +799,6 @@ async def execute_query(
         routing_engine.RoutingSettings(
             fit_weight=settings_row["fit_weight"],
             cost_weight=settings_row["cost_weight"],
-            running_bonus_duckdb=settings_row["running_bonus_duckdb"],
-            running_bonus_databricks=settings_row["running_bonus_databricks"],
         )
         if settings_row
         else routing_engine.RoutingSettings()
@@ -822,12 +825,10 @@ async def execute_query(
             )
             effective_mode = profile_mode
             if profile_settings is not None:
-                # Profile overrides weights; keep global running bonuses
+                # Profile overrides weights
                 r_settings = routing_engine.RoutingSettings(
                     fit_weight=profile_settings.fit_weight,
                     cost_weight=profile_settings.cost_weight,
-                    running_bonus_duckdb=r_settings.running_bonus_duckdb,
-                    running_bonus_databricks=r_settings.running_bonus_databricks,
                 )
 
     # Probe DuckDB: any active engine responding to health?
@@ -1177,8 +1178,6 @@ async def reset_routing_rules(user: auth.UserContext = Depends(verify_token)):
 class UpdateRoutingSettings(BaseModel):
     fit_weight: float | None = None
     cost_weight: float | None = None
-    running_bonus_duckdb: float | None = None
-    running_bonus_databricks: float | None = None
 
 
 @app.get("/api/routing/settings")
@@ -1195,8 +1194,6 @@ async def get_routing_settings(user: auth.UserContext = Depends(verify_token)):
     return {
         "fit_weight": row["fit_weight"],
         "cost_weight": row["cost_weight"],
-        "running_bonus_duckdb": row["running_bonus_duckdb"],
-        "running_bonus_databricks": row["running_bonus_databricks"],
         "active_profile_id": default_profile["id"] if default_profile else None,
     }
 
@@ -1205,15 +1202,6 @@ async def get_routing_settings(user: auth.UserContext = Depends(verify_token)):
 async def update_routing_settings(
     body: UpdateRoutingSettings, user: auth.UserContext = Depends(verify_token)
 ):
-    # Validate bonus values are non-negative
-    if body.running_bonus_duckdb is not None and body.running_bonus_duckdb < 0:
-        raise HTTPException(
-            status_code=400, detail="running_bonus_duckdb must be non-negative"
-        )
-    if body.running_bonus_databricks is not None and body.running_bonus_databricks < 0:
-        raise HTTPException(
-            status_code=400, detail="running_bonus_databricks must be non-negative"
-        )
     # Weight auto-complement logic
     fit_w = body.fit_weight
     cost_w = body.cost_weight
@@ -1233,10 +1221,6 @@ async def update_routing_settings(
         fields["fit_weight"] = fit_w
     if cost_w is not None:
         fields["cost_weight"] = cost_w
-    if body.running_bonus_duckdb is not None:
-        fields["running_bonus_duckdb"] = body.running_bonus_duckdb
-    if body.running_bonus_databricks is not None:
-        fields["running_bonus_databricks"] = body.running_bonus_databricks
     if not fields:
         # Nothing to update, return current settings
         return await get_routing_settings(user)
@@ -1256,6 +1240,32 @@ async def update_routing_settings(
     return {
         "fit_weight": row["fit_weight"],
         "cost_weight": row["cost_weight"],
-        "running_bonus_duckdb": row["running_bonus_duckdb"],
-        "running_bonus_databricks": row["running_bonus_databricks"],
     }
+
+
+# ---------------------------------------------------------------------------
+# Log settings
+# ---------------------------------------------------------------------------
+class UpdateLogSettings(BaseModel):
+    retention_days: int | None = None
+    max_size_mb: int | None = None
+
+
+@app.get("/api/settings/logs")
+async def get_log_settings(user: auth.UserContext = Depends(verify_token)):
+    return log_cleaner.get_settings()
+
+
+@app.put("/api/settings/logs")
+async def update_log_settings(
+    body: UpdateLogSettings, user: auth.UserContext = Depends(verify_token)
+):
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    try:
+        return log_cleaner.update_settings(
+            retention_days=body.retention_days,
+            max_size_mb=body.max_size_mb,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))

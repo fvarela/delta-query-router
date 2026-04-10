@@ -28,8 +28,6 @@ const mkLog = (level: RoutingLogLevel, stage: string, message: string): RoutingL
 
 // ---- Mutable state (mock-only — used by executeQuery/getQueryLogs) ----
 
-const routingSettings = { running_bonus_duckdb: 0.05, running_bonus_databricks: 0.15 };
-
 let queryLogs: LogEntry[] = [
   { correlation_id: "log-1", timestamp: "2026-03-15 10:45:12", query_text: "SELECT c_customer_sk, c_first_name, c_last_name FROM delta_router_dev.tpcds.customer WHERE c_birth_country = 'UNITED STATES' LIMIT 100", engine: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", status: "success", latency_ms: 45 },
   { correlation_id: "log-2", timestamp: "2026-03-15 10:44:30", query_text: "SELECT ss_sold_date_sk, SUM(ss_net_profit) AS total_profit FROM delta_router_dev.tpcds.store_sales GROUP BY ss_sold_date_sk ORDER BY total_profit DESC LIMIT 20", engine: "duckdb:2gb-2cpu", engine_display_name: "DuckDB 2GB/2CPU", status: "success", latency_ms: 890 },
@@ -136,19 +134,6 @@ export const mockApi = {
       }
     }
 
-    // --- Phase 3.5: Running Engine Bonus ---
-    const selectedIsRunning = engine.startsWith("duckdb"); // DuckDB engines are always running in mock
-    const bonusType = engine.startsWith("duckdb") ? "DuckDB" : "Databricks";
-    const bonusValue = engine.startsWith("duckdb") ? routingSettings.running_bonus_duckdb : routingSettings.running_bonus_databricks;
-    await emit("info", "bonus", `Evaluating running engine bonus...`, 60);
-    if (selectedIsRunning && bonusValue > 0) {
-      await emit("info", "bonus", `Engine ${engineName} is RUNNING — applying ${bonusType} bonus (−${bonusValue.toFixed(2)} to score)`);
-    } else if (!selectedIsRunning) {
-      await emit("info", "bonus", `Engine ${engineName} is STOPPED — no bonus applied`);
-    } else {
-      await emit("info", "bonus", `${bonusType} bonus is 0 — no adjustment`);
-    }
-
     // --- Phase 4: Engine selection ---
     await emit("decision", "engine", `Selected engine: ${engineName}`, 60);
     await emit("info", "engine", `Routing stage: ${stage.replace(/_/g, " ")}`, 40);
@@ -178,14 +163,12 @@ export const mockApi = {
 
     await emit("info", "complete", `Query executed in ${execTime}ms, ${rows.length} rows returned`, 40);
 
-    const ioLatency = engine.startsWith("duckdb") ? 8 + Math.random() * 15 : undefined;
     const coldStart = 0; // engines assumed warm during normal execution
-    const computeTime = ioLatency != null ? execTime - ioLatency : undefined;
+    const computeTime = execTime;
 
     const routingDecision: QueryExecutionResult["routing_decision"] = {
       engine, engine_display_name: engineName, stage, reason, complexity_score: complexity,
-      compute_time_ms: computeTime != null ? Math.round(computeTime) : undefined,
-      io_latency_ms: ioLatency != null ? Math.round(ioLatency) : undefined,
+      compute_time_ms: Math.round(computeTime),
       cold_start_ms: coldStart,
       total_latency_ms: execTime,
     };

@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useMemo } from "react";
-import type { RunMode, RoutingMode, PanelMode, LeftPanelTab, RoutingConfig, RoutingProfile, WorkspaceBinding, WarehouseMapping, DiscoveredWarehouse, QueryExecutionResult, Workspace, Warehouse, DatabricksSettings, EngineCatalogEntry, Model, RoutingSettings, RoutingSettingsResponse, StorageLatencyProbe, BenchmarkDefinition } from "../types";
+import type { RunMode, RoutingMode, PanelMode, LeftPanelTab, RoutingConfig, RoutingProfile, WorkspaceBinding, WarehouseMapping, DiscoveredWarehouse, QueryExecutionResult, Workspace, Warehouse, DatabricksSettings, EngineCatalogEntry, Model, RoutingSettings, RoutingSettingsResponse, BenchmarkDefinition, LogSettings } from "../types";
 import { api } from "@/lib/api";
 import { isMockMode } from "@/lib/mockMode";
 import { MOCK_ENGINES, MOCK_MODELS, MOCK_BENCHMARK_DEFINITIONS, MOCK_ROUTING_PROFILES, MOCK_DISCOVERED_WAREHOUSES, MOCK_WORKSPACES } from "@/mocks/engineSetupData";
@@ -79,11 +79,9 @@ interface AppContextType {
   routingSettings: RoutingSettings;
   updateRoutingSettings: (settings: Partial<RoutingSettings>) => Promise<void>;
 
-  // Storage latency probes (ODQ-9)
-  storageProbes: StorageLatencyProbe[];
-  reloadStorageProbes: () => Promise<void>;
-  runStorageProbes: () => Promise<void>;
-  probesRunning: boolean;
+  // Log settings (Phase 17)
+  logSettings: LogSettings;
+  updateLogSettings: (settings: Partial<LogSettings>) => Promise<void>;
 
   // Benchmark definitions (Phase 15 — Collections panel runs)
   benchmarkDefinitions: BenchmarkDefinition[];
@@ -408,7 +406,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [mock, activeModelId, reloadModels]);
 
   // Routing settings (ODQ-10)
-  const [routingSettings, setRoutingSettings] = useState<RoutingSettings>({ fit_weight: 0.5, cost_weight: 0.5, running_bonus_duckdb: 0.05, running_bonus_databricks: 0.15 });
+  const [routingSettings, setRoutingSettings] = useState<RoutingSettings>({ fit_weight: 0.5, cost_weight: 0.5 });
 
   const updateRoutingSettings = useCallback(async (settings: Partial<RoutingSettings>) => {
     if (mock) {
@@ -419,24 +417,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setRoutingSettings(updated);
   }, [mock]);
 
-  // Storage latency probes (ODQ-9)
-  const [storageProbes, setStorageProbes] = useState<StorageLatencyProbe[]>([]);
-  const [probesRunning, setProbesRunning] = useState(false);
+  // Log settings (Phase 17)
+  const [logSettings, setLogSettings] = useState<LogSettings>({ retention_days: 30, max_size_mb: 1024 });
 
-  const reloadStorageProbes = useCallback(async () => {
-    const probes = await api.get<StorageLatencyProbe[]>('/api/latency-probes');
-    setStorageProbes(probes);
-  }, []);
-
-  const runStorageProbes = useCallback(async () => {
-    setProbesRunning(true);
-    try {
-      await api.post<{ probes: StorageLatencyProbe[] }>('/api/latency-probes/run', {}).then(r => r.probes);
-      await reloadStorageProbes();
-    } finally {
-      setProbesRunning(false);
+  const updateLogSettings = useCallback(async (settings: Partial<LogSettings>) => {
+    if (mock) {
+      setLogSettings(prev => ({ ...prev, ...settings }));
+      return;
     }
-  }, [reloadStorageProbes]);
+    const updated = await api.put<LogSettings>("/api/settings/logs", settings);
+    setLogSettings(updated);
+  }, [mock]);
 
   // Left panel tab (lifted so center panel can switch it)
   const [leftPanelTab, setLeftPanelTab] = useState<LeftPanelTab>("catalog");
@@ -902,8 +893,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setRoutingSettings({
           fit_weight: settingsResp.fit_weight,
           cost_weight: settingsResp.cost_weight,
-          running_bonus_duckdb: settingsResp.running_bonus_duckdb,
-          running_bonus_databricks: settingsResp.running_bonus_databricks,
         });
 
         // 2. Fetch profiles
@@ -933,7 +922,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       reloadWarehouses();
     });
     reloadModels();
-    reloadStorageProbes();
     reloadBenchmarkDefinitions();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -954,7 +942,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       panelMode, setPanelMode,
       activeModelId, setActiveModelId, models, reloadModels, deleteModel, activateModel, deactivateModel, createModel,
       routingSettings, updateRoutingSettings,
-      storageProbes, reloadStorageProbes, runStorageProbes, probesRunning,
+      logSettings, updateLogSettings,
       benchmarkDefinitions, reloadBenchmarkDefinitions,
       leftPanelTab, setLeftPanelTab,
       savedRoutingConfig, hasUnsavedChanges, saveRoutingConfig, rollbackRoutingConfig,

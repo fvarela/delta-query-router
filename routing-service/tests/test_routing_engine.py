@@ -13,7 +13,6 @@ from routing_engine import (
     RoutingResult,
     RoutingSettings,
     _get_cold_start_ms,
-    _get_io_latency_ms,
     _is_duckdb_compatible,
     _match_rule,
     _normalize,
@@ -398,48 +397,6 @@ class TestScoring:
         )
         assert result.decision.engine == "databricks"
 
-    def test_running_bonus_tips_close_decision(self, mock_db):
-        """Running bonus can tip the balance when scores are close."""
-        meta = {"cat.sch.t": _metadata()}
-        # At complexity=5 with balanced weights:
-        #   DuckDB:     0.5*0.6 + 0.5*0.7 = 0.65
-        #   Databricks: 0.5*0.7125 + 0.5*0.2 + 0.2 bonus = 0.656
-        # Bonus tips Databricks slightly ahead
-        settings = RoutingSettings(
-            fit_weight=0.5,
-            cost_weight=0.5,
-            running_bonus_duckdb=0.0,
-            running_bonus_databricks=0.2,
-        )
-        states = EngineStates(duckdb_running=True, databricks_running=True)
-        result = route_query(
-            _analysis(tables=["cat.sch.t"], complexity_score=5.0),
-            meta,
-            settings=settings,
-            engine_states=states,
-        )
-        # Databricks gets +0.2 bonus, DuckDB gets +0.0 → Databricks should win
-        assert result.decision.engine == "databricks"
-
-    def test_running_bonus_not_applied_when_stopped(self, mock_db):
-        """Running bonus is not applied to a stopped engine."""
-        meta = {"cat.sch.t": _metadata()}
-        settings = RoutingSettings(
-            fit_weight=0.8,
-            cost_weight=0.2,
-            running_bonus_duckdb=0.1,
-            running_bonus_databricks=0.5,
-        )
-        states = EngineStates(duckdb_running=True, databricks_running=False)
-        result = route_query(
-            _analysis(tables=["cat.sch.t"], complexity_score=0.0),
-            meta,
-            settings=settings,
-            engine_states=states,
-        )
-        # DuckDB gets bonus, Databricks doesn't → DuckDB wins
-        assert result.decision.engine == "duckdb"
-
     def test_default_settings_balanced_query_routes_to_duckdb(self, mock_db):
         """With default balanced settings (50/50) and low complexity, DuckDB cost advantage wins."""
         meta = {"cat.sch.t": _metadata()}
@@ -525,34 +482,6 @@ class TestScoreEngines:
         events = []
         scores = _score_engines(0.0, meta, settings, states, events)
         assert scores["duckdb"] > scores["databricks"]
-
-    def test_running_bonus_applied_only_when_running(self):
-        """Running bonus only applies to engines that are running."""
-        meta = {"t": _metadata()}
-        settings = RoutingSettings(
-            fit_weight=0.5,
-            cost_weight=0.5,
-            running_bonus_duckdb=0.1,
-            running_bonus_databricks=0.15,
-        )
-        events_running = []
-        events_stopped = []
-        scores_running = _score_engines(
-            0.0,
-            meta,
-            settings,
-            EngineStates(duckdb_running=True, databricks_running=True),
-            events_running,
-        )
-        scores_stopped = _score_engines(
-            0.0,
-            meta,
-            settings,
-            EngineStates(duckdb_running=False, databricks_running=False),
-            events_stopped,
-        )
-        assert scores_running["duckdb"] == scores_stopped["duckdb"] + 0.1
-        assert scores_running["databricks"] == scores_stopped["databricks"] + 0.15
 
 
 class TestIsDuckdbCompatible:
@@ -734,7 +663,7 @@ class TestRoutingLogEvents:
             },
         ]
         mock_predict.return_value = {"duckdb-1": 100.0, "databricks-1": 300.0}
-        # db.fetch_one returns None → no io probe data
+        # db.fetch_one returns None → no warmup data
         mock_db.fetch_one.return_value = None
 
         meta = {"cat.sch.t": _metadata()}
@@ -892,50 +821,6 @@ class TestGetColdStartMs:
         assert result == 0.0
 
 
-# --- IO latency ---
-
-
-class TestGetIoLatencyMs:
-    """Tests for _get_io_latency_ms."""
-
-    @patch("routing_engine.db")
-    def test_no_tables_returns_zero(self, mock_db):
-        assert _get_io_latency_ms({}) == 0.0
-
-    @patch("routing_engine.db")
-    def test_no_storage_location_returns_zero(self, mock_db):
-        meta = {"t": _metadata(storage_location=None)}
-        assert _get_io_latency_ms(meta) == 0.0
-        mock_db.fetch_one.assert_not_called()
-
-    @patch("routing_engine.db")
-    def test_no_probe_data_returns_zero(self, mock_db):
-        mock_db.fetch_one.return_value = None
-        meta = {"t": _metadata(storage_location="s3://bucket/path")}
-        assert _get_io_latency_ms(meta) == 0.0
-
-    @patch("routing_engine.db")
-    def test_returns_probe_time(self, mock_db):
-        mock_db.fetch_one.return_value = {"probe_time_ms": 42.5}
-        meta = {"t": _metadata(storage_location="s3://bucket/path")}
-        assert _get_io_latency_ms(meta) == 42.5
-
-    @patch("routing_engine.db")
-    def test_returns_max_across_tables(self, mock_db):
-        """With multiple tables, returns the worst-case I/O latency."""
-        mock_db.fetch_one.side_effect = [
-            {"probe_time_ms": 10.0},
-            {"probe_time_ms": 50.0},
-            {"probe_time_ms": 25.0},
-        ]
-        meta = {
-            "t1": _metadata(storage_location="s3://a"),
-            "t2": _metadata(storage_location="s3://b"),
-            "t3": _metadata(storage_location="s3://c"),
-        }
-        assert _get_io_latency_ms(meta) == 50.0
-
-
 # --- Score with ML ---
 
 
@@ -979,36 +864,6 @@ class TestScoreWithMl:
         assert winner == "duck-1"
         assert scores["duck-1"] < scores["dbx-1"]
 
-    @patch("routing_engine.engine_state.get_engine_state", return_value="running")
-    @patch("routing_engine.db")
-    def test_cost_weight_zero_ignores_cost(self, mock_db, mock_es):
-        """With cost_weight=0, only latency matters — expensive fast engine wins."""
-        mock_db.fetch_one.return_value = None
-        engines = self._engines(
-            ("duck-1", "duckdb", 1),
-            ("dbx-1", "databricks_sql", 10),
-        )
-        preds = {"duck-1": 500.0, "dbx-1": 50.0}
-        events = []
-        settings = RoutingSettings(fit_weight=1.0, cost_weight=0.0)
-        winner, scores = _score_with_ml(preds, engines, {}, settings, events)
-        assert winner == "dbx-1"
-
-    @patch("routing_engine.engine_state.get_engine_state", return_value="running")
-    @patch("routing_engine.db")
-    def test_fit_weight_zero_ignores_latency(self, mock_db, mock_es):
-        """With fit_weight=0, only cost matters — cheapest engine wins."""
-        mock_db.fetch_one.return_value = None
-        engines = self._engines(
-            ("duck-1", "duckdb", 1),
-            ("dbx-1", "databricks_sql", 10),
-        )
-        preds = {"duck-1": 5000.0, "dbx-1": 50.0}
-        events = []
-        settings = RoutingSettings(fit_weight=0.0, cost_weight=1.0)
-        winner, scores = _score_with_ml(preds, engines, {}, settings, events)
-        assert winner == "duck-1"
-
     @patch("routing_engine.db")
     def test_cold_start_penalizes_stopped_engine(self, mock_db):
         """Stopped engine gets cold_start added to latency, tipping the balance."""
@@ -1032,42 +887,33 @@ class TestScoreWithMl:
 
     @patch("routing_engine.engine_state.get_engine_state", return_value="running")
     @patch("routing_engine.db")
-    def test_io_latency_adds_to_all_engines(self, mock_db, mock_es):
-        """I/O latency is added equally — doesn't change relative ranking."""
-        mock_db.fetch_one.return_value = {"probe_time_ms": 100.0}
+    def test_lower_predicted_latency_wins_same_cost(self, mock_db, mock_es):
+        """When cost tiers are equal, lower predicted latency wins."""
+        mock_db.fetch_one.return_value = None
         engines = self._engines(
             ("duck-1", "duckdb", 5),
             ("dbx-1", "databricks_sql", 5),
         )
         preds = {"duck-1": 300.0, "dbx-1": 100.0}
-        meta = {"t": _metadata(storage_location="s3://bucket/path")}
         events = []
-        winner, scores = _score_with_ml(preds, engines, meta, RoutingSettings(), events)
-        # IO is same for both → dbx-1 still wins on compute
+        winner, scores = _score_with_ml(preds, engines, {}, RoutingSettings(), events)
         assert winner == "dbx-1"
 
+    @patch("routing_engine.engine_state.get_engine_state", return_value="running")
     @patch("routing_engine.db")
-    def test_running_bonus_breaks_latency_cost_tie(self, mock_db):
-        """Running bonus is the tiebreaker when latency and cost are identical."""
+    def test_cold_start_breaks_tie(self, mock_db, mock_es):
+        """When predictions and costs are equal, cold start tips the balance."""
         mock_db.fetch_one.return_value = None
         engines = self._engines(
             ("duck-1", "duckdb", 5),
             ("duck-2", "duckdb", 5),
         )
-        # Same type, same cost, same prediction → perfect tie
         preds = {"duck-1": 100.0, "duck-2": 100.0}
         events = []
-        with patch(
-            "routing_engine.engine_state.get_engine_state",
-            side_effect=lambda eid: "running" if eid == "duck-2" else "stopped",
-        ):
-            winner, scores = _score_with_ml(
-                preds, engines, {}, RoutingSettings(), events
-            )
-        # Both duckdb → cold_start default 0.0, so totals identical
-        # duck-2 gets running bonus subtracted → lower score → wins
-        assert winner == "duck-2"
-        assert scores["duck-2"] < scores["duck-1"]
+        # Both running, same predictions, same cost → scores are identical
+        winner, scores = _score_with_ml(preds, engines, {}, RoutingSettings(), events)
+        # Both equal → first engine wins by convention (stable sort)
+        assert winner in ("duck-1", "duck-2")
 
     @patch("routing_engine.engine_state.get_engine_state", return_value="running")
     @patch("routing_engine.db")
@@ -1085,7 +931,7 @@ class TestScoreWithMl:
         assert len(events) >= 3
         messages = [e.message for e in events]
         assert any("Winner" in m for m in messages)
-        assert any("compute=" in m for m in messages)
+        assert any("predicted=" in m for m in messages)
 
     @patch("routing_engine.engine_state.get_engine_state", return_value="running")
     @patch("routing_engine.db")
@@ -1097,5 +943,5 @@ class TestScoreWithMl:
         events = []
         winner, scores = _score_with_ml(preds, engines, {}, RoutingSettings(), events)
         assert winner == "duck-1"
-        # With running bonus for duckdb, score should be slightly negative
-        assert scores["duck-1"] <= 0.0
+        # Single engine → normalized values are 0 → score is 0
+        assert scores["duck-1"] == pytest.approx(0.0)

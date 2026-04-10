@@ -1,15 +1,18 @@
 import React from "react";
 import { useApp } from "@/contexts/AppContext";
-import { X, Lock, HardDrive, Cloud, Power, PowerOff } from "lucide-react";
+import { X, Lock, HardDrive, Cloud } from "lucide-react";
 import type { EngineCatalogEntry } from "@/types";
 
 export const EngineCatalogDialog: React.FC<{ open: boolean; onClose: () => void }> = ({ open, onClose }) => {
-  const { engines, toggleCatalogEngine, engineProfileCounts } = useApp();
+  const { engines, toggleEngineEnabled } = useApp();
 
   if (!open) return null;
 
   const duckdbEngines = engines.filter(e => e.engine_type === "duckdb");
   const databricksEngines = engines.filter(e => e.engine_type === "databricks_sql");
+
+  // Wrapper: toggleEngineEnabled takes just an id
+  const handleToggle = (id: string) => toggleEngineEnabled(id);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -42,9 +45,7 @@ export const EngineCatalogDialog: React.FC<{ open: boolean; onClose: () => void 
             subtitle="System-managed, runs as K8s pods"
             icon={<HardDrive size={12} className="text-emerald-600" />}
             engines={duckdbEngines}
-            toggleCatalogEngine={toggleCatalogEngine}
-            profileCounts={engineProfileCounts}
-            showScalePolicy
+            onToggle={handleToggle}
           />
 
           {/* Databricks Section */}
@@ -53,17 +54,15 @@ export const EngineCatalogDialog: React.FC<{ open: boolean; onClose: () => void 
             subtitle="Declarations of supported warehouse types"
             icon={<Cloud size={12} className="text-blue-600" />}
             engines={databricksEngines}
-            toggleCatalogEngine={toggleCatalogEngine}
-            profileCounts={engineProfileCounts}
-            showScalePolicy={false}
+            onToggle={handleToggle}
           />
         </div>
 
         {/* Footer */}
         <div className="px-4 py-2.5 border-t border-border bg-muted/30">
           <p className="text-[10px] text-muted-foreground">
+            Toggling a DuckDB engine on/off scales its K8s Deployment automatically.
             Engines in use by routing profiles are locked from disabling.
-            Scale policy changes are blocked for DuckDB engines referenced by active profiles.
           </p>
         </div>
       </div>
@@ -77,10 +76,8 @@ const EngineSection: React.FC<{
   subtitle: string;
   icon: React.ReactNode;
   engines: EngineCatalogEntry[];
-  toggleCatalogEngine: (id: string, field: "enabled" | "scale_policy", value: any) => void;
-  profileCounts: Record<string, number>;
-  showScalePolicy: boolean;
-}> = ({ title, subtitle, icon, engines, toggleCatalogEngine, profileCounts, showScalePolicy }) => {
+  onToggle: (id: string) => void;
+}> = ({ title, subtitle, icon, engines, onToggle }) => {
   return (
     <div>
       <div className="flex items-center gap-2 mb-2">
@@ -93,7 +90,7 @@ const EngineSection: React.FC<{
 
       <div className="space-y-1">
         {engines.map(engine => {
-          const usageCount = profileCounts[engine.id] ?? 0;
+          const usageCount = engine.profile_usage_count ?? 0;
           const isLocked = usageCount > 0;
 
           return (
@@ -102,8 +99,7 @@ const EngineSection: React.FC<{
               engine={engine}
               isLocked={isLocked}
               usageCount={usageCount}
-              showScalePolicy={showScalePolicy}
-              toggleCatalogEngine={toggleCatalogEngine}
+              onToggle={onToggle}
             />
           );
         })}
@@ -117,9 +113,8 @@ const EngineRow: React.FC<{
   engine: EngineCatalogEntry;
   isLocked: boolean;
   usageCount: number;
-  showScalePolicy: boolean;
-  toggleCatalogEngine: (id: string, field: "enabled" | "scale_policy", value: any) => void;
-}> = ({ engine, isLocked, usageCount, showScalePolicy, toggleCatalogEngine }) => {
+  onToggle: (id: string) => void;
+}> = ({ engine, isLocked, usageCount, onToggle }) => {
   const configLabel = engine.engine_type === "duckdb"
     ? `${engine.config.memory_gb}GB / ${engine.config.cpu_count} CPU`
     : engine.config.cluster_size;
@@ -136,7 +131,7 @@ const EngineRow: React.FC<{
           type="checkbox"
           checked={engine.enabled}
           onChange={() => {
-            if (!isLocked) toggleCatalogEngine(engine.id, "enabled", !engine.enabled);
+            if (!isLocked) onToggle(engine.id);
           }}
           disabled={isLocked && engine.enabled}
           className="accent-primary"
@@ -169,60 +164,18 @@ const EngineRow: React.FC<{
         </div>
       </div>
 
-      {/* Scale policy toggle (DuckDB only) */}
-      {showScalePolicy && (
-        <div className="shrink-0">
-          <ScalePolicyToggle
-            value={engine.scale_policy}
-            locked={isLocked}
-            onChange={(policy) => toggleCatalogEngine(engine.id, "scale_policy", policy)}
-          />
-        </div>
-      )}
+      {/* Runtime state badge */}
+      <div className="shrink-0">
+        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+          engine.runtime_state === "running"
+            ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+            : engine.runtime_state === "stopped"
+              ? "bg-muted text-muted-foreground border border-border"
+              : "bg-amber-50 text-amber-700 border border-amber-200"
+        }`}>
+          {engine.runtime_state}
+        </span>
+      </div>
     </div>
-  );
-};
-
-// ---- Scale Policy Toggle ----
-const ScalePolicyToggle: React.FC<{
-  value: "always_on" | "scale_to_zero";
-  locked: boolean;
-  onChange: (v: "always_on" | "scale_to_zero") => void;
-}> = ({ value, locked, onChange }) => {
-  const isAlwaysOn = value === "always_on";
-
-  return (
-    <button
-      onClick={() => {
-        if (!locked) onChange(isAlwaysOn ? "scale_to_zero" : "always_on");
-      }}
-      disabled={locked}
-      className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium border transition-colors ${
-        locked
-          ? "border-border text-muted-foreground/50 cursor-not-allowed bg-muted/20"
-          : isAlwaysOn
-            ? "border-emerald-200 text-emerald-700 bg-emerald-50 hover:bg-emerald-100"
-            : "border-border text-muted-foreground bg-card hover:bg-muted/50"
-      }`}
-      title={
-        locked
-          ? "Cannot change while in use by profiles"
-          : isAlwaysOn
-            ? "Running 24/7 — click to enable scale-to-zero"
-            : "Scales to zero when idle — click for always-on"
-      }
-    >
-      {isAlwaysOn ? (
-        <>
-          <Power size={9} />
-          Always On
-        </>
-      ) : (
-        <>
-          <PowerOff size={9} />
-          Scale to Zero
-        </>
-      )}
-    </button>
   );
 };

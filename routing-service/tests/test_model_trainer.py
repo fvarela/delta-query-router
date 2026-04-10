@@ -20,12 +20,10 @@ def _benchmark_row(
     engine_type="duckdb",
     cost_tier=3,
     execution_time_ms=150.0,
-    io_latency_ms=None,
     sql_text="SELECT a, b FROM catalog.schema.t1 WHERE a > 1",
 ):
     return {
         "execution_time_ms": execution_time_ms,
-        "io_latency_ms": io_latency_ms,
         "engine_id": engine_id,
         "sql_text": sql_text,
         "engine_type": engine_type,
@@ -46,7 +44,6 @@ def _make_rows(n=20):
                 engine_type=etype,
                 cost_tier=cost,
                 execution_time_ms=100.0 + i * 10,
-                io_latency_ms=20.0 if i % 3 == 0 else None,
                 sql_text=f"SELECT col{i} FROM catalog.schema.table{i % 5}",
             )
         )
@@ -59,17 +56,9 @@ def _make_rows(n=20):
 
 
 class TestComputeTarget:
-    def test_without_io_latency(self):
-        row = _benchmark_row(execution_time_ms=200.0, io_latency_ms=None)
+    def test_returns_execution_time(self):
+        row = _benchmark_row(execution_time_ms=200.0)
         assert model_trainer._compute_target(row) == 200.0
-
-    def test_with_io_latency(self):
-        row = _benchmark_row(execution_time_ms=200.0, io_latency_ms=50.0)
-        assert model_trainer._compute_target(row) == 150.0
-
-    def test_io_greater_than_exec_clamped_to_zero(self):
-        row = _benchmark_row(execution_time_ms=30.0, io_latency_ms=50.0)
-        assert model_trainer._compute_target(row) == 0.0
 
 
 class TestTrainModel:

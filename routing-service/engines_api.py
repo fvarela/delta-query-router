@@ -22,7 +22,6 @@ class UpdateEngine(BaseModel):
     config: dict | None = None
     cost_tier: int | None = None
     is_active: bool | None = None
-    scale_policy: str | None = None
 
 
 class ScaleRequest(BaseModel):
@@ -35,6 +34,36 @@ class SyncDatabricksRequest(BaseModel):
 
 
 # --- Internal helpers (used by main.py too) ---
+
+
+def _scale_deployment(deployment_name: str, replicas: int) -> None:
+    """Scale a K8s Deployment to the given replica count.
+
+    Raises HTTPException on failure.  Import of kubernetes is deferred so the
+    module loads without errors outside a cluster.
+    """
+    from kubernetes import client as k8s_client, config as k8s_config
+
+    try:
+        k8s_config.load_incluster_config()
+    except Exception:
+        raise HTTPException(
+            status_code=500, detail="Not running in a Kubernetes cluster"
+        )
+
+    apps_v1 = k8s_client.AppsV1Api()
+    try:
+        apps_v1.patch_namespaced_deployment_scale(
+            name=deployment_name,
+            namespace="default",
+            body={"spec": {"replicas": replicas}},
+        )
+    except k8s_client.exceptions.ApiException as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to scale {deployment_name}: {e.reason}",
+        )
+    logger.info("Scaled %s to %d replica(s)", deployment_name, replicas)
 
 
 def get_duckdb_engines() -> list[dict]:
@@ -78,7 +107,6 @@ async def list_engines():
                 "enabled": row["is_active"],
                 "cost_tier": row["cost_tier"],
                 "k8s_service_name": row.get("k8s_service_name"),
-                "scale_policy": row.get("scale_policy", "always_on"),
                 "created_at": row["created_at"].isoformat()
                 if row.get("created_at") and hasattr(row["created_at"], "isoformat")
                 else row.get("created_at"),
@@ -140,13 +168,6 @@ async def update_engine(engine_id: str, body: UpdateEngine):
         fields["cost_tier"] = body.cost_tier
     if body.is_active is not None:
         fields["is_active"] = body.is_active
-    if body.scale_policy is not None:
-        if body.scale_policy not in ("always_on", "scale_to_zero"):
-            raise HTTPException(
-                status_code=400,
-                detail="scale_policy must be 'always_on' or 'scale_to_zero'",
-            )
-        fields["scale_policy"] = body.scale_policy
 
     if not fields:
         return existing
@@ -154,10 +175,31 @@ async def update_engine(engine_id: str, body: UpdateEngine):
     set_parts = [f"{k} = %s" for k in fields]
     set_parts.append("updated_at = NOW()")
     values = list(fields.values()) + [engine_id]
-    return db.fetch_one(
+    updated = db.fetch_one(
         f"UPDATE engines SET {', '.join(set_parts)} WHERE id = %s RETURNING *",
         tuple(values),
     )
+
+    # Auto-scale DuckDB deployments when is_active changes
+    if (
+        body.is_active is not None
+        and body.is_active != existing["is_active"]
+        and existing["engine_type"] == "duckdb"
+        and existing.get("k8s_service_name")
+    ):
+        replicas = 1 if body.is_active else 0
+        try:
+            _scale_deployment(existing["k8s_service_name"], replicas)
+        except HTTPException as exc:
+            # Log but don't fail the update — DB state is already committed
+            logger.warning(
+                "Engine %s toggled is_active=%s but K8s scaling failed: %s",
+                engine_id,
+                body.is_active,
+                exc.detail,
+            )
+
+    return updated
 
 
 @router.post("/{engine_id}/scale")
@@ -173,29 +215,8 @@ async def scale_engine(engine_id: str, body: ScaleRequest):
     if body.replicas not in (0, 1):
         raise HTTPException(status_code=400, detail="replicas must be 0 or 1")
 
-    from kubernetes import client as k8s_client, config as k8s_config
-
-    try:
-        k8s_config.load_incluster_config()
-    except Exception:
-        raise HTTPException(
-            status_code=500, detail="Not running in a Kubernetes cluster"
-        )
-
-    apps_v1 = k8s_client.AppsV1Api()
-    # Deployment name matches k8s_service_name for our setup
     deployment_name = engine["k8s_service_name"]
-    try:
-        apps_v1.patch_namespaced_deployment_scale(
-            name=deployment_name,
-            namespace="default",
-            body={"spec": {"replicas": body.replicas}},
-        )
-    except k8s_client.exceptions.ApiException as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to scale {deployment_name}: {e.reason}",
-        )
+    _scale_deployment(deployment_name, body.replicas)
 
     action = "started" if body.replicas == 1 else "stopped"
     return {"engine_id": engine_id, "deployment": deployment_name, "status": action}

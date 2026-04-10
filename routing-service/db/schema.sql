@@ -81,8 +81,6 @@ CREATE TABLE IF NOT EXISTS routing_settings (
     id                       INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
     fit_weight               FLOAT NOT NULL DEFAULT 0.5,
     cost_weight              FLOAT NOT NULL DEFAULT 0.5,
-    running_bonus_duckdb     FLOAT NOT NULL DEFAULT 0.05,
-    running_bonus_databricks FLOAT NOT NULL DEFAULT 0.15,
     updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -115,7 +113,6 @@ CREATE TABLE IF NOT EXISTS engines (
     k8s_service_name TEXT,
     cost_tier       INTEGER NOT NULL DEFAULT 5 CHECK (cost_tier >= 1 AND cost_tier <= 10),
     is_active       BOOLEAN NOT NULL DEFAULT TRUE,
-    scale_policy    TEXT NOT NULL DEFAULT 'always_on' CHECK (scale_policy IN ('always_on', 'scale_to_zero')),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -158,34 +155,27 @@ CREATE TABLE IF NOT EXISTS benchmark_results (
     engine_id       TEXT NOT NULL,
     query_id        INTEGER NOT NULL REFERENCES collection_queries(id),
     execution_time_ms FLOAT,
-    io_latency_ms   FLOAT,
     error_message   TEXT
-);
--- Storage latency probe measurements
-CREATE TABLE IF NOT EXISTS storage_latency_probes (
-    id              SERIAL PRIMARY KEY,
-    storage_location TEXT NOT NULL,
-    engine_id       TEXT NOT NULL,
-    probe_time_ms   FLOAT NOT NULL,
-    bytes_read      BIGINT,
-    measured_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- Seed with defaults
 INSERT INTO routing_settings (id) VALUES (1) ON CONFLICT DO NOTHING;
 
 -- Seed default DuckDB engines
-INSERT INTO engines (id, engine_type, display_name, config, k8s_service_name, cost_tier, scale_policy) VALUES
-    ('duckdb-1', 'duckdb', 'DuckDB — Small', '{"memory_gb": 1, "cpu_count": 1}', 'duckdb-worker', 3, 'always_on'),
-    ('duckdb-2', 'duckdb', 'DuckDB — Medium', '{"memory_gb": 2, "cpu_count": 2}', 'duckdb-worker-medium', 4, 'always_on'),
-    ('duckdb-3', 'duckdb', 'DuckDB — Large', '{"memory_gb": 4, "cpu_count": 4}', 'duckdb-worker-large', 5, 'always_on')
+INSERT INTO engines (id, engine_type, display_name, config, k8s_service_name, cost_tier) VALUES
+    ('duckdb-1', 'duckdb', 'DuckDB — Small', '{"memory_gb": 1, "cpu_count": 1}', 'duckdb-worker', 3),
+    ('duckdb-2', 'duckdb', 'DuckDB — Medium', '{"memory_gb": 2, "cpu_count": 2}', 'duckdb-worker-medium', 4),
+    ('duckdb-3', 'duckdb', 'DuckDB — Large', '{"memory_gb": 4, "cpu_count": 4}', 'duckdb-worker-large', 5)
 ON CONFLICT DO NOTHING;
 
+-- Default: only duckdb-1 active (laptop-friendly); Medium and Large off
+UPDATE engines SET is_active = false WHERE id IN ('duckdb-2', 'duckdb-3') AND is_active = true;
+
 -- Seed default Databricks engines
-INSERT INTO engines (id, engine_type, display_name, config, k8s_service_name, cost_tier, scale_policy) VALUES
-    ('databricks-serverless-2xs', 'databricks_sql', 'Databricks — 2X-Small', '{"cluster_size": "2X-Small", "is_serverless": true, "has_photon": true}', NULL, 5, 'scale_to_zero'),
-    ('databricks-serverless-xs', 'databricks_sql', 'Databricks — X-Small', '{"cluster_size": "X-Small", "is_serverless": true, "has_photon": true}', NULL, 6, 'scale_to_zero'),
-    ('databricks-serverless-s', 'databricks_sql', 'Databricks — Small', '{"cluster_size": "Small", "is_serverless": true, "has_photon": true}', NULL, 7, 'scale_to_zero')
+INSERT INTO engines (id, engine_type, display_name, config, k8s_service_name, cost_tier) VALUES
+    ('databricks-serverless-2xs', 'databricks_sql', 'Databricks — 2X-Small', '{"cluster_size": "2X-Small", "is_serverless": true, "has_photon": true}', NULL, 5),
+    ('databricks-serverless-xs', 'databricks_sql', 'Databricks — X-Small', '{"cluster_size": "X-Small", "is_serverless": true, "has_photon": true}', NULL, 6),
+    ('databricks-serverless-s', 'databricks_sql', 'Databricks — Small', '{"cluster_size": "Small", "is_serverless": true, "has_photon": true}', NULL, 7)
 ON CONFLICT DO NOTHING;
 
 -- =============================================================================
@@ -243,6 +233,18 @@ INSERT INTO routing_profiles (name, is_default, config) VALUES (
 ) ON CONFLICT DO NOTHING;
 
 -- =============================================================================
+-- Phase 17: Log Management
+-- =============================================================================
+-- Singleton log retention settings
+CREATE TABLE IF NOT EXISTS log_settings (
+    id              INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    retention_days  INTEGER NOT NULL DEFAULT 30,
+    max_size_mb     INTEGER NOT NULL DEFAULT 1024,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+INSERT INTO log_settings (id) VALUES (1) ON CONFLICT DO NOTHING;
+
+-- =============================================================================
 -- Indexes
 -- =============================================================================
 CREATE INDEX IF NOT EXISTS idx_api_keys_key_prefix ON api_keys(key_prefix);
@@ -255,5 +257,4 @@ CREATE INDEX IF NOT EXISTS idx_collection_queries_collection_id ON collection_qu
 CREATE INDEX IF NOT EXISTS idx_benchmark_definitions_collection ON benchmark_definitions(collection_id);
 CREATE INDEX IF NOT EXISTS idx_benchmark_runs_definition ON benchmark_runs(definition_id);
 CREATE INDEX IF NOT EXISTS idx_benchmark_results_run_id ON benchmark_results(run_id);
-CREATE INDEX IF NOT EXISTS idx_storage_probes_location_engine ON storage_latency_probes(storage_location, engine_id);
 CREATE INDEX IF NOT EXISTS idx_routing_profiles_default ON routing_profiles(is_default) WHERE is_default = true;

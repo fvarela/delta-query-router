@@ -24,12 +24,10 @@ _rules_cache_time: float = 0.0
 
 @dataclass
 class RoutingSettings:
-    """Scoring weights and bonuses from the routing_settings table."""
+    """Scoring weights from the routing_settings table."""
 
     fit_weight: float = 0.5
     cost_weight: float = 0.5
-    running_bonus_duckdb: float = 0.05
-    running_bonus_databricks: float = 0.15
 
 
 @dataclass
@@ -151,7 +149,7 @@ def _score_engines(
       - DuckDB:      0.7  (dedicated worker, no per-query cost)
       - Databricks:  0.2  (pay-per-query)
 
-    Final score = fit_weight * fit + cost_weight * cost + running_bonus
+    Final score = fit_weight * fit + cost_weight * cost
     """
     duckdb_ok = _is_duckdb_compatible(table_metadata)
 
@@ -172,21 +170,8 @@ def _score_engines(
     # --- Weighted base scores ---
     fw = settings.fit_weight
     cw = settings.cost_weight
-    duckdb_base = fw * duckdb_fit + cw * duckdb_cost
-    databricks_base = fw * databricks_fit + cw * databricks_cost
-
-    # --- Running bonuses (only for eligible, running engines) ---
-    duckdb_bonus = (
-        settings.running_bonus_duckdb
-        if (engine_states.duckdb_running and duckdb_ok)
-        else 0.0
-    )
-    databricks_bonus = (
-        settings.running_bonus_databricks if engine_states.databricks_running else 0.0
-    )
-
-    duckdb_total = duckdb_base + duckdb_bonus
-    databricks_total = databricks_base + databricks_bonus
+    duckdb_total = fw * duckdb_fit + cw * duckdb_cost
+    databricks_total = fw * databricks_fit + cw * databricks_cost
 
     # --- Log the scoring breakdown ---
     events.append(
@@ -203,8 +188,7 @@ def _score_engines(
                 _ts(),
                 "info",
                 "scoring",
-                f"DuckDB:      fit={duckdb_fit:.2f} cost={duckdb_cost:.2f} "
-                f"base={duckdb_base:.2f} bonus={duckdb_bonus:.2f} → total={duckdb_total:.2f}",
+                f"DuckDB:      fit={duckdb_fit:.2f} cost={duckdb_cost:.2f} → total={duckdb_total:.2f}",
             )
         )
     else:
@@ -221,8 +205,7 @@ def _score_engines(
             _ts(),
             "info",
             "scoring",
-            f"Databricks:  fit={databricks_fit:.2f} cost={databricks_cost:.2f} "
-            f"base={databricks_base:.2f} bonus={databricks_bonus:.2f} → total={databricks_total:.2f}",
+            f"Databricks:  fit={databricks_fit:.2f} cost={databricks_cost:.2f} → total={databricks_total:.2f}",
         )
     )
 
@@ -264,31 +247,6 @@ def _get_cold_start_ms(engine_id: str, engine_type: str) -> float:
     return _DEFAULT_COLD_START.get(engine_type, 0.0)
 
 
-def _get_io_latency_ms(table_metadata: dict[str, TableMetadata]) -> float:
-    """Get the worst-case I/O latency across all tables in the query.
-
-    Looks up the latest storage latency probe for each table's storage_location.
-    Returns 0 if no probe data exists.
-    """
-    max_io = 0.0
-    for tm in table_metadata.values():
-        if not tm.storage_location:
-            continue
-        row = db.fetch_one(
-            """
-            SELECT probe_time_ms
-            FROM storage_latency_probes
-            WHERE storage_location = %s
-            ORDER BY measured_at DESC
-            LIMIT 1
-            """,
-            (tm.storage_location,),
-        )
-        if row and row["probe_time_ms"] is not None:
-            max_io = max(max_io, float(row["probe_time_ms"]))
-    return max_io
-
-
 def _normalize(values: list[float]) -> list[float]:
     """Min-max normalize a list of values to [0, 1]. Returns all zeros if constant."""
     if not values:
@@ -310,13 +268,12 @@ def _score_with_ml(
     """Full ODQ-10 weighted scoring using ML predictions.
 
     For each engine:
-        total_latency = predicted_compute + io_latency + cold_start
-    Then normalize latency and cost, apply running bonus, pick lowest score.
+        total_latency = predicted_execution_ms + cold_start_ms
+    Then normalize latency and cost, pick lowest score.
 
     Returns (winning_engine_id, {engine_id: weighted_score}).
     """
     engine_map = {e["id"]: e for e in active_engines}
-    io_latency_ms = _get_io_latency_ms(table_metadata)
 
     # Build per-engine scoring components
     engine_ids = list(predictions.keys())
@@ -326,9 +283,9 @@ def _score_with_ml(
 
     for eid in engine_ids:
         eng = engine_map.get(eid, {})
-        compute_ms = predictions[eid]
+        predicted_ms = predictions[eid]
         cold_ms = _get_cold_start_ms(eid, eng.get("engine_type", ""))
-        total = compute_ms + io_latency_ms + cold_ms
+        total = predicted_ms + cold_ms
 
         latencies.append(total)
         cost_tiers.append(float(eng.get("cost_tier", 5)))
@@ -339,7 +296,7 @@ def _score_with_ml(
                 _ts(),
                 "info",
                 "ml_scoring",
-                f"{eid}: compute={compute_ms:.0f}ms io={io_latency_ms:.0f}ms "
+                f"{eid}: predicted={predicted_ms:.0f}ms "
                 f"cold_start={cold_ms:.0f}ms → total={total:.0f}ms (cost_tier={eng.get('cost_tier', '?')})",
             )
         )
@@ -348,25 +305,13 @@ def _score_with_ml(
     norm_lat = _normalize(latencies)
     norm_cost = _normalize(cost_tiers)
 
-    # Weighted scores (lower is better for latency; lower cost_tier is also better)
+    # Weighted scores (lower is better)
     fw = settings.fit_weight  # latency weight
     cw = settings.cost_weight
 
     scores: dict[str, float] = {}
     for i, eid in enumerate(engine_ids):
-        eng = engine_map.get(eid, {})
-        etype = eng.get("engine_type", "")
-        state = engine_state.get_engine_state(eid)
-
-        # Running bonus: subtract from score (lower = better)
-        running_bonus = 0.0
-        if state == "running":
-            if etype == "duckdb":
-                running_bonus = settings.running_bonus_duckdb
-            elif etype.startswith("databricks"):
-                running_bonus = settings.running_bonus_databricks
-
-        weighted = fw * norm_lat[i] + cw * norm_cost[i] - running_bonus
+        weighted = fw * norm_lat[i] + cw * norm_cost[i]
         scores[eid] = weighted
 
         events.append(
@@ -375,7 +320,7 @@ def _score_with_ml(
                 "info",
                 "ml_scoring",
                 f"{eid}: norm_lat={norm_lat[i]:.3f} norm_cost={norm_cost[i]:.3f} "
-                f"bonus={running_bonus:.3f} → score={weighted:.3f}",
+                f"→ score={weighted:.3f}",
             )
         )
 

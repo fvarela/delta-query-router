@@ -35,7 +35,6 @@ export const MOCK_ENGINES: EngineCatalogEntry[] = [
     enabled: true,
     cost_tier: 1,
     runtime_state: "running",
-    scale_policy: "always_on",
     scalable: true,
     profile_usage_count: 2, // Used by "Production — Balanced" and "Dev — DuckDB Only"
   },
@@ -48,7 +47,6 @@ export const MOCK_ENGINES: EngineCatalogEntry[] = [
     enabled: true,
     cost_tier: 3,
     runtime_state: "running",
-    scale_policy: "always_on",
     scalable: true,
     profile_usage_count: 2, // Used by "Production — Balanced" and "Full Fleet"
   },
@@ -61,7 +59,6 @@ export const MOCK_ENGINES: EngineCatalogEntry[] = [
     enabled: false,
     cost_tier: 5,
     runtime_state: "stopped",
-    scale_policy: "scale_to_zero",
     scalable: true,
     profile_usage_count: 1, // Used by "Full Fleet"
   },
@@ -74,7 +71,6 @@ export const MOCK_ENGINES: EngineCatalogEntry[] = [
     enabled: true,
     cost_tier: 6,
     runtime_state: "running",
-    scale_policy: "always_on",
     scalable: false,
     profile_usage_count: 2,
   },
@@ -87,7 +83,6 @@ export const MOCK_ENGINES: EngineCatalogEntry[] = [
     enabled: false,
     cost_tier: 8,
     runtime_state: "stopped",
-    scale_policy: "scale_to_zero",
     scalable: false,
     profile_usage_count: 1,
   },
@@ -100,7 +95,6 @@ export const MOCK_ENGINES: EngineCatalogEntry[] = [
     enabled: false,
     cost_tier: 10,
     runtime_state: "stopped",
-    scale_policy: "scale_to_zero",
     scalable: false,
     profile_usage_count: 0,
   },

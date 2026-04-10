@@ -72,8 +72,6 @@ export interface Query {
 // --- Engine catalog ---
 export type EngineRuntimeState = "running" | "stopped" | "starting" | "unknown";
 
-export type EngineScalePolicy = "always_on" | "scale_to_zero";
-
 export interface EngineCatalogEntry {
   id: string;
   engine_type: "databricks_sql" | "duckdb";
@@ -84,7 +82,6 @@ export interface EngineCatalogEntry {
   enabled: boolean;
   cost_tier: number;
   runtime_state: EngineRuntimeState;
-  scale_policy: EngineScalePolicy;
   scalable?: boolean;
   /** Number of routing profiles currently using this engine (Round 16 — DuckDB lock) */
   profile_usage_count?: number;
@@ -114,13 +111,17 @@ export interface RoutingRule {
 export interface RoutingSettings {
   fit_weight: number;
   cost_weight: number;
-  running_bonus_duckdb: number;
-  running_bonus_databricks: number;
 }
 
 /** GET /api/routing/settings response — includes active_profile_id from default profile */
 export interface RoutingSettingsResponse extends RoutingSettings {
   active_profile_id: number | null;
+}
+
+// --- Log settings ---
+export interface LogSettings {
+  retention_days: number;
+  max_size_mb: number;
 }
 
 // --- Run mode ---
@@ -148,7 +149,6 @@ export interface QueryExecutionResult {
     complexity_score: number;
     // Decomposed latency (ODQ-9 / ODQ-10)
     compute_time_ms?: number;
-    io_latency_ms?: number;
     cold_start_ms?: number;
     total_latency_ms?: number;
     // Scoring (ODQ-10)
@@ -211,17 +211,6 @@ export interface Model {
   benchmark_count?: number;
   training_queries?: number;
   training_collection_ids?: number[];
-}
-
-// --- Storage Latency Probes (ODQ-9) ---
-export interface StorageLatencyProbe {
-  id: number;
-  storage_location: string;
-  engine_id: string;
-  engine_display_name?: string;
-  probe_time_ms: number;
-  bytes_read: number | null;
-  measured_at: string;
 }
 
 // --- Unity Catalog ---

@@ -239,37 +239,6 @@ class TestTpcdsDetect:
 
 
 # ---------------------------------------------------------------------------
-# Engine scale_policy
-# ---------------------------------------------------------------------------
-
-
-class TestEngineScalePolicy:
-    """Engines list includes scale_policy."""
-
-    @patch("engines_api.db")
-    @patch("engine_state.get_engine_state", return_value="unknown")
-    def test_list_engines_includes_scale_policy(self, _state, mock_db):
-        headers = _auth_header()
-        mock_db.fetch_all.return_value = [
-            {
-                "id": "duckdb-1",
-                "engine_type": "duckdb",
-                "display_name": "DuckDB",
-                "k8s_service_name": "duckdb-worker",
-                "config": {},
-                "cost_tier": 3,
-                "is_active": True,
-                "scale_policy": "always_on",
-            }
-        ]
-        resp = client.get("/api/engines", headers=headers)
-        assert resp.status_code == 200
-        engines = resp.json()
-        assert len(engines) == 1
-        assert engines[0]["scale_policy"] == "always_on"
-
-
-# ---------------------------------------------------------------------------
 # Profile-aware query routing
 # ---------------------------------------------------------------------------
 
@@ -322,8 +291,6 @@ class TestProfileQueryIntegration:
                 {  # routing_settings
                     "fit_weight": 0.5,
                     "cost_weight": 0.5,
-                    "running_bonus_duckdb": 0.05,
-                    "running_bonus_databricks": 0.15,
                 },
                 {"config": cost_config},  # profile
             ]
@@ -357,8 +324,6 @@ class TestRoutingSettingsWithProfile:
             {
                 "fit_weight": 0.5,
                 "cost_weight": 0.5,
-                "running_bonus_duckdb": 0.05,
-                "running_bonus_databricks": 0.15,
             },
             {"id": 42},  # default profile
         ]

@@ -4,7 +4,7 @@ Maintains an in-memory dict of {engine_id: runtime_state} where runtime_state
 is one of: 'running', 'stopped', 'starting', 'unknown'.
 
 Background polling thread checks engine liveness every `interval` seconds.
-DuckDB engines are always 'running' (sidecar containers).
+DuckDB engines are probed via HTTP health endpoint.
 Databricks engines are polled via warehouse API.
 
 Public API:
@@ -19,6 +19,8 @@ from __future__ import annotations
 import logging
 import threading
 from typing import Callable
+
+import httpx
 
 import db
 
@@ -83,7 +85,8 @@ def _poll_all_engines() -> None:
     """Fetch all engines from DB and update their runtime states."""
     try:
         engines = db.fetch_all(
-            "SELECT id, engine_type, config FROM engines WHERE is_active = TRUE"
+            "SELECT id, engine_type, config, k8s_service_name "
+            "FROM engines WHERE is_active = TRUE"
         )
     except Exception:
         logger.exception("Failed to fetch engines for state polling")
@@ -94,8 +97,7 @@ def _poll_all_engines() -> None:
         engine_type = engine["engine_type"]
         try:
             if engine_type == "duckdb":
-                # DuckDB workers are always running (K8s sidecar)
-                _engine_states[engine_id] = "running"
+                _engine_states[engine_id] = _probe_duckdb_health(engine)
             elif engine_type in ("databricks", "databricks_sql"):
                 _engine_states[engine_id] = _poll_databricks_warehouse(
                     engine.get("config", {})
@@ -105,6 +107,24 @@ def _poll_all_engines() -> None:
         except Exception:
             logger.exception("Failed to poll engine %s", engine_id)
             _engine_states[engine_id] = "unknown"
+
+
+def _probe_duckdb_health(engine: dict) -> str:
+    """Probe a DuckDB worker's /health endpoint.
+
+    Returns 'running' if the endpoint responds with 2xx, 'stopped' otherwise.
+    Uses a synchronous httpx client with a short timeout.
+    """
+    svc = engine.get("k8s_service_name")
+    if not svc:
+        return "unknown"
+    url = f"http://{svc}:8002/health"
+    try:
+        resp = httpx.get(url, timeout=2.0)
+        resp.raise_for_status()
+        return "running"
+    except Exception:
+        return "stopped"
 
 
 def _poll_databricks_warehouse(config: dict) -> str:
