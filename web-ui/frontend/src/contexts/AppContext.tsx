@@ -71,9 +71,9 @@ interface AppContextType {
   setActiveModelId: (id: number | null) => void;
   models: Model[];
   reloadModels: () => Promise<void>;
-  deleteModel: (id: number) => void;
-  activateModel: (id: number) => void;
-  deactivateModel: (id: number) => void;
+  deleteModel: (id: number) => Promise<void>;
+  activateModel: (id: number) => Promise<void>;
+  deactivateModel: (id: number) => Promise<void>;
   createModel: (linkedEngines: string[], trainingCollectionIds: number[]) => Promise<Model>;
 
   // Routing settings (ODQ-10)
@@ -359,32 +359,54 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (active) setActiveModelId(active.id);
       return;
     }
-    const m = await mockApi.getModels();
-    setModels(m);
-    const active = m.find(x => x.is_active);
-    if (active) setActiveModelId(active.id);
+    try {
+      const m = await api.get<Model[]>("/api/models");
+      setModels(m);
+      const active = m.find(x => x.is_active);
+      if (active) setActiveModelId(active.id);
+    } catch {
+      // API error — keep current state
+    }
   }, [mock]);
 
-  // Model CRUD operations (mock-only for now)
-  const deleteModel = useCallback((id: number) => {
-    setModels(prev => prev.filter(m => m.id !== id));
+  // Model CRUD operations
+  const deleteModel = useCallback(async (id: number) => {
+    if (mock) {
+      setModels(prev => prev.filter(m => m.id !== id));
+      if (activeModelId === id) setActiveModelId(null);
+      return;
+    }
+    await api.del(`/api/models/${id}`);
     if (activeModelId === id) setActiveModelId(null);
-  }, [activeModelId]);
+    await reloadModels();
+  }, [mock, activeModelId, reloadModels]);
 
-  const activateModel = useCallback((id: number) => {
-    setModels(prev => prev.map(m => ({
-      ...m,
-      is_active: m.id === id,
-    })));
+  const activateModel = useCallback(async (id: number) => {
+    if (mock) {
+      setModels(prev => prev.map(m => ({
+        ...m,
+        is_active: m.id === id,
+      })));
+      setActiveModelId(id);
+      return;
+    }
+    await api.post(`/api/models/${id}/activate`);
     setActiveModelId(id);
-  }, []);
+    await reloadModels();
+  }, [mock, reloadModels]);
 
-  const deactivateModel = useCallback((id: number) => {
-    setModels(prev => prev.map(m =>
-      m.id === id ? { ...m, is_active: false } : m
-    ));
+  const deactivateModel = useCallback(async (id: number) => {
+    if (mock) {
+      setModels(prev => prev.map(m =>
+        m.id === id ? { ...m, is_active: false } : m
+      ));
+      if (activeModelId === id) setActiveModelId(null);
+      return;
+    }
+    await api.post(`/api/models/${id}/deactivate`);
     if (activeModelId === id) setActiveModelId(null);
-  }, [activeModelId]);
+    await reloadModels();
+  }, [mock, activeModelId, reloadModels]);
 
   // Routing settings (ODQ-10)
   const [routingSettings, setRoutingSettings] = useState<RoutingSettings>({ fit_weight: 0.5, cost_weight: 0.5, running_bonus_duckdb: 0.05, running_bonus_databricks: 0.15 });

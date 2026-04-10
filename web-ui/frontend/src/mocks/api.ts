@@ -29,7 +29,7 @@
 import type {
   Collection, CollectionWithQueries, Query,
   QueryExecutionResult, BenchmarkSummary, BenchmarkDetail,
-  Model, LogEntry,
+  LogEntry,
   RoutingLogEvent, RoutingLogLevel, StorageLatencyProbe,
 } from "../types";
 
@@ -263,23 +263,6 @@ export const mockApi = {
 
   async createBenchmark(collectionId: number, engineIds: string[]): Promise<BenchmarkSummary> {
     return api.post<BenchmarkSummary>('/api/benchmarks', { collection_id: collectionId, engine_ids: engineIds });
-  },
-
-  // Models (thin wrappers — work in both real and mock mode)
-  async getModels(): Promise<Model[]> {
-    return api.get<Model[]>('/api/models');
-  },
-
-  async activateModel(id: number): Promise<Model> {
-    return api.post<Model>(`/api/models/${id}/activate`);
-  },
-
-  async deactivateModel(id: number): Promise<Model> {
-    return api.post<Model>(`/api/models/${id}/deactivate`);
-  },
-
-  async deleteModel(id: number): Promise<void> {
-    await api.del(`/api/models/${id}`);
   },
 
   // Query Log (mock-only — in-memory history populated by executeQuery)
