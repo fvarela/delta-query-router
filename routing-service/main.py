@@ -18,6 +18,7 @@ import probes_api
 import models_api
 import permissions_api
 import tpcds_api
+import routing_profiles_api
 from auth import verify_token
 from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.responses import Response
@@ -48,6 +49,7 @@ app.include_router(probes_api.router, dependencies=[Depends(verify_token)])
 app.include_router(models_api.router, dependencies=[Depends(verify_token)])
 app.include_router(permissions_api.router, dependencies=[Depends(verify_token)])
 app.include_router(tpcds_api.router, dependencies=[Depends(verify_token)])
+app.include_router(routing_profiles_api.router, dependencies=[Depends(verify_token)])
 
 
 def _databricks_error_to_http(e: Exception) -> HTTPException:

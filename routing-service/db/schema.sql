@@ -87,13 +87,14 @@ CREATE TABLE IF NOT EXISTS routing_settings (
 );
 
 -- =============================================================================
--- Phase 10: Benchmark Infrastructure
+-- Phase 10: Benchmark Infrastructure (revised in Phase 15)
 -- =============================================================================
 -- Query collections for benchmark runs
 CREATE TABLE IF NOT EXISTS collections (
     id              SERIAL PRIMARY KEY,
     name            TEXT NOT NULL,
     description     TEXT,
+    tag             TEXT NOT NULL DEFAULT 'user',
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -114,6 +115,7 @@ CREATE TABLE IF NOT EXISTS engines (
     k8s_service_name TEXT,
     cost_tier       INTEGER NOT NULL DEFAULT 5 CHECK (cost_tier >= 1 AND cost_tier <= 10),
     is_active       BOOLEAN NOT NULL DEFAULT TRUE,
+    scale_policy    TEXT NOT NULL DEFAULT 'always_on' CHECK (scale_policy IN ('always_on', 'scale_to_zero')),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -125,18 +127,26 @@ CREATE TABLE IF NOT EXISTS engine_preferences (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(engine_id)
 );
--- Benchmark runs
-CREATE TABLE IF NOT EXISTS benchmarks (
+-- Benchmark definitions: collection × engine pair (immutable)
+CREATE TABLE IF NOT EXISTS benchmark_definitions (
     id              SERIAL PRIMARY KEY,
-    collection_id   INTEGER NOT NULL REFERENCES collections(id),
+    collection_id   INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+    engine_id       TEXT NOT NULL REFERENCES engines(id),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(collection_id, engine_id)
+);
+-- Benchmark runs: individual executions of a benchmark definition
+CREATE TABLE IF NOT EXISTS benchmark_runs (
+    id              SERIAL PRIMARY KEY,
+    definition_id   INTEGER NOT NULL REFERENCES benchmark_definitions(id) ON DELETE CASCADE,
     status          TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'warming_up', 'running', 'complete', 'failed')),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
--- Warm-up probe results per engine per benchmark
+-- Warm-up probe results per engine per benchmark run
 CREATE TABLE IF NOT EXISTS benchmark_engine_warmups (
     id              SERIAL PRIMARY KEY,
-    benchmark_id    INTEGER NOT NULL REFERENCES benchmarks(id) ON DELETE CASCADE,
+    run_id          INTEGER NOT NULL REFERENCES benchmark_runs(id) ON DELETE CASCADE,
     engine_id       TEXT NOT NULL,
     cold_start_time_ms FLOAT,
     started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -144,7 +154,7 @@ CREATE TABLE IF NOT EXISTS benchmark_engine_warmups (
 -- Per-query per-engine benchmark execution results
 CREATE TABLE IF NOT EXISTS benchmark_results (
     id              SERIAL PRIMARY KEY,
-    benchmark_id    INTEGER NOT NULL REFERENCES benchmarks(id) ON DELETE CASCADE,
+    run_id          INTEGER NOT NULL REFERENCES benchmark_runs(id) ON DELETE CASCADE,
     engine_id       TEXT NOT NULL,
     query_id        INTEGER NOT NULL REFERENCES collection_queries(id),
     execution_time_ms FLOAT,
@@ -165,26 +175,32 @@ CREATE TABLE IF NOT EXISTS storage_latency_probes (
 INSERT INTO routing_settings (id) VALUES (1) ON CONFLICT DO NOTHING;
 
 -- Seed default DuckDB engines
-INSERT INTO engines (id, engine_type, display_name, config, k8s_service_name, cost_tier) VALUES
-    ('duckdb-1', 'duckdb', 'DuckDB — Small', '{"memory_gb": 1, "cpu_count": 1}', 'duckdb-worker', 3),
-    ('duckdb-2', 'duckdb', 'DuckDB — Medium', '{"memory_gb": 2, "cpu_count": 2}', 'duckdb-worker-medium', 4),
-    ('duckdb-3', 'duckdb', 'DuckDB — Large', '{"memory_gb": 4, "cpu_count": 4}', 'duckdb-worker-large', 5)
+INSERT INTO engines (id, engine_type, display_name, config, k8s_service_name, cost_tier, scale_policy) VALUES
+    ('duckdb-1', 'duckdb', 'DuckDB — Small', '{"memory_gb": 1, "cpu_count": 1}', 'duckdb-worker', 3, 'always_on'),
+    ('duckdb-2', 'duckdb', 'DuckDB — Medium', '{"memory_gb": 2, "cpu_count": 2}', 'duckdb-worker-medium', 4, 'always_on'),
+    ('duckdb-3', 'duckdb', 'DuckDB — Large', '{"memory_gb": 4, "cpu_count": 4}', 'duckdb-worker-large', 5, 'always_on')
 ON CONFLICT DO NOTHING;
 
-
+-- Seed default Databricks engines
+INSERT INTO engines (id, engine_type, display_name, config, k8s_service_name, cost_tier, scale_policy) VALUES
+    ('databricks-serverless-2xs', 'databricks_sql', 'Databricks — 2X-Small', '{"cluster_size": "2X-Small", "is_serverless": true, "has_photon": true}', NULL, 5, 'scale_to_zero'),
+    ('databricks-serverless-xs', 'databricks_sql', 'Databricks — X-Small', '{"cluster_size": "X-Small", "is_serverless": true, "has_photon": true}', NULL, 6, 'scale_to_zero'),
+    ('databricks-serverless-s', 'databricks_sql', 'Databricks — Small', '{"cluster_size": "Small", "is_serverless": true, "has_photon": true}', NULL, 7, 'scale_to_zero')
+ON CONFLICT DO NOTHING;
 
 -- =============================================================================
 -- Phase 13: ML Model Training Pipeline
 -- =============================================================================
 -- Trained ML models for latency prediction
 CREATE TABLE IF NOT EXISTS models (
-    id               SERIAL PRIMARY KEY,
-    linked_engines   JSONB NOT NULL DEFAULT '[]',
-    latency_model    JSONB NOT NULL DEFAULT '{}',
-    training_queries INTEGER NOT NULL DEFAULT 0,
-    is_active        BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id                      SERIAL PRIMARY KEY,
+    linked_engines          JSONB NOT NULL DEFAULT '[]',
+    latency_model           JSONB NOT NULL DEFAULT '{}',
+    training_queries        INTEGER NOT NULL DEFAULT 0,
+    training_collection_ids JSONB NOT NULL DEFAULT '[]',
+    is_active               BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- =============================================================================
@@ -206,6 +222,28 @@ CREATE TABLE IF NOT EXISTS tpcds_catalogs (
     updated_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- =============================================================================
+-- Phase 15: UI Backend Alignment
+-- =============================================================================
+-- Named routing configurations with full CRUD
+CREATE TABLE IF NOT EXISTS routing_profiles (
+    id              SERIAL PRIMARY KEY,
+    name            TEXT NOT NULL,
+    is_default      BOOLEAN NOT NULL DEFAULT FALSE,
+    config          JSONB NOT NULL DEFAULT '{}',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Seed default routing profile
+INSERT INTO routing_profiles (name, is_default, config) VALUES (
+    'Default', true,
+    '{"routingMode": "single", "singleEngineId": null, "activeModelId": null, "enabledEngineIds": [], "routingPriority": 0.5, "workspaceBinding": null, "warehouseMappings": {}}'
+) ON CONFLICT DO NOTHING;
+
+-- =============================================================================
+-- Indexes
+-- =============================================================================
 CREATE INDEX IF NOT EXISTS idx_api_keys_key_prefix ON api_keys(key_prefix);
 -- Indexes for common query patterns
 CREATE INDEX IF NOT EXISTS idx_query_logs_submitted_at ON query_logs(submitted_at);
@@ -213,6 +251,8 @@ CREATE INDEX IF NOT EXISTS idx_routing_decisions_query_log_id ON routing_decisio
 CREATE INDEX IF NOT EXISTS idx_query_logs_correlation_id ON query_logs(correlation_id);
 
 CREATE INDEX IF NOT EXISTS idx_collection_queries_collection_id ON collection_queries(collection_id);
-CREATE INDEX IF NOT EXISTS idx_benchmarks_collection_id ON benchmarks(collection_id);
-CREATE INDEX IF NOT EXISTS idx_benchmark_results_benchmark_id ON benchmark_results(benchmark_id);
+CREATE INDEX IF NOT EXISTS idx_benchmark_definitions_collection ON benchmark_definitions(collection_id);
+CREATE INDEX IF NOT EXISTS idx_benchmark_runs_definition ON benchmark_runs(definition_id);
+CREATE INDEX IF NOT EXISTS idx_benchmark_results_run_id ON benchmark_results(run_id);
 CREATE INDEX IF NOT EXISTS idx_storage_probes_location_engine ON storage_latency_probes(storage_location, engine_id);
+CREATE INDEX IF NOT EXISTS idx_routing_profiles_default ON routing_profiles(is_default) WHERE is_default = true;
