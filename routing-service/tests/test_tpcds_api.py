@@ -682,3 +682,257 @@ class TestDetectTpcds:
         assert resp.status_code == 200
         data = resp.json()
         assert data == {"sf1": False, "sf10": False, "sf100": False}
+
+
+# ---------------------------------------------------------------------------
+# _create_tpcds_collection — auto-create query collection (Phase 16)
+# ---------------------------------------------------------------------------
+
+
+class TestCreateTpcdsCollection:
+    """Unit tests for _create_tpcds_collection helper."""
+
+    @patch("tpcds_api.db")
+    def test_creates_collection_with_99_queries(self, mock_db):
+        """On first call, creates a new collection with 99 queries."""
+        # No existing collection
+        mock_db.fetch_one.side_effect = [
+            None,  # SELECT id FROM collections WHERE name = ...
+            {"id": 42},  # INSERT INTO collections ... RETURNING id
+        ]
+        mock_db.execute.return_value = None
+
+        result = tpcds_api._create_tpcds_collection(1, "mycat", "sf1", 1)
+
+        assert result == 42
+        # Should insert collection
+        insert_call = mock_db.fetch_one.call_args_list[1]
+        assert "INSERT INTO collections" in insert_call[0][0]
+        assert insert_call[0][1][0] == "TPC-DS SF1"
+        assert "tpcds" in insert_call[0][0]  # tag = 'tpcds'
+
+        # Should insert 99 queries + 1 update to tpcds_catalogs = 100 execute calls
+        execute_calls = mock_db.execute.call_args_list
+        query_inserts = [c for c in execute_calls if "collection_queries" in str(c)]
+        assert len(query_inserts) == 99
+
+        # Should link collection to tpcds_catalogs
+        link_calls = [c for c in execute_calls if "tpcds_catalogs" in str(c)]
+        assert len(link_calls) == 1
+        assert link_calls[0][0][1] == (42, 1)  # (collection_id, record_id)
+
+    @patch("tpcds_api.db")
+    def test_idempotent_reuses_existing_collection(self, mock_db):
+        """If collection already exists, reuses it without inserting queries."""
+        mock_db.fetch_one.return_value = {"id": 7}  # existing collection
+        mock_db.execute.return_value = None
+
+        result = tpcds_api._create_tpcds_collection(1, "mycat", "sf1", 1)
+
+        assert result == 7
+        # Should NOT insert any queries (only update tpcds_catalogs.collection_id)
+        execute_calls = mock_db.execute.call_args_list
+        query_inserts = [c for c in execute_calls if "collection_queries" in str(c)]
+        assert len(query_inserts) == 0
+        # Should link to tpcds_catalogs
+        link_calls = [c for c in execute_calls if "tpcds_catalogs" in str(c)]
+        assert len(link_calls) == 1
+
+    @patch("tpcds_api.db")
+    def test_collection_name_matches_scale_factor(self, mock_db):
+        """Collection name includes the scale factor."""
+        mock_db.fetch_one.side_effect = [None, {"id": 10}]
+        mock_db.execute.return_value = None
+
+        tpcds_api._create_tpcds_collection(1, "mycat", "sf10", 10)
+
+        check_call = mock_db.fetch_one.call_args_list[0]
+        assert check_call[0][1] == ("TPC-DS SF10",)
+
+    @patch("tpcds_api.db")
+    def test_error_returns_none_and_logs(self, mock_db):
+        """On error, returns None without raising."""
+        mock_db.fetch_one.side_effect = Exception("DB connection lost")
+
+        result = tpcds_api._create_tpcds_collection(1, "mycat", "sf1", 1)
+
+        assert result is None
+
+    @patch("tpcds_api.db")
+    def test_queries_are_rewritten_for_catalog_schema(self, mock_db):
+        """Inserted queries use the correct catalog.schema three-part names."""
+        mock_db.fetch_one.side_effect = [None, {"id": 50}]
+        mock_db.execute.return_value = None
+
+        tpcds_api._create_tpcds_collection(1, "delta_router_tpcds", "sf1", 1)
+
+        # Check the first query insert has three-part names
+        query_inserts = [
+            c for c in mock_db.execute.call_args_list if "collection_queries" in str(c)
+        ]
+        first_sql = query_inserts[0][0][1][1]  # (collection_id, sql, seq)
+        assert "delta_router_tpcds.sf1." in first_sql
+        assert "__CATALOG__" not in first_sql
+        assert "__SCHEMA__" not in first_sql
+
+
+# ---------------------------------------------------------------------------
+# _sf1_ctas_sync — collection creation hook (Phase 16)
+# ---------------------------------------------------------------------------
+
+
+class TestSf1CtasSyncCollectionCreation:
+    """Verify _sf1_ctas_sync calls _create_tpcds_collection on success."""
+
+    @patch("tpcds_api._create_tpcds_collection")
+    @patch("tpcds_api.db")
+    @patch("tpcds_api._execute_sql")
+    def test_creates_collection_after_success(
+        self, mock_exec_sql, mock_db, mock_create_coll
+    ):
+        wc = MagicMock()
+        wc.current_user.me.return_value = _mock_me()
+
+        tpcds_api._sf1_ctas_sync(1, "mycat", "sf1", wc, "wh-123")
+
+        mock_create_coll.assert_called_once_with(1, "mycat", "sf1", 1)
+
+    @patch("tpcds_api._create_tpcds_collection")
+    @patch("tpcds_api.db")
+    @patch("tpcds_api._execute_sql")
+    def test_no_collection_on_failure(self, mock_exec_sql, mock_db, mock_create_coll):
+        """If CTAS fails, _create_tpcds_collection is NOT called."""
+        wc = MagicMock()
+        wc.current_user.me.return_value = _mock_me()
+        # Fail on the 3rd call (first table CTAS)
+        call_count = [0]
+
+        def side_effect(wc_arg, wh_id, sql):
+            call_count[0] += 1
+            if call_count[0] == 3:
+                raise Exception("SQL error")
+
+        mock_exec_sql.side_effect = side_effect
+
+        tpcds_api._sf1_ctas_sync(1, "mycat", "sf1", wc, "wh-123")
+
+        mock_create_coll.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _finalize_job_success — collection creation hook (Phase 16)
+# ---------------------------------------------------------------------------
+
+
+class TestFinalizeJobSuccessCollectionCreation:
+    """Verify _finalize_job_success calls _create_tpcds_collection."""
+
+    @patch("tpcds_api._create_tpcds_collection")
+    @patch("tpcds_api.db")
+    def test_creates_collection_for_job_success(self, mock_db, mock_create_coll):
+        wc = MagicMock()
+        # First execute (status update) then fetch_one (scale_factor lookup)
+        mock_db.fetch_one.return_value = {"scale_factor": 10}
+
+        tpcds_api._finalize_job_success(5, "mycat", "sf10", wc)
+
+        mock_create_coll.assert_called_once_with(5, "mycat", "sf10", 10)
+
+    @patch("tpcds_api._create_tpcds_collection")
+    @patch("tpcds_api.db")
+    def test_no_collection_if_row_missing(self, mock_db, mock_create_coll):
+        """If tpcds_catalogs row not found (shouldn't happen), skip gracefully."""
+        wc = MagicMock()
+        mock_db.fetch_one.return_value = None
+
+        tpcds_api._finalize_job_success(99, "mycat", "sf100", wc)
+
+        mock_create_coll.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Cascade delete — collection deletion on catalog delete (Phase 16)
+# ---------------------------------------------------------------------------
+
+
+class TestCascadeDeleteCollection:
+    """Verify delete_tpcds_catalog cascades to linked collection."""
+
+    @patch("main._workspace_client")
+    @patch("tpcds_api.db")
+    def test_deletes_linked_collection(self, mock_db, mock_wc):
+        """When collection_id is set, cascade delete removes the collection."""
+        row = _tpcds_row(catalog_name="tpcds_sf1", status="ready")
+        row["collection_id"] = 42
+        mock_db.fetch_one.return_value = row
+        mock_wc.catalogs.delete.return_value = None
+
+        resp = client.delete("/api/tpcds/catalogs/tpcds_sf1", headers=_admin_header())
+
+        assert resp.status_code == 200
+        # Should delete collection
+        execute_calls = [str(c) for c in mock_db.execute.call_args_list]
+        collection_deletes = [
+            c for c in execute_calls if "DELETE FROM collections" in c
+        ]
+        assert len(collection_deletes) == 1
+        assert "42" in collection_deletes[0]
+
+    @patch("main._workspace_client")
+    @patch("tpcds_api.db")
+    def test_no_cascade_when_collection_id_null(self, mock_db, mock_wc):
+        """When collection_id is NULL, no collection cascade attempted."""
+        row = _tpcds_row(catalog_name="tpcds_sf1", status="ready")
+        row["collection_id"] = None
+        mock_db.fetch_one.return_value = row
+        mock_wc.catalogs.delete.return_value = None
+
+        resp = client.delete("/api/tpcds/catalogs/tpcds_sf1", headers=_admin_header())
+
+        assert resp.status_code == 200
+        execute_calls = [str(c) for c in mock_db.execute.call_args_list]
+        collection_deletes = [
+            c for c in execute_calls if "DELETE FROM collections" in c
+        ]
+        assert len(collection_deletes) == 0
+
+    @patch("main._workspace_client")
+    @patch("tpcds_api.db")
+    def test_no_cascade_when_collection_id_missing(self, mock_db, mock_wc):
+        """When row has no collection_id key (old schema), no cascade."""
+        row = _tpcds_row(catalog_name="tpcds_sf1", status="ready")
+        # _tpcds_row doesn't include collection_id — simulates old schema
+        mock_db.fetch_one.return_value = row
+        mock_wc.catalogs.delete.return_value = None
+
+        resp = client.delete("/api/tpcds/catalogs/tpcds_sf1", headers=_admin_header())
+
+        assert resp.status_code == 200
+        execute_calls = [str(c) for c in mock_db.execute.call_args_list]
+        collection_deletes = [
+            c for c in execute_calls if "DELETE FROM collections" in c
+        ]
+        assert len(collection_deletes) == 0
+
+    @patch("main._workspace_client")
+    @patch("tpcds_api.db")
+    def test_cascade_error_does_not_fail_delete(self, mock_db, mock_wc):
+        """If cascade delete fails, the catalog delete still succeeds."""
+        row = _tpcds_row(catalog_name="tpcds_sf1", status="ready")
+        row["collection_id"] = 42
+        mock_db.fetch_one.return_value = row
+        mock_wc.catalogs.delete.return_value = None
+
+        # Make collection DELETE fail, but other executes succeed
+        def execute_side_effect(sql, params=None):
+            if "DELETE FROM collections" in sql:
+                raise Exception("FK violation")
+            return None
+
+        mock_db.execute.side_effect = execute_side_effect
+
+        resp = client.delete("/api/tpcds/catalogs/tpcds_sf1", headers=_admin_header())
+
+        # Should still succeed — cascade error is non-fatal
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] is True

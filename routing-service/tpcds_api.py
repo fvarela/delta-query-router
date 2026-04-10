@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 import auth
 import db
+import tpcds_queries
 
 logger = logging.getLogger("routing-service.tpcds_api")
 
@@ -55,6 +56,88 @@ TPCDS_TABLES: list[str] = [
 ]
 
 VALID_SCALE_FACTORS = {1, 10, 100}
+
+
+# ---------------------------------------------------------------------------
+# Auto-create TPC-DS query collection  (Phase 16 / REQ-001)
+# ---------------------------------------------------------------------------
+
+
+def _create_tpcds_collection(
+    record_id: int,
+    catalog_name: str,
+    schema_name: str,
+    scale_factor: int,
+) -> int | None:
+    """Create a tpcds-tagged collection with 99 rewritten queries.
+
+    Called after TPC-DS data creation succeeds. Idempotent — if a collection
+    with the expected name already exists, reuses it.
+
+    Returns the collection ID, or None on error.
+    """
+    collection_name = f"TPC-DS SF{scale_factor}"
+    description = (
+        f"Standard TPC-DS benchmark queries for scale factor {scale_factor} "
+        f"({catalog_name}.{schema_name})"
+    )
+
+    try:
+        # Check for existing collection (idempotent)
+        existing = db.fetch_one(
+            "SELECT id FROM collections WHERE name = %s", (collection_name,)
+        )
+        if existing:
+            collection_id = existing["id"]
+            logger.info(
+                "TPC-DS collection '%s' already exists (id=%d), reusing",
+                collection_name,
+                collection_id,
+            )
+        else:
+            row = db.fetch_one(
+                "INSERT INTO collections (name, description, tag) "
+                "VALUES (%s, %s, 'tpcds') RETURNING id",
+                (collection_name, description),
+            )
+            collection_id = row["id"]
+
+            # Insert 99 rewritten queries
+            queries = tpcds_queries.get_queries(catalog_name, schema_name)
+            for query_id, sql in queries:
+                db.execute(
+                    "INSERT INTO collection_queries (collection_id, query_text, sequence_number) "
+                    "VALUES (%s, %s, %s)",
+                    (collection_id, sql, query_id),
+                )
+            logger.info(
+                "Created TPC-DS collection '%s' (id=%d) with %d queries",
+                collection_name,
+                collection_id,
+                len(queries),
+            )
+
+            # Validate queries with sqlglot (informational only)
+            validation = tpcds_queries.validate_queries(catalog_name, schema_name)
+            ok = sum(1 for _, err in validation if err is None)
+            logger.info("TPC-DS query validation: %d/99 parsed successfully", ok)
+            for qid, err in validation:
+                if err is not None:
+                    logger.warning("TPC-DS Q%d parse warning: %s", qid, err)
+
+        # Link collection to tpcds_catalogs record
+        db.execute(
+            "UPDATE tpcds_catalogs SET collection_id = %s, updated_at = NOW() "
+            "WHERE id = %s",
+            (collection_id, record_id),
+        )
+        return collection_id
+
+    except Exception:
+        logger.exception(
+            "Failed to create TPC-DS collection for catalog '%s'", catalog_name
+        )
+        return None
 
 
 def _require_workspace_client():
@@ -267,6 +350,9 @@ def _sf1_ctas_sync(
             (record_id,),
         )
         logger.info("TPC-DS SF1 catalog '%s' created successfully", catalog_name)
+
+        # Auto-create query collection (Phase 16)
+        _create_tpcds_collection(record_id, catalog_name, schema_name, 1)
 
     except Exception as e:
         logger.exception("TPC-DS SF1 creation failed for '%s'", catalog_name)
@@ -612,6 +698,15 @@ def _finalize_job_success(
         (record_id,),
     )
 
+    # Auto-create query collection (Phase 16)
+    row = db.fetch_one(
+        "SELECT scale_factor FROM tpcds_catalogs WHERE id = %s", (record_id,)
+    )
+    if row:
+        _create_tpcds_collection(
+            record_id, catalog_name, schema_name, row["scale_factor"]
+        )
+
 
 # ---------------------------------------------------------------------------
 # List and delete catalogs  (T93 / REQ-009)
@@ -689,6 +784,26 @@ async def delete_tpcds_catalog(
                 (f"Deletion failed: {e}"[:2000], catalog_name),
             )
             raise _get_main()._databricks_error_to_http(e)
+
+    # Cascade-delete linked TPC-DS collection (Phase 16)
+    collection_id = row.get("collection_id")
+    if collection_id is not None:
+        try:
+            # Deleting the collection cascades to collection_queries,
+            # benchmark_definitions → benchmark_runs → benchmark_results +
+            # benchmark_engine_warmups via ON DELETE CASCADE FK constraints.
+            db.execute("DELETE FROM collections WHERE id = %s", (collection_id,))
+            logger.info(
+                "Deleted collection %d and associated benchmarks for TPC-DS catalog '%s'",
+                collection_id,
+                catalog_name,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to delete collection %d for catalog '%s'",
+                collection_id,
+                catalog_name,
+            )
 
     # Remove tracking record
     db.execute("DELETE FROM tpcds_catalogs WHERE catalog_name = %s", (catalog_name,))

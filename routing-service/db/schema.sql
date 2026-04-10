@@ -218,6 +218,7 @@ CREATE TABLE IF NOT EXISTS tpcds_catalogs (
     error_message   TEXT,              -- error details if status=failed
     tables_created  INTEGER DEFAULT 0, -- progress: how many tables created so far
     total_tables    INTEGER DEFAULT 25,-- total TPC-DS tables to create
+    collection_id   INTEGER REFERENCES collections(id) ON DELETE SET NULL,  -- auto-created TPC-DS query collection
     created_at      TIMESTAMPTZ DEFAULT NOW(),
     updated_at      TIMESTAMPTZ DEFAULT NOW()
 );

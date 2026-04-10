@@ -13,7 +13,7 @@ import { ArrowLeft, Plus, Trash2, X, Database, AlertTriangle, Lock, BarChart3, C
 
 export const CollectionsPanel: React.FC = () => {
   const {
-    setEditorSql, setCollectionContext, refreshCollections, activeCollectionId, setActiveCollectionId,
+    setEditorSql, setCollectionContext, refreshCollections, triggerRefreshCollections, activeCollectionId, setActiveCollectionId,
     engines, routingMode, benchmarkEngineIds, benchmarkDefinitions,
   } = useApp();
   const [collections, setCollections] = useState<CollectionWithQueries[]>([]);
@@ -481,7 +481,7 @@ export const CollectionsPanel: React.FC = () => {
         <TpcdsSetupDialog
           open={showTpcdsSetup}
           onClose={() => setShowTpcdsSetup(false)}
-          onComplete={() => setTpcdsConfigured(true)}
+          onComplete={() => { setTpcdsConfigured(true); triggerRefreshCollections(); }}
         />
       </div>
     );
@@ -583,7 +583,7 @@ export const CollectionsPanel: React.FC = () => {
       <TpcdsSetupDialog
         open={showTpcdsSetup}
         onClose={() => setShowTpcdsSetup(false)}
-        onComplete={() => setTpcdsConfigured(true)}
+        onComplete={() => { setTpcdsConfigured(true); triggerRefreshCollections(); }}
       />
     </div>
   );
