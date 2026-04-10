@@ -1,6 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useMemo } from "react";
 import type { RunMode, RoutingMode, PanelMode, LeftPanelTab, RoutingConfig, RoutingProfile, WorkspaceBinding, WarehouseMapping, DiscoveredWarehouse, QueryExecutionResult, Workspace, Warehouse, DatabricksSettings, EngineCatalogEntry, Model, RoutingSettings, RoutingSettingsResponse, StorageLatencyProbe, BenchmarkDefinition } from "../types";
-import { mockApi } from "@/mocks/api";
 import { api } from "@/lib/api";
 import { isMockMode } from "@/lib/mockMode";
 import { MOCK_ENGINES, MOCK_MODELS, MOCK_BENCHMARK_DEFINITIONS, MOCK_ROUTING_PROFILES, MOCK_DISCOVERED_WAREHOUSES, MOCK_WORKSPACES } from "@/mocks/engineSetupData";
@@ -425,14 +424,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [probesRunning, setProbesRunning] = useState(false);
 
   const reloadStorageProbes = useCallback(async () => {
-    const probes = await mockApi.getStorageLatencyProbes();
+    const probes = await api.get<StorageLatencyProbe[]>('/api/latency-probes');
     setStorageProbes(probes);
   }, []);
 
   const runStorageProbes = useCallback(async () => {
     setProbesRunning(true);
     try {
-      await mockApi.runStorageLatencyProbes();
+      await api.post<{ probes: StorageLatencyProbe[] }>('/api/latency-probes/run', {}).then(r => r.probes);
       await reloadStorageProbes();
     } finally {
       setProbesRunning(false);

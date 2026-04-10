@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
-import { mockApi } from "@/mocks/api";
 import { api } from "@/lib/api";
 import { useApp } from "@/contexts/AppContext";
 import { isMockMode } from "@/lib/mockMode";
@@ -8,7 +7,7 @@ import { StatusBadge } from "@/components/shared/StatusBadge";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 import { MOCK_COLLECTIONS_WITH_QUERIES, MOCK_TPCDS_CONFIGURED, MOCK_BENCHMARK_RUN_DETAILS, getRunsForDefinition } from "@/mocks/engineSetupData";
 import { TpcdsSetupDialog } from "@/components/LeftPanel/TpcdsWizard";
-import type { CollectionWithQueries, BenchmarkSummary, BenchmarkDetail, BenchmarkRunDetail, BenchmarkRunSummary } from "@/types";
+import type { Collection, CollectionWithQueries, BenchmarkSummary, BenchmarkDetail, BenchmarkRunDetail, BenchmarkRunSummary } from "@/types";
 import { ArrowLeft, Plus, Trash2, X, Database, AlertTriangle, Lock, BarChart3, Clock, ExternalLink, Settings2 } from "lucide-react";
 
 export const CollectionsPanel: React.FC = () => {
@@ -78,8 +77,8 @@ export const CollectionsPanel: React.FC = () => {
       setCollections(MOCK_COLLECTIONS_WITH_QUERIES);
       setLoading(false);
     } else {
-      mockApi.getCollections().then(async (cols) => {
-        const full = await Promise.all(cols.map(c => mockApi.getCollection(c.id)));
+      api.get<Collection[]>('/api/collections').then(async (cols) => {
+        const full = await Promise.all(cols.map(c => api.get<CollectionWithQueries>(`/api/collections/${c.id}`)));
         setCollections(full);
         setLoading(false);
       });
@@ -93,7 +92,7 @@ export const CollectionsPanel: React.FC = () => {
       const c = MOCK_COLLECTIONS_WITH_QUERIES.find(c => c.id === activeCollection.id);
       if (c) setActiveCollectionLocal(c);
     } else {
-      mockApi.getCollection(activeCollection.id).then(c => setActiveCollectionLocal(c));
+      api.get<CollectionWithQueries>(`/api/collections/${activeCollection.id}`).then(c => setActiveCollectionLocal(c));
     }
   }, [refreshCollections]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -108,7 +107,7 @@ export const CollectionsPanel: React.FC = () => {
       setActiveCollectionLocal(col);
       setSelectedQueryId(null);
       if (!mock) {
-        mockApi.getBenchmarks(activeCollectionId).then(b => setBenchmarks(b));
+        api.get<BenchmarkSummary[]>(`/api/benchmarks?collection_id=${activeCollectionId}`).then(b => setBenchmarks(b));
       } else {
         setBenchmarks([]);
       }
@@ -121,12 +120,12 @@ export const CollectionsPanel: React.FC = () => {
     if (mock) {
       c = MOCK_COLLECTIONS_WITH_QUERIES.find(col => col.id === id)!;
     } else {
-      c = await mockApi.getCollection(id);
+      c = await api.get<CollectionWithQueries>(`/api/collections/${id}`);
     }
     setActiveCollection(c);
     setSelectedQueryId(null);
     if (!mock) {
-      const b = await mockApi.getBenchmarks(id);
+      const b = await api.get<BenchmarkSummary[]>(`/api/benchmarks?collection_id=${id}`);
       setBenchmarks(b);
     } else {
       setBenchmarks([]);
@@ -145,8 +144,8 @@ export const CollectionsPanel: React.FC = () => {
       };
       setCollections(prev => [...prev, newCol]);
     } else {
-      const created = await mockApi.createCollection(newName, newDesc);
-      const full = await mockApi.getCollection(created.id);
+      const created = await api.post<Collection>('/api/collections', { name: newName, description: newDesc });
+      const full = await api.get<CollectionWithQueries>(`/api/collections/${created.id}`);
       setCollections(prev => [...prev, full]);
     }
     setShowCreate(false);
@@ -157,7 +156,7 @@ export const CollectionsPanel: React.FC = () => {
   const handleDeleteCollection = async () => {
     if (deleteCollectionId === null) return;
     if (!mock) {
-      await mockApi.deleteCollection(deleteCollectionId);
+      await api.del(`/api/collections/${deleteCollectionId}`);
     }
     setCollections(prev => prev.filter(c => c.id !== deleteCollectionId));
     if (activeCollection?.id === deleteCollectionId) setActiveCollection(null);
@@ -177,8 +176,8 @@ export const CollectionsPanel: React.FC = () => {
   const handleDeleteQuery = async () => {
     if (!activeCollection || deleteQueryId === null) return;
     if (!mock) {
-      await mockApi.deleteQuery(activeCollection.id, deleteQueryId);
-      const c = await mockApi.getCollection(activeCollection.id);
+      await api.del(`/api/collections/${activeCollection.id}/queries/${deleteQueryId}`);
+      const c = await api.get<CollectionWithQueries>(`/api/collections/${activeCollection.id}`);
       setActiveCollection(c);
     }
     setDeleteQueryId(null);
@@ -195,8 +194,8 @@ export const CollectionsPanel: React.FC = () => {
     setRunningBenchmark(true);
     setBenchmarkError(null);
     try {
-      await mockApi.createBenchmark(activeCollection.id, engineIds);
-      const b = await mockApi.getBenchmarks(activeCollection.id);
+      await api.post<BenchmarkSummary>('/api/benchmarks', { collection_id: activeCollection.id, engine_ids: engineIds });
+      const b = await api.get<BenchmarkSummary[]>(`/api/benchmarks?collection_id=${activeCollection.id}`);
       setBenchmarks(b);
     } catch (e: any) {
       setBenchmarkError(e?.message || "Benchmark failed");
@@ -206,7 +205,7 @@ export const CollectionsPanel: React.FC = () => {
   };
 
   const openBenchmarkDetail = async (id: number) => {
-    const d = await mockApi.getBenchmark(id);
+    const d = await api.get<BenchmarkDetail>(`/api/benchmarks/${id}`);
     setBenchmarkDetail(d);
   };
 

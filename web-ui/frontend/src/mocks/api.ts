@@ -2,38 +2,18 @@
 // Mock API Layer
 // =============================================================================
 //
-// REAL (wired to backend):
-//   - catalog:          Unity Catalog browsing — CatalogBrowser.tsx uses api.get() directly
-//   - query:            SQL execution via POST /api/query — CenterPanel.tsx
-//   - query logs:       query history via GET /api/logs — CenterPanel.tsx
-//   - query detail:     GET /api/query/{id} — CenterPanel.tsx
-//   - workspaces:       workspace connect/disconnect — WorkspaceManager.tsx
-//   - warehouses:       warehouse list + selection — AppContext + WorkspaceManager
-//   - routing rules:    GET/POST/DELETE /api/routing/rules — Phase 8
-//   - routing settings: GET/PUT /api/routing/settings — Phase 8
-//   - collections:      CRUD + query management via /api/collections — Phase 10
-//   - engines:          engine catalog + runtime status via /api/engines — Phase 10
-//   - benchmarks:       CRUD + execution via /api/benchmarks — Phase 10
-//   - probes:           storage latency probes via /api/latency-probes — Phase 10
-//   - models:           ML model listing, activation, training via /api/models — Phase 13
-//   - routing profiles: CRUD + default via /api/routing/profiles — Phase 15
-//   - model training:   POST /api/models/train with collection_ids — Phase 15
-//
-// MOCKED (only used when ?mock=true):
+// Used ONLY in mock mode (?mock=true) for offline frontend development:
 //   - executeQuery:     simulated routing + execution with streaming logs
 //   - getQueryLogs:     in-memory query history (populated by executeQuery)
 //
-// Thin API wrappers below delegate to api.* and work in both real and mock mode.
+// All other API calls use `api.*` (src/lib/api.ts) directly.
 // =============================================================================
 
 import type {
-  Collection, CollectionWithQueries, Query,
-  QueryExecutionResult, BenchmarkSummary, BenchmarkDetail,
+  QueryExecutionResult,
   LogEntry,
-  RoutingLogEvent, RoutingLogLevel, StorageLatencyProbe,
+  RoutingLogEvent, RoutingLogLevel,
 } from "../types";
-
-import { api } from "../lib/api";
 
 const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
 
@@ -65,31 +45,6 @@ let queryLogs: LogEntry[] = [
 
 // ---- Mock API ----
 export const mockApi = {
-  // Collections (thin wrappers — work in both real and mock mode)
-  async getCollections(): Promise<Collection[]> {
-    return api.get<Collection[]>('/api/collections');
-  },
-
-  async getCollection(id: number): Promise<CollectionWithQueries> {
-    return api.get<CollectionWithQueries>(`/api/collections/${id}`);
-  },
-
-  async createCollection(name: string, description: string): Promise<Collection> {
-    return api.post<Collection>('/api/collections', { name, description });
-  },
-
-  async deleteCollection(id: number): Promise<void> {
-    await api.del(`/api/collections/${id}`);
-  },
-
-  async addQuery(collectionId: number, queryText: string): Promise<Query> {
-    return api.post<Query>(`/api/collections/${collectionId}/queries`, { query_text: queryText });
-  },
-
-  async deleteQuery(collectionId: number, queryId: number): Promise<void> {
-    await api.del(`/api/collections/${collectionId}/queries/${queryId}`);
-  },
-
   // Query Execution (mock-only — simulates routing pipeline with streaming logs)
   async executeQuery(sql: string, routingMode: string, onLog?: (event: RoutingLogEvent) => void): Promise<QueryExecutionResult> {
     const collectedEvents: RoutingLogEvent[] = [];
@@ -251,20 +206,6 @@ export const mockApi = {
     };
   },
 
-  // Benchmarks (thin wrappers — work in both real and mock mode)
-  async getBenchmarks(collectionId?: number): Promise<BenchmarkSummary[]> {
-    const params = collectionId != null ? `?collection_id=${collectionId}` : '';
-    return api.get<BenchmarkSummary[]>(`/api/benchmarks${params}`);
-  },
-
-  async getBenchmark(id: number): Promise<BenchmarkDetail> {
-    return api.get<BenchmarkDetail>(`/api/benchmarks/${id}`);
-  },
-
-  async createBenchmark(collectionId: number, engineIds: string[]): Promise<BenchmarkSummary> {
-    return api.post<BenchmarkSummary>('/api/benchmarks', { collection_id: collectionId, engine_ids: engineIds });
-  },
-
   // Query Log (mock-only — in-memory history populated by executeQuery)
   async getQueryLogs(engineFilter?: string): Promise<LogEntry[]> {
     await delay(200);
@@ -273,15 +214,5 @@ export const mockApi = {
       logs = logs.filter(l => l.engine.startsWith(engineFilter));
     }
     return logs.slice(0, 20);
-  },
-
-  // Storage Latency Probes (thin wrappers — work in both real and mock mode)
-  async getStorageLatencyProbes(): Promise<StorageLatencyProbe[]> {
-    return api.get<StorageLatencyProbe[]>('/api/latency-probes');
-  },
-
-  async runStorageLatencyProbes(): Promise<StorageLatencyProbe[]> {
-    const resp = await api.post<{ probes: StorageLatencyProbe[] }>('/api/latency-probes/run', {});
-    return resp.probes;
   },
 };

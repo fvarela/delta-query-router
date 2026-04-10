@@ -5,7 +5,7 @@ import { api } from "@/lib/api";
 import { isMockMode } from "@/lib/mockMode";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { StatusBadge } from "@/components/shared/StatusBadge";
-import type { QueryExecutionResult, LogEntry, RoutingLogEvent } from "@/types";
+import type { QueryExecutionResult, LogEntry, RoutingLogEvent, Query } from "@/types";
 import { Play, Clock, Terminal, Info, X, FolderPlus } from "lucide-react";
 
 /* ── colour helpers ── */
@@ -50,7 +50,7 @@ export const CenterPanel: React.FC = () => {
     if (!activeCollectionId || !editorSql.trim()) return;
     setAddingToCollection(true);
     try {
-      await mockApi.addQuery(activeCollectionId, editorSql.trim());
+      await api.post<Query>(`/api/collections/${activeCollectionId}/queries`, { query_text: editorSql.trim() });
       triggerRefreshCollections();
       setAddedConfirm(true);
       setTimeout(() => setAddedConfirm(false), 2000);
