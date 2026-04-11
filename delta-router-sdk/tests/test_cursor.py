@@ -86,6 +86,40 @@ class TestExecute:
         body = json_mod.loads(route.calls[0].request.content)
         assert body["routing_mode"] == "databricks"
 
+    def test_execute_with_profile_id(self, mock_router, conn):
+        route = mock_router.post("/api/query").respond(200, json=QUERY_RESPONSE)
+        cur = conn.cursor()
+
+        cur.execute("SELECT 1", profile_id=42)
+
+        import json as json_mod
+
+        body = json_mod.loads(route.calls[0].request.content)
+        assert body["profile_id"] == 42
+
+    def test_execute_with_profile_id_and_engine(self, mock_router, conn):
+        route = mock_router.post("/api/query").respond(200, json=QUERY_RESPONSE)
+        cur = conn.cursor()
+
+        cur.execute("SELECT 1", engine="duckdb", profile_id=7)
+
+        import json as json_mod
+
+        body = json_mod.loads(route.calls[0].request.content)
+        assert body["routing_mode"] == "duckdb"
+        assert body["profile_id"] == 7
+
+    def test_execute_without_profile_id_omits_key(self, mock_router, conn):
+        route = mock_router.post("/api/query").respond(200, json=QUERY_RESPONSE)
+        cur = conn.cursor()
+
+        cur.execute("SELECT 1")
+
+        import json as json_mod
+
+        body = json_mod.loads(route.calls[0].request.content)
+        assert "profile_id" not in body
+
     def test_execute_includes_auth_header(self, mock_router, conn):
         route = mock_router.post("/api/query").respond(200, json=QUERY_RESPONSE)
         cur = conn.cursor()

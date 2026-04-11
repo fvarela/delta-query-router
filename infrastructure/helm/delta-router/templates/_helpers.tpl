@@ -42,3 +42,25 @@ Per-service fullnames.
 {{- define "delta-router.postgresql.fullname" -}}
 {{- printf "%s-%s" (include "delta-router.fullname" .) "postgresql" | trunc 63 | trimSuffix "-" }}
 {{- end }}
+{{/*
+Resolve the admin-credentials secret name.
+Uses existingSecretName if set, otherwise the Helm-generated name.
+*/}}
+{{- define "delta-router.adminCredentials.secretName" -}}
+{{- if .Values.secrets.adminCredentials.existingSecretName }}
+{{- .Values.secrets.adminCredentials.existingSecretName }}
+{{- else }}
+{{- include "delta-router.fullname" . }}-admin-credentials
+{{- end }}
+{{- end }}
+{{/*
+Resolve the postgresql credentials secret name.
+Uses existingSecretName if set, otherwise the Helm-generated name.
+*/}}
+{{- define "delta-router.postgresqlCredentials.secretName" -}}
+{{- if .Values.secrets.postgresqlCredentials.existingSecretName }}
+{{- .Values.secrets.postgresqlCredentials.existingSecretName }}
+{{- else }}
+{{- include "delta-router.fullname" . }}-postgresql
+{{- end }}
+{{- end }}

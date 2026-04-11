@@ -48,6 +48,7 @@ class Cursor:
         parameters: Any = None,
         *,
         engine: str | None = None,
+        profile_id: int | None = None,
     ) -> Cursor:
         """Execute a SQL query via the Delta Router.
 
@@ -57,6 +58,8 @@ class Cursor:
             engine: Routing mode override. Maps to ``routing_mode`` on the
                 server. Values: ``"smart"`` (default), ``"duckdb"``,
                 ``"databricks"``, or a specific engine name.
+            profile_id: Optional routing profile ID. If not set, the
+                server uses the default profile.
 
         Returns:
             self (for method chaining per DB-API convention).
@@ -73,6 +76,8 @@ class Cursor:
         body: dict[str, Any] = {"sql": sql}
         if engine is not None:
             body["routing_mode"] = engine
+        if profile_id is not None:
+            body["profile_id"] = profile_id
 
         url = f"{self._connection.server_url}/api/query"
         resp = self._connection.token_manager.request_with_retry("POST", url, json=body)

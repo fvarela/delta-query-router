@@ -163,7 +163,7 @@ INSERT INTO routing_settings (id) VALUES (1) ON CONFLICT DO NOTHING;
 
 -- Seed default DuckDB engines
 INSERT INTO engines (id, engine_type, display_name, config, k8s_service_name, cost_tier) VALUES
-    ('duckdb-1', 'duckdb', 'DuckDB — Small', '{"memory_gb": 1, "cpu_count": 1}', 'duckdb-worker', 3),
+    ('duckdb-1', 'duckdb', 'DuckDB — Small', '{"memory_gb": 1, "cpu_count": 1}', 'duckdb-worker-small', 3),
     ('duckdb-2', 'duckdb', 'DuckDB — Medium', '{"memory_gb": 2, "cpu_count": 2}', 'duckdb-worker-medium', 4),
     ('duckdb-3', 'duckdb', 'DuckDB — Large', '{"memory_gb": 4, "cpu_count": 4}', 'duckdb-worker-large', 5)
 ON CONFLICT DO NOTHING;

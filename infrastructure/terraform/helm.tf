@@ -11,8 +11,16 @@ resource "helm_release" "delta_router" {
     value = "false"
   }
   set {
+    name  = "secrets.adminCredentials.existingSecretName"
+    value = "admin-credentials"
+  }
+  set {
     name  = "secrets.postgresqlCredentials.create"
     value = "false"
+  }
+  set {
+    name  = "secrets.postgresqlCredentials.existingSecretName"
+    value = "postgresql-secret"
   }
   # Set ACR image paths dynamically from Terraform output
   set {

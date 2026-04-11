@@ -29,12 +29,12 @@ spec:
         - /schema/schema.sql
         envFrom:
         - secretRef:
-            name: {{ include "delta-router.fullname" . }}-postgresql
+            name: {{ include "delta-router.postgresqlCredentials.secretName" . }}
         env:
         - name: PGPASSWORD
           valueFrom:
             secretKeyRef:
-              name: {{ include "delta-router.fullname" . }}-postgresql
+              name: {{ include "delta-router.postgresqlCredentials.secretName" . }}
               key: POSTGRES_PASSWORD
         volumeMounts:
         - name: schema

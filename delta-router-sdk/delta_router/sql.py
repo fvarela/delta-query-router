@@ -17,11 +17,13 @@ Usage::
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 
 from .auth import TokenManager
 from .cursor import Cursor
-from .exceptions import AuthenticationError
+from .exceptions import AuthenticationError, QueryError
 
 
 def connect(
@@ -103,8 +105,7 @@ class Connection:
         Raises:
             ValueError: If the connection is closed.
         """
-        if self._closed:
-            raise ValueError("Cannot create cursor on a closed connection")
+        self._check_open()
         return Cursor(self)
 
     def close(self) -> None:
@@ -112,6 +113,73 @@ class Connection:
         if not self._closed:
             self._client.close()
             self._closed = True
+
+    # ------------------------------------------------------------------
+    # Management API helpers
+    # ------------------------------------------------------------------
+
+    def _get_json(self, path: str) -> Any:
+        """Make an authenticated GET request and return the parsed JSON.
+
+        Raises:
+            QueryError: On non-200 responses.
+            AuthenticationError: On 401 after retry.
+        """
+        url = f"{self._server_url}{path}"
+        resp = self._token_manager.request_with_retry("GET", url)
+        if resp.status_code != 200:
+            detail = resp.json().get("detail", f"HTTP {resp.status_code}")
+            raise QueryError(f"GET {path} failed: {detail}")
+        return resp.json()
+
+    def list_engines(self) -> list[dict[str, Any]]:
+        """List all engines (active and inactive).
+
+        Returns:
+            A list of engine dicts with keys: id, engine_type, display_name,
+            config, cost_tier, is_active, runtime_state, etc.
+        """
+        self._check_open()
+        return self._get_json("/api/engines")
+
+    def list_profiles(self) -> list[dict[str, Any]]:
+        """List all routing profiles.
+
+        Returns:
+            A list of profile dicts with keys: id, name, is_default, config,
+            created_at, updated_at.
+        """
+        self._check_open()
+        return self._get_json("/api/routing/profiles")
+
+    def get_profile(self, profile_id: int) -> dict[str, Any]:
+        """Get a single routing profile by ID.
+
+        Args:
+            profile_id: The profile ID.
+
+        Returns:
+            A profile dict.
+
+        Raises:
+            QueryError: If the profile is not found.
+        """
+        self._check_open()
+        return self._get_json(f"/api/routing/profiles/{profile_id}")
+
+    def get_routing_settings(self) -> dict[str, Any]:
+        """Get current routing settings (fit_weight, cost_weight, active_profile_id).
+
+        Returns:
+            A dict with routing settings.
+        """
+        self._check_open()
+        return self._get_json("/api/routing/settings")
+
+    def _check_open(self) -> None:
+        """Raise if the connection is closed."""
+        if self._closed:
+            raise ValueError("Connection is closed")
 
     @property
     def closed(self) -> bool:

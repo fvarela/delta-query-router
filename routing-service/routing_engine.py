@@ -41,9 +41,7 @@ class EngineStates:
 @dataclass
 class RoutingDecision:
     engine: str  # 'duckdb' or 'databricks'
-    stage: (
-        str  # 'SYSTEM_RULE', 'USER_RULE', 'ML_MODEL', 'FORCED', 'SCORING', 'FALLBACK'
-    )
+    stage: str  # 'SYSTEM_RULE', 'ML_MODEL', 'FORCED', 'SCORING', 'FALLBACK'
     reason: str
     complexity_score: float
     rule_id: int | None = None
@@ -72,19 +70,19 @@ def _ts() -> str:
     return now.strftime("%H:%M:%S.") + f"{now.microsecond // 1000:03d}"
 
 
-def _load_rules(system: bool) -> list[dict]:
-    """Load routing rules from DB, with 60-second in-memory cache."""
+def _load_rules() -> list[dict]:
+    """Load system routing rules from DB, with 60-second in-memory cache."""
     global _rules_cache, _rules_cache_time
     now = time.monotonic()
     if _rules_cache is not None and (now - _rules_cache_time) < RULES_CACHE_TTL:
-        return [r for r in _rules_cache if r["is_system"] == system]
+        return _rules_cache
     rows = db.fetch_all(
         "SELECT id, priority, condition_type, condition_value, target_engine, is_system "
-        "FROM routing_rules WHERE enabled = true ORDER BY priority"
+        "FROM routing_rules WHERE enabled = true AND is_system = true ORDER BY priority"
     )
     _rules_cache = rows
     _rules_cache_time = now
-    return [r for r in _rules_cache if r["is_system"] == system]
+    return _rules_cache
 
 
 def _match_rule(
@@ -366,7 +364,7 @@ def route_query(
     events.append(RoutingLogEvent(_ts(), "info", "parse", f"Complexity score: {score}"))
     # 1. System hard rules
     events.append(RoutingLogEvent(_ts(), "info", "rules", "Evaluating system rules"))
-    system_rules = _load_rules(system=True)
+    system_rules = _load_rules()
     for rule in system_rules:
         if _match_rule(rule, analysis, table_metadata):
             events.append(
@@ -423,46 +421,7 @@ def route_query(
             )
         )
         return RoutingResult(decision=decision, events=events)
-    # 3. User-defined rules
-    events.append(RoutingLogEvent(_ts(), "info", "rules", "Evaluating user rules"))
-    user_rules = _load_rules(system=False)
-    for rule in user_rules:
-        if _match_rule(rule, analysis, table_metadata):
-            events.append(
-                RoutingLogEvent(
-                    _ts(),
-                    "rule",
-                    "rules",
-                    f"User rule #{rule['id']} matched: {rule['condition_type']}={rule['condition_value']} → {rule['target_engine']}",
-                )
-            )
-            decision = RoutingDecision(
-                engine=rule["target_engine"],
-                stage="USER_RULE",
-                reason=f"User rule #{rule['id']}: {rule['condition_type']}={rule['condition_value']}",
-                complexity_score=score,
-                rule_id=rule["id"],
-            )
-            events.append(
-                RoutingLogEvent(
-                    _ts(),
-                    "decision",
-                    "engine",
-                    f"Selected engine: {decision.engine} (stage={decision.stage})",
-                )
-            )
-            return RoutingResult(decision=decision, events=events)
-        else:
-            events.append(
-                RoutingLogEvent(
-                    _ts(),
-                    "info",
-                    "rules",
-                    f"User rule #{rule['id']} skipped: {rule['condition_type']}={rule['condition_value']}",
-                )
-            )
-    events.append(RoutingLogEvent(_ts(), "info", "rules", "No user rules matched"))
-    # 4. ML model inference + weighted scoring
+    # 3. ML model inference + weighted scoring
     events.append(RoutingLogEvent(_ts(), "info", "ml_model", "Evaluating ML model"))
     _settings = settings or RoutingSettings()
     ml_decision = None

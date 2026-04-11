@@ -85,7 +85,7 @@ conn.close()
 
 ## Routing Override
 
-By default, queries are routed automatically (`"smart"` mode). You can force a specific engine:
+By default, queries are routed automatically (`"smart"` mode). You can force a specific engine or select a routing profile:
 
 ```python
 with conn.cursor() as cur:
@@ -97,9 +97,15 @@ with conn.cursor() as cur:
 
     # Force Databricks
     cur.execute("SELECT ...", engine="databricks")
+
+    # Use a specific routing profile
+    cur.execute("SELECT ...", profile_id=2)
+
+    # Combine: specific profile + engine override
+    cur.execute("SELECT ...", engine="duckdb", profile_id=2)
 ```
 
-> **Note:** Mandatory routing rules (e.g., views, tables with row-level security) override the `engine` parameter when governance requires it.
+> **Note:** Mandatory system routing rules (e.g., views, tables with row-level security) override the `engine` parameter when governance requires it.
 
 ## Context Managers
 
@@ -187,12 +193,16 @@ Returns an authenticated `Connection`. Raises `AuthenticationError` on invalid P
 | `close()` | Close the connection and release resources |
 | `closed -> bool` | Whether the connection has been closed |
 | `server_url -> str` | Base URL of the Delta Router instance |
+| `list_engines() -> list[dict]` | List all engines (active and inactive) |
+| `list_profiles() -> list[dict]` | List all routing profiles |
+| `get_profile(profile_id) -> dict` | Get a single routing profile by ID |
+| `get_routing_settings() -> dict` | Get current routing settings (fit_weight, cost_weight, active_profile_id) |
 
 ### `Cursor`
 
 | Method / Property | Description |
 |---|---|
-| `execute(sql, parameters=None, *, engine=None) -> Cursor` | Execute a SQL query |
+| `execute(sql, parameters=None, *, engine=None, profile_id=None) -> Cursor` | Execute a SQL query |
 | `fetchall() -> list[tuple]` | Fetch all remaining rows |
 | `fetchone() -> tuple \| None` | Fetch the next row |
 | `fetchmany(size=None) -> list[tuple]` | Fetch up to `size` rows |

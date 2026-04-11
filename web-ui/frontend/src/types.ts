@@ -96,17 +96,6 @@ export interface EnginePreference {
   preference_order: number;
 }
 
-// --- Routing rules ---
-export interface RoutingRule {
-  id: number;
-  priority: number;
-  condition_type: string;
-  condition_value: string;
-  target_engine: string;
-  is_system: boolean;
-  enabled: boolean;
-}
-
 // --- Routing settings ---
 export interface RoutingSettings {
   fit_weight: number;
@@ -144,7 +133,7 @@ export interface QueryExecutionResult {
   routing_decision: {
     engine: string;
     engine_display_name: string;
-    stage: "mandatory_rule" | "user_rule" | "ml_prediction" | "fallback";
+    stage: "mandatory_rule" | "ml_prediction" | "fallback";
     reason: string;
     complexity_score: number;
     // Decomposed latency (ODQ-9 / ODQ-10)

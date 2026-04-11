@@ -94,10 +94,16 @@ ingress:
 secrets:
   adminCredentials:
     create: true
+    # Override the secret name (e.g. when Terraform creates the secret).
+    # Defaults to "{{ fullname }}-admin-credentials" when empty.
+    existingSecretName: ""
     username: admin
     password: admin
   postgresqlCredentials:
     create: true
+    # Override the secret name (e.g. when Terraform creates the secret).
+    # Defaults to "{{ fullname }}-postgresql" when empty.
+    existingSecretName: ""
     user: delta
     password: deltapass
     database: deltarouter

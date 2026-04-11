@@ -25,9 +25,9 @@ spec:
         - configMapRef:
             name: {{ include "delta-router.routingService.fullname" . }}-config
         - secretRef:
-            name: {{ include "delta-router.fullname" . }}-postgresql
+            name: {{ include "delta-router.postgresqlCredentials.secretName" . }}
         - secretRef:
-            name: {{ include "delta-router.fullname" . }}-admin-credentials
+            name: {{ include "delta-router.adminCredentials.secretName" . }}
         - secretRef:
             name: databricks-credentials
             optional: true

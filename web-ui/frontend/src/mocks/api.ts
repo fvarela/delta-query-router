@@ -87,7 +87,7 @@ export const mockApi = {
     await emit("info", "parse", `Statement type: ${stmtType}`, 40);
 
     // --- Phase 2: Routing rules ---
-    let engine: string, engineName: string, stage: "mandatory_rule" | "user_rule" | "ml_prediction" | "fallback", reason: string, execTime: number, complexity: number;
+    let engine: string, engineName: string, stage: "mandatory_rule" | "ml_prediction" | "fallback", reason: string, execTime: number, complexity: number;
 
     await emit("info", "rules", `Evaluating routing rules...`, 100 + Math.random() * 80);
 
@@ -104,16 +104,9 @@ export const mockApi = {
       await emit("rule", "rules", `Rule #SYS-2 [mandatory]: table=customer_pii has row-level security → must execute on Databricks`);
       await emit("decision", "rules", `Mandatory rule matched — skipping remaining rules`);
       engine = "databricks:serverless-2xs"; engineName = "Databricks Serverless 2X-Small"; stage = "mandatory_rule"; reason = "Has row-level security filter — must execute on Databricks"; execTime = 280; complexity = 18;
-    } else if (sqlLower.includes("store_sales")) {
-      await emit("info", "rules", `Rule #SYS-1 [mandatory]: no match (not a VIEW)`);
-      await emit("info", "rules", `Rule #SYS-2 [mandatory]: no match (no RLS filter)`);
-      await emit("rule", "rules", `Rule #USR-1 [user]: table_name contains "store_sales" → route to DuckDB`);
-      await emit("decision", "rules", `User rule matched — skipping ML model evaluation`);
-      engine = "duckdb:2gb-2cpu"; engineName = "DuckDB 2GB/2CPU"; stage = "user_rule"; reason = "User rule: table_name = store_sales → DuckDB"; execTime = 120; complexity = 15;
     } else {
       await emit("info", "rules", `Rule #SYS-1 [mandatory]: no match`);
       await emit("info", "rules", `Rule #SYS-2 [mandatory]: no match`);
-      await emit("info", "rules", `Rule #USR-1 [user]: no match`);
       await emit("info", "rules", `No rules matched — proceeding to ML model`);
 
       if (routingMode === "duckdb") {
