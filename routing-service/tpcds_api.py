@@ -156,19 +156,30 @@ def _require_warehouse_id() -> str:
     return _m._warehouse_id
 
 
-def _execute_sql(wc, wh_id: str, sql: str) -> None:
+def _execute_sql(wc, wh_id: str, sql: str, poll_interval: float = 5.0) -> None:
     """Execute a SQL statement synchronously via Databricks Statement API.
+
+    Uses the maximum wait_timeout (50s). If the statement is still running
+    after the initial wait, polls until completion.
 
     Raises HTTPException on failure.
     """
+    import time
     from databricks.sdk.service.sql import StatementState
 
     response = wc.statement_execution.execute_statement(
         statement=sql,
         warehouse_id=wh_id,
-        wait_timeout="120s",
+        wait_timeout="50s",
     )
     state = response.status.state if response.status else None
+
+    # Poll if still running after initial wait
+    while state in (StatementState.PENDING, StatementState.RUNNING):
+        time.sleep(poll_interval)
+        response = wc.statement_execution.get_statement(response.statement_id)
+        state = response.status.state if response.status else None
+
     if state == StatementState.FAILED:
         error_msg = "Unknown error"
         if response.status.error:

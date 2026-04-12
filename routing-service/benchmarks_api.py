@@ -120,8 +120,18 @@ def _execute_query_on_databricks(
         response = workspace_client.statement_execution.execute_statement(
             statement=sql,
             warehouse_id=warehouse_id,
-            wait_timeout="120s",
+            wait_timeout="50s",
         )
+
+        state = response.status.state if response.status else None
+        # Poll if still running after initial wait
+        while state in (StatementState.PENDING, StatementState.RUNNING):
+            time.sleep(5)
+            response = workspace_client.statement_execution.get_statement(
+                response.statement_id
+            )
+            state = response.status.state if response.status else None
+
         wall_ms = (time.perf_counter() - t0) * 1000
 
         state = response.status.state if response.status else None

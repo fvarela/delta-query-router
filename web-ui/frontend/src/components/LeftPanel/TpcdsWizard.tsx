@@ -392,7 +392,7 @@ export const TpcdsSetupDialog: React.FC<TpcdsSetupDialogProps> = ({ open, onClos
                       {exists ? (
                         <CheckCircle2 size={14} className="text-status-success shrink-0" />
                       ) : (
-                        <div className="w-3.5 h-3.5 rounded-full border-2 border-muted-foreground/40 shrink-0" />
+                        <HardDrive size={14} className="text-muted-foreground/40 shrink-0" />
                       )}
                       <span className="font-semibold text-foreground">{meta.label}</span>
                       <span className="text-[11px] text-muted-foreground ml-auto">{meta.size}</span>
