@@ -613,6 +613,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [mock]);
 
+  // Auto-refresh warehouse states every 30s when a workspace is connected
+  useEffect(() => {
+    if (mock || !connectedWorkspace) return;
+    const interval = setInterval(() => { reloadDiscoveredWarehouses(); }, 30_000);
+    return () => clearInterval(interval);
+  }, [mock, connectedWorkspace, reloadDiscoveredWarehouses]);
+
   // Load a profile — apply its config to all working state
   const loadProfile = useCallback((id: number) => {
     const profile = routingProfiles.find(p => p.id === id);

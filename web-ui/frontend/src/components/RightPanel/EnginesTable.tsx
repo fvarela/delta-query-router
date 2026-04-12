@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import { useApp } from "@/contexts/AppContext";
-import { Server, AlertTriangle, Brain, ChevronDown, Cloud, HardDrive, Unlink, CheckCircle2, FlaskConical, Settings2 } from "lucide-react";
+import { Server, AlertTriangle, Brain, ChevronDown, Cloud, HardDrive, Unlink, CheckCircle2, FlaskConical, Settings2, RefreshCw } from "lucide-react";
 import type { EngineCatalogEntry, Model, DiscoveredWarehouse, WarehouseMapping } from "@/types";
 import { ModelsDialog } from "./ModelsDialog";
 
@@ -13,7 +13,7 @@ export const EnginesTable: React.FC = () => {
     enabledEngineIds, toggleEngineEnabled, setAllEnginesEnabled,
     benchmarkEngineIds, toggleBenchmarkEngine,
     profileWorkspaceBinding,
-    discoveredWarehouses,
+    discoveredWarehouses, reloadDiscoveredWarehouses,
     warehouseMappings, setWarehouseMapping,
     unlinkProfileWorkspace,
   } = useApp();
@@ -22,6 +22,14 @@ export const EnginesTable: React.FC = () => {
   // DuckDB: only show running engines. Databricks: show all (workspace status shown inline).
   const duckdbEngines = engines.filter(e => e.engine_type === "duckdb" && e.runtime_state === "running");
   const databricksEngines = engines.filter(e => e.engine_type === "databricks_sql");
+
+  // Refresh warehouse states
+  const [refreshing, setRefreshing] = useState(false);
+  const handleRefreshWarehouses = async () => {
+    setRefreshing(true);
+    await reloadDiscoveredWarehouses();
+    setTimeout(() => setRefreshing(false), 600); // keep spin animation visible briefly
+  };
 
   // Active model for smart routing mode
   const activeModel = models.find(m => m.id === activeModelId);
@@ -109,6 +117,8 @@ export const EnginesTable: React.FC = () => {
           discoveredWarehouses={discoveredWarehouses}
           warehouseMappings={warehouseMappings}
           setWarehouseMapping={setWarehouseMapping}
+          onRefreshWarehouses={handleRefreshWarehouses}
+          refreshing={refreshing}
         />
       ) : routingMode === "smart" ? (
         <SmartRoutingView
@@ -124,6 +134,8 @@ export const EnginesTable: React.FC = () => {
           discoveredWarehouses={discoveredWarehouses}
           warehouseMappings={warehouseMappings}
           setWarehouseMapping={setWarehouseMapping}
+          onRefreshWarehouses={handleRefreshWarehouses}
+          refreshing={refreshing}
         />
       ) : (
         <BenchmarkingView
@@ -136,11 +148,31 @@ export const EnginesTable: React.FC = () => {
           discoveredWarehouses={discoveredWarehouses}
           warehouseMappings={warehouseMappings}
           setWarehouseMapping={setWarehouseMapping}
+          onRefreshWarehouses={handleRefreshWarehouses}
+          refreshing={refreshing}
         />
       )}
     </div>
   );
 };
+
+// ---- Databricks Section Header with refresh button ----
+const DatabricksHeader: React.FC<{
+  onRefresh: () => Promise<void>;
+  refreshing: boolean;
+}> = ({ onRefresh, refreshing }) => (
+  <div className="flex items-center gap-1.5 mb-1.5">
+    <Cloud size={13} strokeWidth={1.5} className="text-blue-600" />
+    <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Databricks SQL</span>
+    <button
+      onClick={onRefresh}
+      className="ml-auto p-0.5 text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+      title="Refresh warehouse states"
+    >
+      <RefreshCw size={11} strokeWidth={1.5} className={refreshing ? "animate-spin" : ""} />
+    </button>
+  </div>
+);
 
 // ---- Workspace Dependency Banner ----
 // Shown when a profile has a workspace dependency (via warehouse mappings)
@@ -236,7 +268,9 @@ const SingleEngineView: React.FC<{
   discoveredWarehouses: DiscoveredWarehouse[];
   warehouseMappings: WarehouseMapping[];
   setWarehouseMapping: (engineId: string, warehouseId: string | null, warehouseName: string | null) => void;
-}> = ({ duckdbEngines, databricksEngines, singleEngineId, onSelect, hasConnectedWorkspace, workspaceSatisfied, discoveredWarehouses, warehouseMappings, setWarehouseMapping }) => {
+  onRefreshWarehouses: () => Promise<void>;
+  refreshing: boolean;
+}> = ({ duckdbEngines, databricksEngines, singleEngineId, onSelect, hasConnectedWorkspace, workspaceSatisfied, discoveredWarehouses, warehouseMappings, setWarehouseMapping, onRefreshWarehouses, refreshing }) => {
   if (duckdbEngines.length === 0 && databricksEngines.length === 0) {
     return (
       <div className="px-3 py-4 text-[12px] text-muted-foreground">
@@ -285,10 +319,7 @@ const SingleEngineView: React.FC<{
       {/* Databricks engines */}
       {databricksEngines.length > 0 && (
         <div>
-          <div className="flex items-center gap-1.5 mb-1.5">
-            <Cloud size={13} strokeWidth={1.5} className="text-blue-600" />
-            <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Databricks SQL</span>
-          </div>
+          <DatabricksHeader onRefresh={onRefreshWarehouses} refreshing={refreshing} />
           <div className="space-y-1">
             {databricksEngines.map(e => {
               const matchingWarehouses = discoveredWarehouses.filter(w => w.matchingEngineId === e.id);
@@ -502,7 +533,9 @@ const SmartRoutingView: React.FC<{
   discoveredWarehouses: DiscoveredWarehouse[];
   warehouseMappings: WarehouseMapping[];
   setWarehouseMapping: (engineId: string, warehouseId: string | null, warehouseName: string | null) => void;
-}> = ({ models, activeModelId, onModelChange, modelEngines, enabledEngineIds, toggleEngineEnabled, engines, hasConnectedWorkspace, workspaceSatisfied, discoveredWarehouses, warehouseMappings, setWarehouseMapping }) => {
+  onRefreshWarehouses: () => Promise<void>;
+  refreshing: boolean;
+}> = ({ models, activeModelId, onModelChange, modelEngines, enabledEngineIds, toggleEngineEnabled, engines, hasConnectedWorkspace, workspaceSatisfied, discoveredWarehouses, warehouseMappings, setWarehouseMapping, onRefreshWarehouses, refreshing }) => {
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
   const [modelsDialogOpen, setModelsDialogOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -655,6 +688,13 @@ const SmartRoutingView: React.FC<{
                 <span className="text-[11px] text-muted-foreground">
                   ({databricksModelEngines.filter(e => enabledEngineIds.has(e.id)).length}/{databricksModelEngines.length})
                 </span>
+                <button
+                  onClick={onRefreshWarehouses}
+                  className="ml-auto p-0.5 text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+                  title="Refresh warehouse states"
+                >
+                  <RefreshCw size={11} strokeWidth={1.5} className={refreshing ? "animate-spin" : ""} />
+                </button>
               </div>
               <div className="space-y-1">
                 {databricksModelEngines.map(e => {
@@ -716,7 +756,9 @@ const BenchmarkingView: React.FC<{
   discoveredWarehouses: DiscoveredWarehouse[];
   warehouseMappings: WarehouseMapping[];
   setWarehouseMapping: (engineId: string, warehouseId: string | null, warehouseName: string | null) => void;
-}> = ({ duckdbEngines, databricksEngines, benchmarkEngineIds, toggleBenchmarkEngine, hasConnectedWorkspace, workspaceSatisfied, discoveredWarehouses, warehouseMappings, setWarehouseMapping }) => {
+  onRefreshWarehouses: () => Promise<void>;
+  refreshing: boolean;
+}> = ({ duckdbEngines, databricksEngines, benchmarkEngineIds, toggleBenchmarkEngine, hasConnectedWorkspace, workspaceSatisfied, discoveredWarehouses, warehouseMappings, setWarehouseMapping, onRefreshWarehouses, refreshing }) => {
   const allEngines = [...duckdbEngines, ...databricksEngines];
   const selectedCount = benchmarkEngineIds.size;
 
@@ -792,6 +834,13 @@ const BenchmarkingView: React.FC<{
             <span className="text-[11px] text-muted-foreground">
               ({databricksEngines.filter(e => benchmarkEngineIds.has(e.id)).length}/{databricksEngines.length})
             </span>
+            <button
+              onClick={onRefreshWarehouses}
+              className="ml-auto p-0.5 text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+              title="Refresh warehouse states"
+            >
+              <RefreshCw size={11} strokeWidth={1.5} className={refreshing ? "animate-spin" : ""} />
+            </button>
           </div>
           <div className="space-y-1">
             {databricksEngines.map(e => {
