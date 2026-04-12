@@ -251,7 +251,7 @@ const SingleEngineView: React.FC<{
       {duckdbEngines.length > 0 && (
         <div>
           <div className="flex items-center gap-1.5 mb-1.5">
-            <HardDrive size={11} className="text-emerald-600" />
+            <HardDrive size={13} strokeWidth={1.5} className="text-emerald-600" />
             <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">DuckDB</span>
           </div>
           <div className="space-y-0.5">
@@ -286,7 +286,7 @@ const SingleEngineView: React.FC<{
       {databricksEngines.length > 0 && (
         <div>
           <div className="flex items-center gap-1.5 mb-1.5">
-            <Cloud size={11} className="text-blue-600" />
+            <Cloud size={13} strokeWidth={1.5} className="text-blue-600" />
             <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Databricks SQL</span>
           </div>
           <div className="space-y-1">
@@ -608,7 +608,7 @@ const SmartRoutingView: React.FC<{
           {duckdbModelEngines.length > 0 && (
             <div>
               <div className="flex items-center gap-1.5 mb-1">
-                <HardDrive size={11} className="text-emerald-600" />
+                <HardDrive size={13} strokeWidth={1.5} className="text-emerald-600" />
                 <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">DuckDB</span>
                 <span className="text-[11px] text-muted-foreground">
                   ({duckdbModelEngines.filter(e => enabledEngineIds.has(e.id)).length}/{duckdbModelEngines.length})
@@ -650,7 +650,7 @@ const SmartRoutingView: React.FC<{
           {databricksModelEngines.length > 0 && (
             <div>
               <div className="flex items-center gap-1.5 mb-1">
-                <Cloud size={11} className="text-blue-600" />
+                <Cloud size={13} strokeWidth={1.5} className="text-blue-600" />
                 <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Databricks SQL</span>
                 <span className="text-[11px] text-muted-foreground">
                   ({databricksModelEngines.filter(e => enabledEngineIds.has(e.id)).length}/{databricksModelEngines.length})
@@ -747,7 +747,7 @@ const BenchmarkingView: React.FC<{
       {duckdbEngines.length > 0 && (
         <div>
           <div className="flex items-center gap-1.5 mb-1.5">
-            <HardDrive size={11} className="text-emerald-600" />
+            <HardDrive size={13} strokeWidth={1.5} className="text-emerald-600" />
             <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">DuckDB</span>
             <span className="text-[11px] text-muted-foreground">
               ({duckdbEngines.filter(e => benchmarkEngineIds.has(e.id)).length}/{duckdbEngines.length})
@@ -787,7 +787,7 @@ const BenchmarkingView: React.FC<{
       {databricksEngines.length > 0 && (
         <div>
           <div className="flex items-center gap-1.5 mb-1.5">
-            <Cloud size={11} className="text-blue-600" />
+            <Cloud size={13} strokeWidth={1.5} className="text-blue-600" />
             <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Databricks SQL</span>
             <span className="text-[11px] text-muted-foreground">
               ({databricksEngines.filter(e => benchmarkEngineIds.has(e.id)).length}/{databricksEngines.length})

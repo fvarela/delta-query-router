@@ -232,7 +232,7 @@ export const CenterPanel: React.FC = () => {
           <table className="w-full text-[12px]">
             <thead className="sticky top-0 z-10">
               <tr className="bg-muted">
-                <th className="text-left px-2 py-1.5 border-b border-border font-medium text-muted-foreground">Time</th>
+                <th className="text-left px-2 py-1.5 border-b border-border font-medium text-muted-foreground">Date/Time</th>
                 <th className="text-left px-2 py-1.5 border-b border-border font-medium text-muted-foreground">Query</th>
                 <th className="text-left px-2 py-1.5 border-b border-border font-medium text-muted-foreground">Engine</th>
                 <th className="text-center px-2 py-1.5 border-b border-border font-medium text-muted-foreground">Status</th>
@@ -247,7 +247,7 @@ export const CenterPanel: React.FC = () => {
                   className={`${i % 2 ? "bg-card" : ""} ${l.status !== "running" ? "cursor-pointer hover:bg-primary/5" : ""}`}
                 >
                   <td className="px-2 py-1.5 border-b border-border whitespace-nowrap text-muted-foreground">
-                    {l.timestamp.slice(11, 19) || l.timestamp}
+                    {new Date(l.timestamp).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                   </td>
                   <td className="px-2 py-1.5 border-b border-border max-w-[200px] truncate font-mono text-foreground">
                     {l.query_text.slice(0, 60)}

@@ -72,7 +72,7 @@ export const RightPanel: React.FC = () => {
         {/* Log Retention Settings (Phase 17) */}
         <div className="px-3 py-2.5 border-t border-panel-border">
           <div className="flex items-center gap-1.5 mb-2">
-            <Database size={11} className="text-muted-foreground" />
+            <Database size={13} strokeWidth={1.5} className="text-muted-foreground" />
             <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Log Retention</span>
           </div>
           <div className="flex items-center gap-3">
