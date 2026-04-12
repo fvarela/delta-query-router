@@ -565,6 +565,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
       return [...prev, newMapping];
     });
+    // Sync to backend so _warehouse_id is set for query execution
+    if (warehouseId !== null) {
+      selectWarehouse(warehouseId);
+    }
     // Round 17: Implicitly bind workspace when a warehouse is mapped
     // If user maps a Databricks engine to a warehouse, the profile becomes dependent on the current workspace
     if (warehouseId !== null && connectedWorkspace) {
@@ -574,7 +578,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         workspaceUrl: connectedWorkspace.url,
       });
     }
-  }, [connectedWorkspace]);
+  }, [connectedWorkspace, selectWarehouse]);
 
   // Round 17: Unlink profile from workspace — clear binding AND all warehouse mappings
   const unlinkProfileWorkspace = useCallback(() => {
@@ -627,8 +631,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }));
     // Restore workspace binding and warehouse mappings (Round 16)
     setProfileWorkspaceBinding(profile.config.workspaceBinding ?? null);
-    setWarehouseMappings(toMappingsArray(profile.config.warehouseMappings));
-  }, [routingProfiles]);
+    const mappings = toMappingsArray(profile.config.warehouseMappings);
+    setWarehouseMappings(mappings);
+    // Sync warehouse to backend so _warehouse_id is set for query execution
+    const firstMapped = mappings.find(m => m.warehouseId);
+    if (firstMapped?.warehouseId) {
+      selectWarehouse(firstMapped.warehouseId);
+    }
+  }, [routingProfiles, selectWarehouse]);
 
   // Save current config to the active profile (update in place)
   const saveProfile = useCallback(async () => {
@@ -914,6 +924,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         // 4. Apply profile config to working state
         if (profileToLoad) {
           applyProfileConfig(profileToLoad);
+          // Sync any existing warehouse mapping to backend so _warehouse_id is set
+          const mappings = toMappingsArray(profileToLoad.config.warehouseMappings);
+          const firstMapped = mappings.find(m => m.warehouseId);
+          if (firstMapped?.warehouseId) {
+            selectWarehouse(firstMapped.warehouseId);
+          }
         }
       } catch {
         // Backend unreachable — defaults remain (single mode, empty state)
