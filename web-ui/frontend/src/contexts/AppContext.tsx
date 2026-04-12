@@ -4,6 +4,10 @@ import { api } from "@/lib/api";
 import { isMockMode } from "@/lib/mockMode";
 import { MOCK_ENGINES, MOCK_MODELS, MOCK_BENCHMARK_DEFINITIONS, MOCK_ROUTING_PROFILES, MOCK_DISCOVERED_WAREHOUSES, MOCK_WORKSPACES } from "@/mocks/engineSetupData";
 
+/** Safely extract warehouseMappings from profile config (may be {} instead of []). */
+const toMappingsArray = (v: unknown): WarehouseMapping[] =>
+  Array.isArray(v) ? v : [];
+
 // ---- App Context ----
 interface AppContextType {
   // Editor
@@ -520,7 +524,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 fit_weight: 1 - profile.config.routingPriority,
               }));
               setProfileWorkspaceBinding(profile.config.workspaceBinding ?? null);
-              setWarehouseMappings(profile.config.warehouseMappings ?? []);
+              setWarehouseMappings(toMappingsArray(profile.config.warehouseMappings));
             }
           }, 0);
         }
@@ -545,7 +549,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [warehouseMappings, setWarehouseMappings] = useState<WarehouseMapping[]>(() => {
     if (mock) {
       const defaultProfile = MOCK_ROUTING_PROFILES.find(p => p.is_default);
-      return defaultProfile?.config.warehouseMappings ?? [];
+      return toMappingsArray(defaultProfile?.config.warehouseMappings);
     }
     return [];
   });
@@ -623,7 +627,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }));
     // Restore workspace binding and warehouse mappings (Round 16)
     setProfileWorkspaceBinding(profile.config.workspaceBinding ?? null);
-    setWarehouseMappings(profile.config.warehouseMappings ?? []);
+    setWarehouseMappings(toMappingsArray(profile.config.warehouseMappings));
   }, [routingProfiles]);
 
   // Save current config to the active profile (update in place)
@@ -772,7 +776,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (currentWs && savedWs && currentWs.workspaceId !== savedWs.workspaceId) return true;
     // Check warehouse mappings (Round 16)
     const currentMappings = warehouseMappings.filter(m => m.warehouseId !== null);
-    const savedMappings = (savedRoutingConfig.warehouseMappings ?? []).filter(m => m.warehouseId !== null);
+    const savedMappings = toMappingsArray(savedRoutingConfig.warehouseMappings).filter(m => m.warehouseId !== null);
     if (currentMappings.length !== savedMappings.length) return true;
     for (const cm of currentMappings) {
       const sm = savedMappings.find(m => m.engineId === cm.engineId);
@@ -803,7 +807,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setActiveModelId(savedRoutingConfig.activeModelId);
     // Restore workspace binding and warehouse mappings (Round 16)
     setProfileWorkspaceBinding(savedRoutingConfig.workspaceBinding ?? null);
-    setWarehouseMappings(savedRoutingConfig.warehouseMappings ?? []);
+    setWarehouseMappings(toMappingsArray(savedRoutingConfig.warehouseMappings));
   }, [savedRoutingConfig]);
 
   // Benchmark definitions (Phase 15 — Engine Setup view)
@@ -876,7 +880,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       fit_weight: 1 - profile.config.routingPriority,
     }));
     setProfileWorkspaceBinding(profile.config.workspaceBinding ?? null);
-    setWarehouseMappings(profile.config.warehouseMappings ?? []);
+    setWarehouseMappings(toMappingsArray(profile.config.warehouseMappings));
   }, []);
 
   // Initial data load

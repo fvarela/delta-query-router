@@ -229,7 +229,7 @@ CREATE TABLE IF NOT EXISTS routing_profiles (
 -- Seed default routing profile
 INSERT INTO routing_profiles (name, is_default, config) VALUES (
     'Default', true,
-    '{"routingMode": "single", "singleEngineId": null, "activeModelId": null, "enabledEngineIds": [], "routingPriority": 0.5, "workspaceBinding": null, "warehouseMappings": {}}'
+    '{"routingMode": "single", "singleEngineId": null, "activeModelId": null, "enabledEngineIds": [], "routingPriority": 0.5, "workspaceBinding": null, "warehouseMappings": []}'
 ) ON CONFLICT DO NOTHING;
 
 -- =============================================================================
