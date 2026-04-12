@@ -13,7 +13,7 @@ import { ArrowLeft, Plus, Trash2, X, Database, AlertTriangle, Lock, BarChart3, C
 export const CollectionsPanel: React.FC = () => {
   const {
     setEditorSql, setCollectionContext, refreshCollections, triggerRefreshCollections, activeCollectionId, setActiveCollectionId,
-    engines, routingMode, benchmarkEngineIds, benchmarkDefinitions,
+    engines, routingMode, benchmarkEngineIds, benchmarkDefinitions, connectedWorkspace,
   } = useApp();
   const [collections, setCollections] = useState<CollectionWithQueries[]>([]);
   const [loading, setLoading] = useState(true);
@@ -572,8 +572,32 @@ export const CollectionsPanel: React.FC = () => {
         )}
 
         {tpcdsCollections.length === 0 && userCollections.length === 0 && (
-          <div className="px-3 py-6 text-center text-muted-foreground text-[12px]">
-            No collections yet. Create one or configure TPC-DS datasets.
+          <div className="px-3 py-6 text-center text-[12px] space-y-2">
+            {!connectedWorkspace ? (
+              <>
+                <div className="text-muted-foreground font-medium">No collections yet</div>
+                <div className="text-muted-foreground/70 leading-relaxed">
+                  Connect a Databricks workspace to configure TPC-DS datasets and run benchmarks. You can also create custom query collections.
+                </div>
+              </>
+            ) : !tpcdsConfigured ? (
+              <>
+                <div className="text-muted-foreground font-medium">No collections yet</div>
+                <div className="text-muted-foreground/70 leading-relaxed">
+                  Set up TPC-DS datasets to get pre-built benchmark collections with 99 queries, or create your own collection.
+                </div>
+                <button
+                  onClick={() => setShowTpcdsSetup(true)}
+                  className="mt-1 inline-flex items-center gap-1 px-3 py-1.5 text-[11px] font-medium bg-amber-50 text-amber-700 border border-amber-200 rounded hover:bg-amber-100 transition-colors"
+                >
+                  <Settings2 size={11} /> Configure TPC-DS
+                </button>
+              </>
+            ) : (
+              <div className="text-muted-foreground">
+                No collections yet. Create one to get started.
+              </div>
+            )}
           </div>
         )}
       </div>
