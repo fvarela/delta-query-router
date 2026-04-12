@@ -924,6 +924,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     reloadWorkspaces().then(() => {
       // Load warehouses after workspaces — needs connected workspace
       reloadWarehouses();
+      reloadDiscoveredWarehouses();
     });
     reloadModels();
     reloadBenchmarkDefinitions();
