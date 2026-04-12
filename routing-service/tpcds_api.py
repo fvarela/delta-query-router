@@ -525,14 +525,22 @@ async def create_tpcds(
 
     # Check for duplicate catalog name
     existing = db.fetch_one(
-        "SELECT id FROM tpcds_catalogs WHERE catalog_name = %s",
+        "SELECT id, status FROM tpcds_catalogs WHERE catalog_name = %s",
         (body.catalog_name,),
     )
     if existing:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Catalog '{body.catalog_name}' already exists in the system",
+        if existing["status"] == "ready":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Catalog '{body.catalog_name}' already exists and is ready",
+            )
+        # Previous attempt failed or stale — remove old record and retry
+        logger.info(
+            "Removing stale tpcds_catalogs record id=%d (status=%s) for retry",
+            existing["id"],
+            existing["status"],
         )
+        db.execute("DELETE FROM tpcds_catalogs WHERE id = %s", (existing["id"],))
 
     # Insert tracking record
     row = db.fetch_one(

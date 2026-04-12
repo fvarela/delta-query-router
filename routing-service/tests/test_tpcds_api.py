@@ -283,8 +283,9 @@ class TestCreateTpcds:
     @patch("main._warehouse_id", "wh-123")
     @patch("main._workspace_client", MagicMock())
     @patch("tpcds_api.db")
-    def test_duplicate_catalog_rejected(self, mock_db):
-        mock_db.fetch_one.return_value = {"id": 1}  # existing
+    def test_duplicate_ready_catalog_rejected(self, mock_db):
+        """A catalog with status='ready' blocks re-creation (409)."""
+        mock_db.fetch_one.return_value = {"id": 1, "status": "ready"}
         resp = client.post(
             "/api/tpcds/create",
             json={
@@ -296,6 +297,60 @@ class TestCreateTpcds:
         )
         assert resp.status_code == 409
         assert "already exists" in resp.json()["detail"]
+
+    @patch("main._warehouse_id", "wh-123")
+    @patch("main._workspace_client")
+    @patch("tpcds_api.db")
+    @patch("tpcds_api.check_samples_available", return_value=True)
+    @patch("tpcds_api.threading.Thread")
+    def test_retry_after_failed_deletes_stale_record(
+        self, mock_thread, mock_samples, mock_db, mock_wc
+    ):
+        """A catalog with status='failed' is deleted to allow retry."""
+        mock_db.fetch_one.side_effect = [
+            {"id": 99, "status": "failed"},  # duplicate check — stale
+            _tpcds_row(id=100, status="creating"),  # insert
+        ]
+        resp = client.post(
+            "/api/tpcds/create",
+            json={
+                "catalog_name": "retry_cat",
+                "schema_name": "sf1",
+                "scale_factor": 1,
+            },
+            headers=_admin_header(),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["id"] == 100
+        # Verify the stale record was deleted
+        delete_calls = [c for c in mock_db.execute.call_args_list if "DELETE" in str(c)]
+        assert len(delete_calls) == 1
+        assert delete_calls[0][0][1] == (99,)
+
+    @patch("main._warehouse_id", "wh-123")
+    @patch("main._workspace_client")
+    @patch("tpcds_api.db")
+    @patch("tpcds_api.check_samples_available", return_value=True)
+    @patch("tpcds_api.threading.Thread")
+    def test_retry_after_creating_deletes_stale_record(
+        self, mock_thread, mock_samples, mock_db, mock_wc
+    ):
+        """A catalog with status='creating' (orphaned) is deleted to allow retry."""
+        mock_db.fetch_one.side_effect = [
+            {"id": 50, "status": "creating"},  # stale 'creating'
+            _tpcds_row(id=51, status="creating"),  # new insert
+        ]
+        resp = client.post(
+            "/api/tpcds/create",
+            json={
+                "catalog_name": "orphan_cat",
+                "schema_name": "sf1",
+                "scale_factor": 1,
+            },
+            headers=_admin_header(),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["id"] == 51
 
     def test_403_for_non_admin(self):
         resp = client.post(
