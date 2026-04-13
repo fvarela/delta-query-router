@@ -3,7 +3,7 @@ import { useApp } from "@/contexts/AppContext";
 import { CurrentSettings } from "./CurrentSettings";
 import { ProfileSelector } from "./ProfileSelector";
 import { EnginesTable } from "./EnginesTable";
-import { Save, SaveAll, Undo2, Database } from "lucide-react";
+import { Save, SaveAll, Undo2, Database, Lock } from "lucide-react";
 
 export const RightPanel: React.FC = () => {
   const {
@@ -12,6 +12,7 @@ export const RightPanel: React.FC = () => {
     logSettings, updateLogSettings,
     hasUnsavedChanges, saveRoutingConfig, rollbackRoutingConfig,
     activeProfileId, saveProfileAs,
+    benchmarkRunning,
   } = useApp();
 
   const isBenchmark = routingMode === "benchmark";
@@ -32,10 +33,20 @@ export const RightPanel: React.FC = () => {
       {/* Current Settings — always visible, read-only */}
       <CurrentSettings />
 
+      {/* Lock banner when benchmark is running */}
+      {benchmarkRunning && (
+        <div className="px-3 py-2 bg-amber-50 border-b-2 border-amber-200 flex items-center gap-2">
+          <Lock size={12} className="text-amber-600 shrink-0" />
+          <span className="text-[11px] text-amber-700 font-medium">
+            Settings locked while benchmark is running
+          </span>
+        </div>
+      )}
+
       {/* Profile Selector — between CurrentSettings and routing mode (hidden in benchmark mode) */}
       {!isBenchmark && <ProfileSelector />}
 
-      <div className="flex-1 overflow-y-auto">
+      <div className={`flex-1 overflow-y-auto ${benchmarkRunning ? "pointer-events-none opacity-60" : ""}`}>
         <EnginesTable />
 
         {/* Routing Priority — hidden in benchmark and single engine modes (UX #1) */}

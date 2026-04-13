@@ -32,6 +32,10 @@ router = APIRouter(prefix="/api/benchmarks", tags=["benchmarks"])
 # Only one benchmark batch can run at a time (sequential engine execution).
 _benchmark_lock = threading.Lock()
 
+# Module-level set tracking run IDs that have been cancelled.
+# Thread-safe via Python's GIL for set.add/discard and `in` checks.
+_cancelled_run_ids: set[int] = set()
+
 
 # --- Pydantic models ---
 
@@ -268,6 +272,18 @@ def _run_benchmark_inner(
             )
             continue  # Skip to next engine instead of aborting all
 
+        # -- Check cancellation before running phase --
+        if run_id in _cancelled_run_ids:
+            _cancelled_run_ids.discard(run_id)
+            db.execute(
+                "UPDATE benchmark_runs SET status = 'cancelled', error_message = 'Cancelled before execution', updated_at = NOW() WHERE id = %s",
+                (run_id,),
+            )
+            logger.info(
+                "Benchmark run %d for engine %s cancelled before execution", run_id, eid
+            )
+            continue
+
         # -- Running phase --
         db.execute(
             "UPDATE benchmark_runs SET status = 'running', updated_at = NOW() WHERE id = %s",
@@ -275,7 +291,14 @@ def _run_benchmark_inner(
         )
 
         error_count = 0
+        cancelled = False
         for query in queries:
+            # Check cancellation between queries
+            if run_id in _cancelled_run_ids:
+                _cancelled_run_ids.discard(run_id)
+                cancelled = True
+                break
+
             try:
                 if eng["engine_type"] == "duckdb":
                     # Extract table names so DuckDB worker can resolve via credential vending
@@ -320,23 +343,42 @@ def _run_benchmark_inner(
                 ),
             )
 
-        # -- Complete --
-        status = "complete" if error_count < total_queries else "failed"
-        error_msg = (
-            f"{error_count}/{total_queries} queries failed" if error_count > 0 else None
-        )
-        db.execute(
-            "UPDATE benchmark_runs SET status = %s, error_message = %s, updated_at = NOW() WHERE id = %s",
-            (status, error_msg, run_id),
-        )
-        logger.info(
-            "Benchmark run %d for engine %s: %s (%d/%d queries ok)",
-            run_id,
-            eid,
-            status,
-            total_queries - error_count,
-            total_queries,
-        )
+        # -- Complete / Cancelled --
+        if cancelled:
+            completed = db.fetch_one(
+                "SELECT COUNT(*) AS cnt FROM benchmark_results WHERE run_id = %s",
+                (run_id,),
+            )["cnt"]
+            db.execute(
+                "UPDATE benchmark_runs SET status = 'cancelled', error_message = %s, updated_at = NOW() WHERE id = %s",
+                (f"Cancelled after {completed}/{total_queries} queries", run_id),
+            )
+            logger.info(
+                "Benchmark run %d for engine %s cancelled at %d/%d queries",
+                run_id,
+                eid,
+                completed,
+                total_queries,
+            )
+        else:
+            status = "complete" if error_count < total_queries else "failed"
+            error_msg = (
+                f"{error_count}/{total_queries} queries failed"
+                if error_count > 0
+                else None
+            )
+            db.execute(
+                "UPDATE benchmark_runs SET status = %s, error_message = %s, updated_at = NOW() WHERE id = %s",
+                (status, error_msg, run_id),
+            )
+            logger.info(
+                "Benchmark run %d for engine %s: %s (%d/%d queries ok)",
+                run_id,
+                eid,
+                status,
+                total_queries - error_count,
+                total_queries,
+            )
 
 
 # --- Endpoints ---
@@ -503,6 +545,75 @@ async def get_run_progress(run_id: int):
         "elapsed_ms": round(elapsed_ms),
         "error_message": run["error_message"],
     }
+
+
+@router.post("/runs/{run_id}/cancel")
+async def cancel_run(run_id: int):
+    """Cancel a running benchmark run.
+
+    Adds the run_id to the cancellation set, which the background thread
+    checks between queries. Already-completed results are preserved.
+    """
+    run = db.fetch_one(
+        "SELECT id, status FROM benchmark_runs WHERE id = %s",
+        (run_id,),
+    )
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    # Only cancel runs that are still active
+    if run["status"] not in ("pending", "warming_up", "running"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot cancel run with status '{run['status']}'",
+        )
+
+    _cancelled_run_ids.add(run_id)
+    logger.info("Cancel requested for benchmark run %d", run_id)
+    return {"run_id": run_id, "status": "cancel_requested"}
+
+
+@router.get("/runs/{run_id}/results")
+async def get_run_results(run_id: int, since: int = 0):
+    """Get per-query results for a benchmark run, optionally incremental.
+
+    Query params:
+      since: only return results with id > since (for incremental polling)
+
+    Returns a list of result objects with sequence_number, execution_time_ms,
+    error_message snippet, and the result row id for use in next `since` call.
+    """
+    run = db.fetch_one(
+        "SELECT id FROM benchmark_runs WHERE id = %s",
+        (run_id,),
+    )
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    results = db.fetch_all(
+        """
+        SELECT br.id AS result_id, br.engine_id, br.query_id,
+               br.execution_time_ms, br.error_message,
+               cq.sequence_number
+        FROM benchmark_results br
+        LEFT JOIN collection_queries cq ON cq.id = br.query_id
+        WHERE br.run_id = %s AND br.id > %s
+        ORDER BY br.id ASC
+        """,
+        (run_id, since),
+    )
+
+    return [
+        {
+            "result_id": r["result_id"],
+            "engine_id": r["engine_id"],
+            "query_id": r["query_id"],
+            "sequence_number": r["sequence_number"],
+            "execution_time_ms": r["execution_time_ms"],
+            "error_message": (r["error_message"][:120] if r["error_message"] else None),
+        }
+        for r in results
+    ]
 
 
 @router.get("")

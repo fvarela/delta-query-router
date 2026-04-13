@@ -1,6 +1,6 @@
 import React from "react";
 import { useApp } from "@/contexts/AppContext";
-import { Zap, Scale, DollarSign, Brain, Radio, Bookmark, Cloud, AlertTriangle, CheckCircle2, FlaskConical } from "lucide-react";
+import { Zap, Scale, DollarSign, Brain, Radio, Bookmark, Cloud, AlertTriangle, CheckCircle2, FlaskConical, Activity } from "lucide-react";
 
 const priorityLabel = (costWeight: number): { label: string; icon: React.ReactNode } => {
   if (costWeight < 0.01) return { label: "High Performance", icon: <Zap size={12} className="text-amber-500" /> };
@@ -36,7 +36,7 @@ const WorkspaceDep: React.FC<{
 };
 
 export const CurrentSettings: React.FC = () => {
-  const { routingMode, singleEngineId, engines, enabledEngineIds, connectedWorkspace, routingSettings, activeModelId, models, activeProfileName, hasUnsavedChanges, profileWorkspaceBinding, benchmarkEngineIds } = useApp();
+  const { routingMode, singleEngineId, engines, enabledEngineIds, connectedWorkspace, routingSettings, activeModelId, models, activeProfileName, hasUnsavedChanges, profileWorkspaceBinding, benchmarkEngineIds, benchmarkRunning } = useApp();
 
   const activeModel = models.find(m => m.id === activeModelId);
   const priority = priorityLabel(routingSettings.cost_weight);
@@ -98,36 +98,48 @@ export const CurrentSettings: React.FC = () => {
         <div className="px-3 py-2.5 space-y-2">
           {/* Row 1: Benchmarking mode info */}
           <div className="flex items-start gap-2">
-            <FlaskConical size={12} className="text-amber-600 mt-[2px] shrink-0" />
+            {benchmarkRunning ? (
+              <Activity size={12} className="text-amber-600 mt-[2px] shrink-0 animate-pulse" />
+            ) : (
+              <FlaskConical size={12} className="text-amber-600 mt-[2px] shrink-0" />
+            )}
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-1.5">
-                <span className="text-[12px] font-semibold text-amber-800">Benchmarking</span>
+                <span className="text-[12px] font-semibold text-amber-800">
+                  {benchmarkRunning ? "Benchmark Running" : "Benchmarking"}
+                </span>
                 {selectedCount > 0 && (
                   <span className="text-[11px] text-amber-600">
                     ({selectedCount} engine{selectedCount !== 1 ? "s" : ""})
                   </span>
                 )}
               </div>
-              {selectedCount > 0 ? (
+              {benchmarkRunning ? (
+                <div className="text-[11px] text-amber-700/70 mt-0.5">
+                  {selectedEngines.map(e => e.display_name).join(" · ")}
+                </div>
+              ) : selectedCount > 0 ? (
                 <div className="text-[11px] text-amber-700/70 mt-0.5 truncate">
                   {selectedEngines.map(e => e.display_name).join(" · ")}
                 </div>
               ) : (
                 <div className="text-[11px] text-amber-600/60 mt-0.5 italic">
-                  No engines selected
+                  Select engines below to benchmark
                 </div>
               )}
             </div>
           </div>
 
           {/* Row 2: Status hint */}
-          <div className="pl-[19px]">
-            <span className="text-[11px] text-amber-600/80">
-              {selectedCount === 0
-                ? "Select engines below, then use Run Benchmark in the Collections panel"
-                : "Ready — select a collection and click Run Benchmark"}
-            </span>
-          </div>
+          {!benchmarkRunning && (
+            <div className="pl-[19px]">
+              <span className="text-[11px] text-amber-600/80">
+                {selectedCount === 0
+                  ? "Select engines below, then use Run Benchmark in the Collections panel"
+                  : "Ready — select a collection and click Run Benchmark"}
+              </span>
+            </div>
+          )}
         </div>
       </div>
     );

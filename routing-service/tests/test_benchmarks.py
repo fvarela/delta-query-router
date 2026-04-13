@@ -851,3 +851,267 @@ class TestGetOrCreateDefinition:
         result = benchmarks_api._get_or_create_definition(2, "duckdb-2")
         assert result["id"] == 10
         assert mock_one.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# POST /api/benchmarks/runs/{run_id}/cancel
+# ---------------------------------------------------------------------------
+
+
+class TestCancelRun:
+    """POST /api/benchmarks/runs/{run_id}/cancel — per-engine cancellation."""
+
+    @patch("benchmarks_api.db.fetch_one")
+    def test_cancel_running_run(self, mock_one):
+        """Cancelling a running run returns cancel_requested and adds to set."""
+        mock_one.return_value = {"id": 42, "status": "running"}
+        benchmarks_api._cancelled_run_ids.discard(42)  # ensure clean state
+
+        resp = client.post("/api/benchmarks/runs/42/cancel", headers=_auth_header())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["run_id"] == 42
+        assert data["status"] == "cancel_requested"
+        assert 42 in benchmarks_api._cancelled_run_ids
+
+        # Clean up
+        benchmarks_api._cancelled_run_ids.discard(42)
+
+    @patch("benchmarks_api.db.fetch_one")
+    def test_cancel_pending_run(self, mock_one):
+        """Can cancel a pending run too (not just running)."""
+        mock_one.return_value = {"id": 10, "status": "pending"}
+        benchmarks_api._cancelled_run_ids.discard(10)
+
+        resp = client.post("/api/benchmarks/runs/10/cancel", headers=_auth_header())
+        assert resp.status_code == 200
+        assert 10 in benchmarks_api._cancelled_run_ids
+        benchmarks_api._cancelled_run_ids.discard(10)
+
+    @patch("benchmarks_api.db.fetch_one")
+    def test_cancel_warming_up_run(self, mock_one):
+        """Can cancel a warming_up run."""
+        mock_one.return_value = {"id": 11, "status": "warming_up"}
+        resp = client.post("/api/benchmarks/runs/11/cancel", headers=_auth_header())
+        assert resp.status_code == 200
+        benchmarks_api._cancelled_run_ids.discard(11)
+
+    @patch("benchmarks_api.db.fetch_one")
+    def test_cancel_complete_rejected(self, mock_one):
+        """Cannot cancel an already-complete run."""
+        mock_one.return_value = {"id": 42, "status": "complete"}
+        resp = client.post("/api/benchmarks/runs/42/cancel", headers=_auth_header())
+        assert resp.status_code == 400
+        assert "Cannot cancel" in resp.json()["detail"]
+
+    @patch("benchmarks_api.db.fetch_one")
+    def test_cancel_failed_rejected(self, mock_one):
+        """Cannot cancel an already-failed run."""
+        mock_one.return_value = {"id": 42, "status": "failed"}
+        resp = client.post("/api/benchmarks/runs/42/cancel", headers=_auth_header())
+        assert resp.status_code == 400
+
+    @patch("benchmarks_api.db.fetch_one", return_value=None)
+    def test_cancel_not_found(self, mock_one):
+        resp = client.post("/api/benchmarks/runs/999/cancel", headers=_auth_header())
+        assert resp.status_code == 404
+
+    def test_cancel_requires_auth(self):
+        resp = client.post("/api/benchmarks/runs/1/cancel")
+        assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Cancellation in _run_benchmark_inner
+# ---------------------------------------------------------------------------
+
+
+class TestCancellationInRunner:
+    """_run_benchmark_inner respects _cancelled_run_ids between queries."""
+
+    @patch("benchmarks_api._warmup_duckdb_sync", return_value=10.0)
+    @patch("benchmarks_api._execute_query_on_duckdb_sync")
+    @patch("benchmarks_api.db.execute")
+    @patch("benchmarks_api.db.fetch_one")
+    def test_cancellation_stops_queries(
+        self, mock_fetch_one, mock_exec, mock_run_query, mock_warmup
+    ):
+        """Run is cancelled between queries — remaining queries skipped, status='cancelled'."""
+        # fetch_one called for the cancelled-query count
+        mock_fetch_one.return_value = {"cnt": 1}
+        call_count = 0
+
+        def side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # After first query succeeds, add run_id to cancelled set
+                benchmarks_api._cancelled_run_ids.add(42)
+            return {"execution_time_ms": 5.0, "error_message": None}
+
+        mock_run_query.side_effect = side_effect
+
+        runs = {"duckdb-1": {"definition": _definition_row(), "run": _run_row(id=42)}}
+        engines = {"duckdb-1": _engine_row()}
+        queries = [
+            _query_row(id=1, seq=1),
+            _query_row(id=2, seq=2),
+            _query_row(id=3, seq=3),
+        ]
+
+        benchmarks_api._run_benchmark_inner(
+            runs,
+            engines,
+            queries,
+            workspace_client=None,
+            warehouse_id=None,
+            databricks_host=None,
+            databricks_token=None,
+        )
+
+        # Only 1 query executed (cancelled before 2nd)
+        assert mock_run_query.call_count == 1
+        # Status should be 'cancelled'
+        exec_calls = [str(c) for c in mock_exec.call_args_list]
+        assert any("cancelled" in s.lower() for s in exec_calls)
+
+    @patch("benchmarks_api._warmup_duckdb_sync", return_value=10.0)
+    @patch("benchmarks_api._execute_query_on_duckdb_sync")
+    @patch("benchmarks_api.db.execute")
+    @patch("benchmarks_api.db.fetch_one")
+    def test_cancellation_before_execution(
+        self, mock_fetch_one, mock_exec, mock_run_query, mock_warmup
+    ):
+        """Run cancelled during warmup — skip execution entirely, status='cancelled'."""
+        runs = {"duckdb-1": {"definition": _definition_row(), "run": _run_row(id=50)}}
+        engines = {"duckdb-1": _engine_row()}
+
+        # Pre-cancel
+        benchmarks_api._cancelled_run_ids.add(50)
+
+        benchmarks_api._run_benchmark_inner(
+            runs,
+            engines,
+            [_query_row()],
+            workspace_client=None,
+            warehouse_id=None,
+            databricks_host=None,
+            databricks_token=None,
+        )
+
+        # Warmup happens (cancel check is after warmup), but since our cancel check
+        # is BEFORE running phase, no queries should execute
+        assert mock_run_query.call_count == 0
+        exec_calls = [str(c) for c in mock_exec.call_args_list]
+        assert any("cancelled" in s.lower() for s in exec_calls)
+
+        # Clean up
+        benchmarks_api._cancelled_run_ids.discard(50)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/benchmarks/runs/{run_id}/results — incremental results
+# ---------------------------------------------------------------------------
+
+
+class TestRunResults:
+    """GET /api/benchmarks/runs/{run_id}/results — per-query results feed."""
+
+    @patch("benchmarks_api.db.fetch_all")
+    @patch("benchmarks_api.db.fetch_one")
+    def test_all_results(self, mock_one, mock_all):
+        """Returns all results when since=0 (default)."""
+        mock_one.return_value = {"id": 42}
+        mock_all.return_value = [
+            {
+                "result_id": 1,
+                "engine_id": "duckdb-1",
+                "query_id": 10,
+                "sequence_number": 1,
+                "execution_time_ms": 45.0,
+                "error_message": None,
+            },
+            {
+                "result_id": 2,
+                "engine_id": "duckdb-1",
+                "query_id": 11,
+                "sequence_number": 2,
+                "execution_time_ms": 120.0,
+                "error_message": None,
+            },
+        ]
+
+        resp = client.get("/api/benchmarks/runs/42/results", headers=_auth_header())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 2
+        assert data[0]["result_id"] == 1
+        assert data[0]["sequence_number"] == 1
+        assert data[0]["execution_time_ms"] == 45.0
+
+    @patch("benchmarks_api.db.fetch_all")
+    @patch("benchmarks_api.db.fetch_one")
+    def test_incremental_since(self, mock_one, mock_all):
+        """With since=5, only returns results with id > 5."""
+        mock_one.return_value = {"id": 42}
+        mock_all.return_value = [
+            {
+                "result_id": 6,
+                "engine_id": "duckdb-1",
+                "query_id": 15,
+                "sequence_number": 6,
+                "execution_time_ms": 80.0,
+                "error_message": None,
+            },
+        ]
+
+        resp = client.get(
+            "/api/benchmarks/runs/42/results?since=5", headers=_auth_header()
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["result_id"] == 6
+
+        # Verify the SQL was called with since=5
+        sql_call = mock_all.call_args[0]
+        assert sql_call[1] == (42, 5)
+
+    @patch("benchmarks_api.db.fetch_all")
+    @patch("benchmarks_api.db.fetch_one")
+    def test_error_message_truncated(self, mock_one, mock_all):
+        """Error messages are truncated to 120 chars."""
+        mock_one.return_value = {"id": 42}
+        long_error = "X" * 200
+        mock_all.return_value = [
+            {
+                "result_id": 1,
+                "engine_id": "duckdb-1",
+                "query_id": 10,
+                "sequence_number": 1,
+                "execution_time_ms": 1.0,
+                "error_message": long_error,
+            },
+        ]
+
+        resp = client.get("/api/benchmarks/runs/42/results", headers=_auth_header())
+        data = resp.json()
+        assert len(data[0]["error_message"]) == 120
+
+    @patch("benchmarks_api.db.fetch_all", return_value=[])
+    @patch("benchmarks_api.db.fetch_one")
+    def test_empty_results(self, mock_one, mock_all):
+        """Returns empty list when no results yet."""
+        mock_one.return_value = {"id": 42}
+        resp = client.get("/api/benchmarks/runs/42/results", headers=_auth_header())
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    @patch("benchmarks_api.db.fetch_one", return_value=None)
+    def test_run_not_found(self, mock_one):
+        resp = client.get("/api/benchmarks/runs/999/results", headers=_auth_header())
+        assert resp.status_code == 404
+
+    def test_requires_auth(self):
+        resp = client.get("/api/benchmarks/runs/1/results")
+        assert resp.status_code == 401

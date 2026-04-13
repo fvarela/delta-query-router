@@ -62,6 +62,10 @@ interface AppContextType {
   toggleBenchmarkEngine: (id: string) => void;
   setBenchmarkEngines: (ids: string[]) => void;
 
+  /** Whether a benchmark is currently running (for cross-panel coordination) */
+  benchmarkRunning: boolean;
+  setBenchmarkRunning: (running: boolean) => void;
+
   // Run mode (derived from routing mode + selection — kept for backward compat)
   runMode: RunMode;
 
@@ -308,6 +312,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Benchmark engine selection — separate from enabledEngineIds (which is for Smart Routing)
   const [benchmarkEngineIds, setBenchmarkEngineIdsRaw] = useState<Set<string>>(new Set());
+
+  // Whether a benchmark is currently running (for cross-panel locking)
+  const [benchmarkRunning, setBenchmarkRunning] = useState(false);
 
   const toggleBenchmarkEngine = useCallback((id: string) => {
     setBenchmarkEngineIdsRaw(prev => {
@@ -966,6 +973,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       scaleEngine, scalingEngineIds,
       routingMode, setRoutingMode,
       benchmarkEngineIds, toggleBenchmarkEngine, setBenchmarkEngines,
+      benchmarkRunning, setBenchmarkRunning,
       runMode,
       panelMode, setPanelMode,
       activeModelId, setActiveModelId, models, reloadModels, deleteModel, activateModel, deactivateModel, createModel,

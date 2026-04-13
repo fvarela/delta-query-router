@@ -7,13 +7,14 @@ import { StatusBadge } from "@/components/shared/StatusBadge";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 import { MOCK_COLLECTIONS_WITH_QUERIES, MOCK_TPCDS_CONFIGURED, MOCK_BENCHMARK_RUN_DETAILS, getRunsForDefinition } from "@/mocks/engineSetupData";
 import { TpcdsSetupDialog } from "@/components/LeftPanel/TpcdsWizard";
-import type { Collection, CollectionWithQueries, BenchmarkSummary, BenchmarkDetail, BenchmarkRunDetail, BenchmarkRunSummary, BenchmarkRunProgress, BenchmarkStartResponse, ActiveBenchmarkRun } from "@/types";
-import { ArrowLeft, Plus, Trash2, X, Database, AlertTriangle, Lock, BarChart3, Clock, ExternalLink, Settings2, Activity } from "lucide-react";
+import type { Collection, CollectionWithQueries, BenchmarkSummary, BenchmarkDetail, BenchmarkRunDetail, BenchmarkRunSummary, BenchmarkRunProgress, BenchmarkStartResponse, ActiveBenchmarkRun, BenchmarkQueryResult, BenchmarkCancelResponse } from "@/types";
+import { ArrowLeft, Plus, Trash2, X, Database, AlertTriangle, Lock, BarChart3, Clock, ExternalLink, Settings2, Activity, Square, CheckCircle2, XCircle } from "lucide-react";
 
 export const CollectionsPanel: React.FC = () => {
   const {
     setEditorSql, setCollectionContext, refreshCollections, triggerRefreshCollections, activeCollectionId, setActiveCollectionId,
     engines, routingMode, benchmarkEngineIds, benchmarkDefinitions, reloadBenchmarkDefinitions, connectedWorkspace,
+    benchmarkRunning, setBenchmarkRunning,
   } = useApp();
   const [collections, setCollections] = useState<CollectionWithQueries[]>([]);
   const [loading, setLoading] = useState(true);
@@ -28,13 +29,19 @@ export const CollectionsPanel: React.FC = () => {
   // Benchmark state
   const [benchmarks, setBenchmarks] = useState<BenchmarkSummary[]>([]);
   const [benchmarkDetail, setBenchmarkDetail] = useState<BenchmarkDetail | null>(null);
-  const [runningBenchmark, setRunningBenchmark] = useState(false);
   const [benchmarkError, setBenchmarkError] = useState<string | null>(null);
   const [runsDialog, setRunsDialog] = useState<{ definitionId: number; engineName: string } | null>(null);
 
   // Active benchmark progress polling
   const [activeRunIds, setActiveRunIds] = useState<number[]>([]);
   const [runProgress, setRunProgress] = useState<Record<number, BenchmarkRunProgress>>({});
+
+  // Live per-query results for active benchmark (keyed by run_id → results array)
+  const [liveResults, setLiveResults] = useState<Record<number, BenchmarkQueryResult[]>>({});
+  // Track the last result_id seen per run for incremental polling
+  const [lastResultId, setLastResultId] = useState<Record<number, number>>({});
+  // Cancellation in-flight state (per run_id)
+  const [cancellingRunIds, setCancellingRunIds] = useState<Set<number>>(new Set());
 
   const mock = isMockMode();
 
@@ -195,8 +202,10 @@ export const CollectionsPanel: React.FC = () => {
       setBenchmarkError("No engines selected. Switch to Benchmarking mode and select engines in the right panel.");
       return;
     }
-    setRunningBenchmark(true);
+    setBenchmarkRunning(true);
     setBenchmarkError(null);
+    setLiveResults({});
+    setLastResultId({});
     try {
       const result = await api.post<BenchmarkStartResponse>('/api/benchmarks', { collection_id: activeCollection.id, engine_ids: engineIds });
       setActiveRunIds(result.run_ids);
@@ -208,7 +217,7 @@ export const CollectionsPanel: React.FC = () => {
       } else {
         setBenchmarkError(msg);
       }
-      setRunningBenchmark(false);
+      setBenchmarkRunning(false);
     }
   };
 
@@ -218,7 +227,7 @@ export const CollectionsPanel: React.FC = () => {
     api.get<ActiveBenchmarkRun[]>("/api/benchmarks/active").then(active => {
       if (active.length > 0) {
         setActiveRunIds(active.map(r => r.run_id));
-        setRunningBenchmark(true);
+        setBenchmarkRunning(true);
         // Seed progress from active data
         const progress: Record<number, BenchmarkRunProgress> = {};
         for (const r of active) {
@@ -242,7 +251,7 @@ export const CollectionsPanel: React.FC = () => {
     }).catch(() => {});
   }, [mock]);
 
-  // Poll progress while benchmark is running
+  // Poll progress + incremental results while benchmark is running
   useEffect(() => {
     if (activeRunIds.length === 0) return;
 
@@ -254,7 +263,7 @@ export const CollectionsPanel: React.FC = () => {
         try {
           const p = await api.get<BenchmarkRunProgress>(`/api/benchmarks/runs/${runId}/progress`);
           newProgress[runId] = p;
-          if (p.status !== "complete" && p.status !== "failed") {
+          if (p.status !== "complete" && p.status !== "failed" && p.status !== "cancelled") {
             allDone = false;
           }
         } catch {
@@ -264,6 +273,27 @@ export const CollectionsPanel: React.FC = () => {
           }
           allDone = false;
         }
+
+        // Poll incremental results for this run
+        try {
+          const since = lastResultId[runId] ?? 0;
+          const newResults = await api.get<BenchmarkQueryResult[]>(
+            `/api/benchmarks/runs/${runId}/results`,
+            { since: String(since) }
+          );
+          if (newResults.length > 0) {
+            setLiveResults(prev => ({
+              ...prev,
+              [runId]: [...(prev[runId] ?? []), ...newResults],
+            }));
+            setLastResultId(prev => ({
+              ...prev,
+              [runId]: newResults[newResults.length - 1].result_id,
+            }));
+          }
+        } catch {
+          // Results fetch failed — skip this cycle
+        }
       }
 
       setRunProgress(newProgress);
@@ -271,13 +301,14 @@ export const CollectionsPanel: React.FC = () => {
       if (allDone) {
         // Benchmark finished — stop polling, refresh data
         clearInterval(pollInterval);
-        setRunningBenchmark(false);
+        setBenchmarkRunning(false);
 
         // Check for errors
         const failedRuns = Object.values(newProgress).filter(p => p.status === "failed");
         const completedRuns = Object.values(newProgress).filter(p => p.status === "complete");
+        const cancelledRuns = Object.values(newProgress).filter(p => p.status === "cancelled");
 
-        if (failedRuns.length > 0 && completedRuns.length === 0) {
+        if (failedRuns.length > 0 && completedRuns.length === 0 && cancelledRuns.length === 0) {
           setBenchmarkError(`Benchmark failed: ${failedRuns[0].error_message || "unknown error"}`);
         } else if (failedRuns.length > 0) {
           setBenchmarkError(`${failedRuns.length}/${activeRunIds.length} engine(s) failed`);
@@ -294,12 +325,30 @@ export const CollectionsPanel: React.FC = () => {
         setTimeout(() => {
           setActiveRunIds([]);
           setRunProgress({});
+          setLiveResults({});
+          setLastResultId({});
+          setCancellingRunIds(new Set());
         }, 5000);
       }
     }, 2500);
 
     return () => clearInterval(pollInterval);
   }, [activeRunIds]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Cancel a specific engine's benchmark run
+  const handleCancelRun = async (runId: number) => {
+    setCancellingRunIds(prev => new Set(prev).add(runId));
+    try {
+      await api.post<BenchmarkCancelResponse>(`/api/benchmarks/runs/${runId}/cancel`);
+    } catch {
+      // Cancel failed — remove from cancelling set
+      setCancellingRunIds(prev => {
+        const next = new Set(prev);
+        next.delete(runId);
+        return next;
+      });
+    }
+  };
 
   const openBenchmarkDetail = async (id: number) => {
     const d = await api.get<BenchmarkDetail>(`/api/benchmarks/${id}`);
@@ -464,13 +513,15 @@ export const CollectionsPanel: React.FC = () => {
           {/* Benchmark section — only if not TPC-DS without dataset */}
           {!tpcdsNotConfigured && (
             <div className="px-3 py-2 border-t border-panel-border">
-              {/* Active benchmark progress */}
-              {runningBenchmark && activeRunIds.length > 0 && (
-                <div className="space-y-2 mb-2">
+              {/* Active benchmark dashboard */}
+              {benchmarkRunning && activeRunIds.length > 0 && (
+                <div className="space-y-3 mb-2">
                   <div className="flex items-center gap-1.5 text-[12px] font-semibold text-foreground">
                     <Activity size={12} className="text-amber-500 animate-pulse" />
                     <span>Benchmark Running</span>
                   </div>
+
+                  {/* Per-engine progress cards */}
                   {activeRunIds.map(runId => {
                     const p = runProgress[runId];
                     if (!p) return (
@@ -484,53 +535,155 @@ export const CollectionsPanel: React.FC = () => {
                     const minutes = Math.floor(elapsedSec / 60);
                     const seconds = elapsedSec % 60;
                     const timeStr = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
-                    const isDone = p.status === "complete" || p.status === "failed";
+                    const isDone = p.status === "complete" || p.status === "failed" || p.status === "cancelled";
+                    const isCancelling = cancellingRunIds.has(runId);
+                    const isActive = !isDone;
 
                     return (
-                      <div key={runId} className="space-y-1">
-                        <div className="flex items-center justify-between text-[11px]">
-                          <span className={`font-medium ${isDone ? (p.status === "complete" ? "text-status-success" : "text-status-error") : "text-foreground"}`}>
+                      <div key={runId} className={`rounded-md border p-2.5 space-y-1.5 ${
+                        p.status === "cancelled" ? "border-amber-300 bg-amber-50/50" :
+                        p.status === "failed" ? "border-red-200 bg-red-50/30" :
+                        p.status === "complete" ? "border-emerald-200 bg-emerald-50/30" :
+                        "border-border bg-card"
+                      }`}>
+                        {/* Header: engine name + status + stop button */}
+                        <div className="flex items-center justify-between">
+                          <span className={`text-[12px] font-medium ${
+                            isDone
+                              ? (p.status === "complete" ? "text-emerald-700" : p.status === "cancelled" ? "text-amber-700" : "text-red-700")
+                              : "text-foreground"
+                          }`}>
                             {p.engine_display_name}
                           </span>
-                          <span className="text-muted-foreground">
-                            {isDone ? (
-                              p.status === "complete" ? "Done" : "Failed"
-                            ) : p.status === "warming_up" ? (
-                              "Warming up..."
-                            ) : (
-                              `${p.completed_queries}/${p.total_queries} queries`
+                          <div className="flex items-center gap-1.5">
+                            <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
+                              p.status === "complete" ? "bg-emerald-100 text-emerald-700" :
+                              p.status === "failed" ? "bg-red-100 text-red-700" :
+                              p.status === "cancelled" ? "bg-amber-100 text-amber-700" :
+                              p.status === "warming_up" ? "bg-blue-100 text-blue-700" :
+                              "bg-amber-100 text-amber-700"
+                            }`}>
+                              {p.status === "warming_up" ? "Warming up" :
+                               p.status === "running" ? `${pct}%` :
+                               p.status === "complete" ? "Done" :
+                               p.status === "cancelled" ? "Stopped" :
+                               p.status === "failed" ? "Failed" :
+                               p.status}
+                            </span>
+                            {isActive && (
+                              <button
+                                onClick={() => handleCancelRun(runId)}
+                                disabled={isCancelling}
+                                className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                                  isCancelling
+                                    ? "bg-muted text-muted-foreground cursor-not-allowed"
+                                    : "bg-red-50 text-red-600 hover:bg-red-100 border border-red-200"
+                                }`}
+                                title="Stop this engine's benchmark"
+                              >
+                                <Square size={8} />
+                                {isCancelling ? "Stopping..." : "Stop"}
+                              </button>
                             )}
-                          </span>
+                          </div>
                         </div>
+
                         {/* Progress bar */}
-                        <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
+                        <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
                           <div
                             className={`h-full rounded-full transition-all duration-300 ${
-                              p.status === "failed" ? "bg-status-error" :
-                              p.status === "complete" ? "bg-status-success" :
-                              p.status === "warming_up" ? "bg-amber-400 animate-pulse" :
+                              p.status === "failed" ? "bg-red-500" :
+                              p.status === "cancelled" ? "bg-amber-400" :
+                              p.status === "complete" ? "bg-emerald-500" :
+                              p.status === "warming_up" ? "bg-blue-400 animate-pulse" :
                               "bg-amber-500"
                             }`}
                             style={{ width: p.status === "warming_up" ? "5%" : `${Math.max(pct, 2)}%` }}
                           />
                         </div>
+
+                        {/* Stats row */}
                         <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-                          <span>{pct}%{p.failed_queries > 0 ? ` (${p.failed_queries} errors)` : ""}</span>
-                          <span>{timeStr}</span>
+                          <span>{p.completed_queries}/{p.total_queries} queries</span>
+                          <div className="flex items-center gap-2">
+                            {p.failed_queries > 0 && (
+                              <span className="text-red-500">{p.failed_queries} failed</span>
+                            )}
+                            <span>{timeStr}</span>
+                          </div>
                         </div>
+
                         {p.error_message && p.status === "failed" && (
-                          <p className="text-[10px] text-status-error truncate" title={p.error_message}>
+                          <p className="text-[10px] text-red-600 truncate" title={p.error_message}>
                             {p.error_message}
                           </p>
                         )}
                       </div>
                     );
                   })}
+
+                  {/* Live results feed */}
+                  {(() => {
+                    // Merge all live results across runs, sorted newest first
+                    const allResults = Object.entries(liveResults)
+                      .flatMap(([runId, results]) => results.map(r => ({
+                        ...r,
+                        runId: Number(runId),
+                        engineName: runProgress[Number(runId)]?.engine_display_name ?? `Run #${runId}`,
+                      })))
+                      .sort((a, b) => b.result_id - a.result_id);
+
+                    if (allResults.length === 0) return null;
+
+                    return (
+                      <div className="mt-2">
+                        <div className="text-[11px] font-medium text-muted-foreground mb-1">
+                          Live Results ({allResults.length})
+                        </div>
+                        <div className="max-h-[200px] overflow-y-auto border border-border rounded">
+                          <table className="w-full text-[10px]">
+                            <thead className="sticky top-0 bg-muted z-10">
+                              <tr>
+                                <th className="text-left px-1.5 py-1 border-b border-border font-medium">Q#</th>
+                                <th className="text-left px-1.5 py-1 border-b border-border font-medium">Status</th>
+                                <th className="text-right px-1.5 py-1 border-b border-border font-medium">Time</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {allResults.slice(0, 50).map(r => (
+                                <tr key={r.result_id} className="even:bg-card/50">
+                                  <td className="px-1.5 py-0.5 border-b border-border/50 font-mono">
+                                    Q{r.sequence_number}
+                                  </td>
+                                  <td className="px-1.5 py-0.5 border-b border-border/50">
+                                    {r.error_message ? (
+                                      <span className="flex items-center gap-0.5 text-red-500" title={r.error_message}>
+                                        <XCircle size={9} /> Fail
+                                      </span>
+                                    ) : (
+                                      <span className="flex items-center gap-0.5 text-emerald-600">
+                                        <CheckCircle2 size={9} /> OK
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className={`px-1.5 py-0.5 border-b border-border/50 text-right font-mono ${
+                                    r.execution_time_ms != null ? latencyColor(r.execution_time_ms) : "text-muted-foreground"
+                                  }`}>
+                                    {r.execution_time_ms != null ? `${Math.round(r.execution_time_ms)}ms` : "—"}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
 
               {/* Run Benchmark button — hidden while benchmark is running */}
-              {!runningBenchmark && (
+              {!benchmarkRunning && (
                 <>
                   {(() => {
                     const isBenchmarkMode = routingMode === "benchmark";
@@ -594,25 +747,6 @@ export const CollectionsPanel: React.FC = () => {
                     <span className="text-[11px] text-muted-foreground shrink-0 ml-2">No runs</span>
                   )}
                 </div>
-              ))}
-            </div>
-          )}
-
-          {benchmarks.length > 0 && (
-            <div className="px-3 py-2 border-t border-panel-border">
-              <h4 className="font-semibold mb-1 text-foreground">Benchmark History</h4>
-              {benchmarks.map(b => (
-                <button
-                  key={b.id}
-                  onClick={() => openBenchmarkDetail(b.id)}
-                  className="flex items-center justify-between w-full px-2 py-1 hover:bg-muted rounded text-[12px]"
-                >
-                  <span className="text-foreground">{new Date(b.created_at).toLocaleDateString()}</span>
-                  <div className="flex items-center gap-2">
-                    <StatusBadge variant={b.status === "complete" ? "success" : b.status === "failed" ? "error" : "warning"}>{b.status}</StatusBadge>
-                    <span className="text-muted-foreground">{b.engine_count} eng</span>
-                  </div>
-                </button>
               ))}
             </div>
           )}
