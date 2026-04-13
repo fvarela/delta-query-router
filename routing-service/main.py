@@ -164,6 +164,7 @@ async def load_databricks_credentials():
 @app.on_event("startup")
 async def init_database():
     db.init_db()
+    benchmarks_api.recover_orphaned_runs()
 
 
 @app.on_event("startup")

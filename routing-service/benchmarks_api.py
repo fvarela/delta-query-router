@@ -37,6 +37,41 @@ _benchmark_lock = threading.Lock()
 _cancelled_run_ids: set[int] = set()
 
 
+def recover_orphaned_runs() -> None:
+    """Mark any non-terminal benchmark runs as failed on startup.
+
+    When the server restarts (e.g. pod restart, deployment rollout), any
+    benchmark runs that were in-progress lose their background thread.
+    Without cleanup, these runs stay in 'running'/'warming_up'/'pending'
+    forever, blocking new benchmarks (the frontend sees them as active)
+    and confusing the UI.
+
+    Called from main.py during startup, after db.init_db().
+    """
+    try:
+        orphaned = db.fetch_all(
+            "SELECT id, status FROM benchmark_runs WHERE status IN ('running', 'warming_up', 'pending')"
+        )
+        if not orphaned:
+            return
+        ids = [r["id"] for r in orphaned]
+        # Use ANY(%s) with a list to update all at once
+        db.execute(
+            "UPDATE benchmark_runs SET status = 'failed', "
+            "error_message = 'Interrupted: server restarted during execution', "
+            "updated_at = NOW() "
+            "WHERE id = ANY(%s)",
+            (ids,),
+        )
+        logger.info(
+            "Recovered %d orphaned benchmark run(s) on startup: %s",
+            len(ids),
+            ids,
+        )
+    except Exception as e:
+        logger.warning("Failed to recover orphaned benchmark runs: %s", e)
+
+
 # --- Pydantic models ---
 
 

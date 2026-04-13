@@ -1125,3 +1125,41 @@ class TestRunResults:
     def test_requires_auth(self):
         resp = client.get("/api/benchmarks/runs/1/results")
         assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Orphaned run recovery
+# ---------------------------------------------------------------------------
+
+
+class TestRecoverOrphanedRuns:
+    """recover_orphaned_runs() — startup cleanup for stuck runs."""
+
+    @patch("benchmarks_api.db.execute")
+    @patch("benchmarks_api.db.fetch_all")
+    def test_marks_orphaned_runs_as_failed(self, mock_fetch, mock_exec):
+        """Running/pending/warming_up runs are marked failed on startup."""
+        mock_fetch.return_value = [
+            {"id": 1, "status": "running"},
+            {"id": 2, "status": "pending"},
+            {"id": 3, "status": "warming_up"},
+        ]
+        benchmarks_api.recover_orphaned_runs()
+        mock_exec.assert_called_once()
+        call_sql = mock_exec.call_args[0][0]
+        assert "failed" in call_sql
+        assert "Interrupted" in call_sql
+        assert mock_exec.call_args[0][1] == ([1, 2, 3],)
+
+    @patch("benchmarks_api.db.fetch_all")
+    def test_no_orphans_is_noop(self, mock_fetch):
+        """No orphaned runs → no DB writes."""
+        mock_fetch.return_value = []
+        # Should not raise or call execute
+        benchmarks_api.recover_orphaned_runs()
+
+    @patch("benchmarks_api.db.fetch_all", side_effect=Exception("DB down"))
+    def test_exception_is_caught(self, mock_fetch):
+        """DB errors during recovery are logged, not raised."""
+        # Should not raise
+        benchmarks_api.recover_orphaned_runs()
