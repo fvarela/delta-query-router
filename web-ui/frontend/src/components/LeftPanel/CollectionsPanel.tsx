@@ -7,13 +7,13 @@ import { StatusBadge } from "@/components/shared/StatusBadge";
 import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 import { MOCK_COLLECTIONS_WITH_QUERIES, MOCK_TPCDS_CONFIGURED, MOCK_BENCHMARK_RUN_DETAILS, getRunsForDefinition } from "@/mocks/engineSetupData";
 import { TpcdsSetupDialog } from "@/components/LeftPanel/TpcdsWizard";
-import type { Collection, CollectionWithQueries, BenchmarkSummary, BenchmarkDetail, BenchmarkRunDetail, BenchmarkRunSummary } from "@/types";
-import { ArrowLeft, Plus, Trash2, X, Database, AlertTriangle, Lock, BarChart3, Clock, ExternalLink, Settings2 } from "lucide-react";
+import type { Collection, CollectionWithQueries, BenchmarkSummary, BenchmarkDetail, BenchmarkRunDetail, BenchmarkRunSummary, BenchmarkRunProgress, BenchmarkStartResponse, ActiveBenchmarkRun } from "@/types";
+import { ArrowLeft, Plus, Trash2, X, Database, AlertTriangle, Lock, BarChart3, Clock, ExternalLink, Settings2, Activity } from "lucide-react";
 
 export const CollectionsPanel: React.FC = () => {
   const {
     setEditorSql, setCollectionContext, refreshCollections, triggerRefreshCollections, activeCollectionId, setActiveCollectionId,
-    engines, routingMode, benchmarkEngineIds, benchmarkDefinitions, connectedWorkspace,
+    engines, routingMode, benchmarkEngineIds, benchmarkDefinitions, reloadBenchmarkDefinitions, connectedWorkspace,
   } = useApp();
   const [collections, setCollections] = useState<CollectionWithQueries[]>([]);
   const [loading, setLoading] = useState(true);
@@ -31,6 +31,10 @@ export const CollectionsPanel: React.FC = () => {
   const [runningBenchmark, setRunningBenchmark] = useState(false);
   const [benchmarkError, setBenchmarkError] = useState<string | null>(null);
   const [runsDialog, setRunsDialog] = useState<{ definitionId: number; engineName: string } | null>(null);
+
+  // Active benchmark progress polling
+  const [activeRunIds, setActiveRunIds] = useState<number[]>([]);
+  const [runProgress, setRunProgress] = useState<Record<number, BenchmarkRunProgress>>({});
 
   const mock = isMockMode();
 
@@ -194,15 +198,108 @@ export const CollectionsPanel: React.FC = () => {
     setRunningBenchmark(true);
     setBenchmarkError(null);
     try {
-      await api.post<BenchmarkSummary>('/api/benchmarks', { collection_id: activeCollection.id, engine_ids: engineIds });
-      const b = await api.get<BenchmarkSummary[]>(`/api/benchmarks?collection_id=${activeCollection.id}`);
-      setBenchmarks(b);
+      const result = await api.post<BenchmarkStartResponse>('/api/benchmarks', { collection_id: activeCollection.id, engine_ids: engineIds });
+      setActiveRunIds(result.run_ids);
+      setRunProgress({});
     } catch (e: any) {
-      setBenchmarkError(e?.message || "Benchmark failed");
-    } finally {
+      const msg = e?.message || "Benchmark failed";
+      if (msg.toLowerCase().includes("already running")) {
+        setBenchmarkError("A benchmark is already running. Wait for it to finish.");
+      } else {
+        setBenchmarkError(msg);
+      }
       setRunningBenchmark(false);
     }
   };
+
+  // Check for active benchmarks on mount (reconnect scenario)
+  useEffect(() => {
+    if (mock) return;
+    api.get<ActiveBenchmarkRun[]>("/api/benchmarks/active").then(active => {
+      if (active.length > 0) {
+        setActiveRunIds(active.map(r => r.run_id));
+        setRunningBenchmark(true);
+        // Seed progress from active data
+        const progress: Record<number, BenchmarkRunProgress> = {};
+        for (const r of active) {
+          progress[r.run_id] = {
+            run_id: r.run_id,
+            definition_id: r.definition_id,
+            status: r.status,
+            engine_id: r.engine_id,
+            engine_display_name: r.engine_display_name,
+            collection_id: r.collection_id,
+            collection_name: r.collection_name,
+            total_queries: r.total_queries,
+            completed_queries: r.completed_queries,
+            failed_queries: r.failed_queries,
+            elapsed_ms: 0,
+            error_message: r.error_message,
+          };
+        }
+        setRunProgress(progress);
+      }
+    }).catch(() => {});
+  }, [mock]);
+
+  // Poll progress while benchmark is running
+  useEffect(() => {
+    if (activeRunIds.length === 0) return;
+
+    const pollInterval = setInterval(async () => {
+      const newProgress: Record<number, BenchmarkRunProgress> = {};
+      let allDone = true;
+
+      for (const runId of activeRunIds) {
+        try {
+          const p = await api.get<BenchmarkRunProgress>(`/api/benchmarks/runs/${runId}/progress`);
+          newProgress[runId] = p;
+          if (p.status !== "complete" && p.status !== "failed") {
+            allDone = false;
+          }
+        } catch {
+          // If progress fetch fails, keep previous state
+          if (runProgress[runId]) {
+            newProgress[runId] = runProgress[runId];
+          }
+          allDone = false;
+        }
+      }
+
+      setRunProgress(newProgress);
+
+      if (allDone) {
+        // Benchmark finished — stop polling, refresh data
+        clearInterval(pollInterval);
+        setRunningBenchmark(false);
+
+        // Check for errors
+        const failedRuns = Object.values(newProgress).filter(p => p.status === "failed");
+        const completedRuns = Object.values(newProgress).filter(p => p.status === "complete");
+
+        if (failedRuns.length > 0 && completedRuns.length === 0) {
+          setBenchmarkError(`Benchmark failed: ${failedRuns[0].error_message || "unknown error"}`);
+        } else if (failedRuns.length > 0) {
+          setBenchmarkError(`${failedRuns.length}/${activeRunIds.length} engine(s) failed`);
+        }
+
+        // Refresh benchmarks list and definitions
+        if (activeCollection) {
+          api.get<BenchmarkSummary[]>(`/api/benchmarks?collection_id=${activeCollection.id}`)
+            .then(setBenchmarks)
+            .catch(() => {});
+        }
+        reloadBenchmarkDefinitions().catch(() => {});
+        // Keep progress visible for a moment, then clear
+        setTimeout(() => {
+          setActiveRunIds([]);
+          setRunProgress({});
+        }, 5000);
+      }
+    }, 2500);
+
+    return () => clearInterval(pollInterval);
+  }, [activeRunIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const openBenchmarkDetail = async (id: number) => {
     const d = await api.get<BenchmarkDetail>(`/api/benchmarks/${id}`);
@@ -367,12 +464,73 @@ export const CollectionsPanel: React.FC = () => {
           {/* Benchmark section — only if not TPC-DS without dataset */}
           {!tpcdsNotConfigured && (
             <div className="px-3 py-2 border-t border-panel-border">
-              {runningBenchmark ? (
-                <div className="space-y-2">
-                  <LoadingSpinner />
-                  <p className="text-[12px] text-muted-foreground">Running benchmark...</p>
+              {/* Active benchmark progress */}
+              {runningBenchmark && activeRunIds.length > 0 && (
+                <div className="space-y-2 mb-2">
+                  <div className="flex items-center gap-1.5 text-[12px] font-semibold text-foreground">
+                    <Activity size={12} className="text-amber-500 animate-pulse" />
+                    <span>Benchmark Running</span>
+                  </div>
+                  {activeRunIds.map(runId => {
+                    const p = runProgress[runId];
+                    if (!p) return (
+                      <div key={runId} className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                        <LoadingSpinner size={10} />
+                        <span>Starting run #{runId}...</span>
+                      </div>
+                    );
+                    const pct = p.total_queries > 0 ? Math.round((p.completed_queries / p.total_queries) * 100) : 0;
+                    const elapsedSec = Math.round(p.elapsed_ms / 1000);
+                    const minutes = Math.floor(elapsedSec / 60);
+                    const seconds = elapsedSec % 60;
+                    const timeStr = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+                    const isDone = p.status === "complete" || p.status === "failed";
+
+                    return (
+                      <div key={runId} className="space-y-1">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className={`font-medium ${isDone ? (p.status === "complete" ? "text-status-success" : "text-status-error") : "text-foreground"}`}>
+                            {p.engine_display_name}
+                          </span>
+                          <span className="text-muted-foreground">
+                            {isDone ? (
+                              p.status === "complete" ? "Done" : "Failed"
+                            ) : p.status === "warming_up" ? (
+                              "Warming up..."
+                            ) : (
+                              `${p.completed_queries}/${p.total_queries} queries`
+                            )}
+                          </span>
+                        </div>
+                        {/* Progress bar */}
+                        <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
+                          <div
+                            className={`h-full rounded-full transition-all duration-300 ${
+                              p.status === "failed" ? "bg-status-error" :
+                              p.status === "complete" ? "bg-status-success" :
+                              p.status === "warming_up" ? "bg-amber-400 animate-pulse" :
+                              "bg-amber-500"
+                            }`}
+                            style={{ width: p.status === "warming_up" ? "5%" : `${Math.max(pct, 2)}%` }}
+                          />
+                        </div>
+                        <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                          <span>{pct}%{p.failed_queries > 0 ? ` (${p.failed_queries} errors)` : ""}</span>
+                          <span>{timeStr}</span>
+                        </div>
+                        {p.error_message && p.status === "failed" && (
+                          <p className="text-[10px] text-status-error truncate" title={p.error_message}>
+                            {p.error_message}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-              ) : (
+              )}
+
+              {/* Run Benchmark button — hidden while benchmark is running */}
+              {!runningBenchmark && (
                 <>
                   {(() => {
                     const isBenchmarkMode = routingMode === "benchmark";

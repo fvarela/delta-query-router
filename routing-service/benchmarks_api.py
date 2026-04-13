@@ -5,9 +5,14 @@ Schema:
   benchmark_runs: individual executions of a definition
   benchmark_engine_warmups: cold-start probes per run
   benchmark_results: per-query per-engine execution results per run
+
+Benchmark execution is asynchronous: POST /api/benchmarks validates inputs,
+creates DB records, and kicks off a background thread. The frontend polls
+GET /api/benchmarks/runs/{run_id}/progress for live progress.
 """
 
 import logging
+import threading
 import time
 
 import httpx
@@ -17,10 +22,15 @@ from pydantic import BaseModel
 
 import db
 import engines_api
+import query_analyzer
 
 logger = logging.getLogger("routing-service.benchmarks")
 
 router = APIRouter(prefix="/api/benchmarks", tags=["benchmarks"])
+
+# Module-level lock to prevent concurrent benchmark executions.
+# Only one benchmark batch can run at a time (sequential engine execution).
+_benchmark_lock = threading.Lock()
 
 
 # --- Pydantic models ---
@@ -34,12 +44,12 @@ class CreateBenchmark(BaseModel):
 # --- Internal helpers ---
 
 
-async def _warmup_duckdb(engine: dict, timeout: float = 30.0) -> float:
-    """Send SELECT 1 to a specific DuckDB engine, return elapsed ms."""
+def _warmup_duckdb_sync(engine: dict, timeout: float = 30.0) -> float:
+    """Send SELECT 1 to a specific DuckDB engine (sync), return elapsed ms."""
     url = engines_api.engine_url(engine)
     t0 = time.perf_counter()
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(f"{url}/query", json={"sql": "SELECT 1"})
+    with httpx.Client(timeout=timeout) as client:
+        resp = client.post(f"{url}/query", json={"sql": "SELECT 1"})
         resp.raise_for_status()
     return (time.perf_counter() - t0) * 1000
 
@@ -68,14 +78,14 @@ def _warmup_databricks(
     return elapsed
 
 
-async def _execute_query_on_duckdb(
+def _execute_query_on_duckdb_sync(
     engine: dict,
     sql: str,
     tables: list[str] | None = None,
     databricks_host: str | None = None,
     databricks_token: str | None = None,
 ) -> dict:
-    """Execute SQL on a specific DuckDB engine. Returns {execution_time_ms, error_message}."""
+    """Execute SQL on a specific DuckDB engine (sync). Returns {execution_time_ms, error_message}."""
     url = engines_api.engine_url(engine)
     payload: dict = {"sql": sql}
     if tables and databricks_host and databricks_token:
@@ -85,8 +95,8 @@ async def _execute_query_on_duckdb(
 
     t0 = time.perf_counter()
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(f"{url}/query", json=payload)
+        with httpx.Client(timeout=120.0) as client:
+            resp = client.post(f"{url}/query", json=payload)
         wall_ms = (time.perf_counter() - t0) * 1000
 
         if resp.status_code != 200:
@@ -166,16 +176,178 @@ def _get_or_create_definition(collection_id: int, engine_id: str) -> dict:
     )
 
 
+def _run_benchmark_thread(
+    runs: dict,  # engine_id → {definition, run}
+    engines: dict,  # engine_id → engine row
+    queries: list,  # collection_queries rows
+    workspace_client,
+    warehouse_id: str | None,
+    databricks_host: str | None,
+    databricks_token: str | None,
+) -> None:
+    """Background thread: warm up engines, execute all queries, update DB status.
+
+    Engines are processed sequentially. Each engine goes through:
+    1. Warm-up (SELECT 1)
+    2. Run all queries
+    3. Mark run as complete or failed
+    """
+    if not _benchmark_lock.acquire(blocking=False):
+        # Another benchmark is already running — mark all as failed
+        for r in runs.values():
+            try:
+                db.execute(
+                    "UPDATE benchmark_runs SET status = 'failed', error_message = 'Another benchmark is already running', updated_at = NOW() WHERE id = %s",
+                    (r["run"]["id"],),
+                )
+            except Exception:
+                pass
+        return
+
+    try:
+        _run_benchmark_inner(
+            runs,
+            engines,
+            queries,
+            workspace_client,
+            warehouse_id,
+            databricks_host,
+            databricks_token,
+        )
+    finally:
+        _benchmark_lock.release()
+
+
+def _run_benchmark_inner(
+    runs: dict,
+    engines: dict,
+    queries: list,
+    workspace_client,
+    warehouse_id: str | None,
+    databricks_host: str | None,
+    databricks_token: str | None,
+) -> None:
+    """Core benchmark execution (runs inside _benchmark_lock)."""
+    total_queries = len(queries)
+
+    for eid, eng in engines.items():
+        run_id = runs[eid]["run"]["id"]
+
+        # -- Warm-up phase --
+        try:
+            db.execute(
+                "UPDATE benchmark_runs SET status = 'warming_up', updated_at = NOW() WHERE id = %s",
+                (run_id,),
+            )
+
+            if eng["engine_type"] == "duckdb":
+                cold_start_ms = _warmup_duckdb_sync(eng)
+            elif eng["engine_type"] == "databricks_sql":
+                if not workspace_client or not warehouse_id:
+                    raise RuntimeError("Databricks not configured")
+                wh_id = (eng.get("config") or {}).get("warehouse_id", warehouse_id)
+                cold_start_ms = _warmup_databricks(workspace_client, wh_id)
+            else:
+                raise RuntimeError(f"Unknown engine type: {eng['engine_type']}")
+
+            db.execute(
+                "INSERT INTO benchmark_engine_warmups (run_id, engine_id, cold_start_time_ms) "
+                "VALUES (%s, %s, %s)",
+                (run_id, eid, cold_start_ms),
+            )
+        except Exception as e:
+            logger.warning("Warmup failed for engine %s: %s", eid, e)
+            db.execute(
+                "INSERT INTO benchmark_engine_warmups (run_id, engine_id, cold_start_time_ms) "
+                "VALUES (%s, %s, NULL)",
+                (run_id, eid),
+            )
+            db.execute(
+                "UPDATE benchmark_runs SET status = 'failed', error_message = %s, updated_at = NOW() WHERE id = %s",
+                (f"Warmup failed: {e}", run_id),
+            )
+            continue  # Skip to next engine instead of aborting all
+
+        # -- Running phase --
+        db.execute(
+            "UPDATE benchmark_runs SET status = 'running', updated_at = NOW() WHERE id = %s",
+            (run_id,),
+        )
+
+        error_count = 0
+        for query in queries:
+            try:
+                if eng["engine_type"] == "duckdb":
+                    # Extract table names so DuckDB worker can resolve via credential vending
+                    analysis = query_analyzer.analyze_query(query["query_text"])
+                    tables = (
+                        analysis.tables if analysis and not analysis.error else None
+                    )
+                    result = _execute_query_on_duckdb_sync(
+                        eng,
+                        query["query_text"],
+                        tables=tables,
+                        databricks_host=databricks_host,
+                        databricks_token=databricks_token,
+                    )
+                elif eng["engine_type"] == "databricks_sql":
+                    wh_id = (eng.get("config") or {}).get("warehouse_id", warehouse_id)
+                    result = _execute_query_on_databricks(
+                        workspace_client,
+                        wh_id,
+                        query["query_text"],
+                    )
+                else:
+                    result = {
+                        "execution_time_ms": None,
+                        "error_message": f"Unknown engine type: {eng['engine_type']}",
+                    }
+            except Exception as e:
+                result = {"execution_time_ms": None, "error_message": str(e)}
+
+            if result.get("error_message"):
+                error_count += 1
+
+            db.execute(
+                "INSERT INTO benchmark_results (run_id, engine_id, query_id, execution_time_ms, error_message) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (
+                    run_id,
+                    eid,
+                    query["id"],
+                    result.get("execution_time_ms"),
+                    result.get("error_message"),
+                ),
+            )
+
+        # -- Complete --
+        status = "complete" if error_count < total_queries else "failed"
+        error_msg = (
+            f"{error_count}/{total_queries} queries failed" if error_count > 0 else None
+        )
+        db.execute(
+            "UPDATE benchmark_runs SET status = %s, error_message = %s, updated_at = NOW() WHERE id = %s",
+            (status, error_msg, run_id),
+        )
+        logger.info(
+            "Benchmark run %d for engine %s: %s (%d/%d queries ok)",
+            run_id,
+            eid,
+            status,
+            total_queries - error_count,
+            total_queries,
+        )
+
+
 # --- Endpoints ---
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=202)
 async def create_benchmark(body: CreateBenchmark):
-    """Run a benchmark: create definitions + runs, warm up engines, execute queries.
+    """Start a benchmark: validate inputs, create DB records, launch background thread.
 
-    For each engine_id, a definition (collection×engine) is upserted and a new
-    run is created. Engines are warmed up, queries executed, and results stored
-    against each run.
+    Returns immediately with run_ids and status 'started'. Frontend polls
+    GET /api/benchmarks/runs/{run_id}/progress for live updates.
     """
     # 1. Validate collection
     collection = db.fetch_one(
@@ -204,123 +376,133 @@ async def create_benchmark(body: CreateBenchmark):
             raise HTTPException(status_code=400, detail=f"Engine is not active: {eid}")
         engines[eid] = eng
 
-    # 3. Create definitions + runs for each engine
+    # 3. Check if a benchmark is already running
+    if _benchmark_lock.locked():
+        raise HTTPException(status_code=409, detail="A benchmark is already running")
+
+    # 4. Create definitions + runs for each engine
     import main as _main
 
     runs = {}  # engine_id → {definition, run}
     for eid in body.engine_ids:
         definition = _get_or_create_definition(body.collection_id, eid)
         run = db.fetch_one(
-            "INSERT INTO benchmark_runs (definition_id, status) VALUES (%s, 'warming_up') RETURNING *",
+            "INSERT INTO benchmark_runs (definition_id, status) VALUES (%s, 'pending') RETURNING *",
             (definition["id"],),
         )
         runs[eid] = {"definition": definition, "run": run}
 
-    # 4. Warm-up phase
-    try:
-        for eid, eng in engines.items():
-            run_id = runs[eid]["run"]["id"]
-            try:
-                if eng["engine_type"] == "duckdb":
-                    cold_start_ms = await _warmup_duckdb(eng)
-                elif eng["engine_type"] == "databricks_sql":
-                    if not _main._workspace_client or not _main._warehouse_id:
-                        raise RuntimeError("Databricks not configured")
-                    wh_id = (eng.get("config") or {}).get(
-                        "warehouse_id", _main._warehouse_id
-                    )
-                    cold_start_ms = _warmup_databricks(_main._workspace_client, wh_id)
-                else:
-                    raise RuntimeError(f"Unknown engine type: {eng['engine_type']}")
-
-                db.execute(
-                    "INSERT INTO benchmark_engine_warmups (run_id, engine_id, cold_start_time_ms) "
-                    "VALUES (%s, %s, %s)",
-                    (run_id, eid, cold_start_ms),
-                )
-            except Exception as e:
-                logger.warning("Warmup failed for engine %s: %s", eid, e)
-                db.execute(
-                    "INSERT INTO benchmark_engine_warmups (run_id, engine_id, cold_start_time_ms) "
-                    "VALUES (%s, %s, NULL)",
-                    (run_id, eid),
-                )
-                # Mark all runs as failed
-                for r in runs.values():
-                    db.execute(
-                        "UPDATE benchmark_runs SET status = 'failed', updated_at = NOW() WHERE id = %s",
-                        (r["run"]["id"],),
-                    )
-                run_ids = [r["run"]["id"] for r in runs.values()]
-                return {
-                    "run_ids": run_ids,
-                    "status": "failed",
-                    "error": f"Warmup failed for engine {eid}: {e}",
-                }
-    except Exception as e:
-        for r in runs.values():
-            db.execute(
-                "UPDATE benchmark_runs SET status = 'failed', updated_at = NOW() WHERE id = %s",
-                (r["run"]["id"],),
-            )
-        raise HTTPException(status_code=500, detail=f"Warmup phase error: {e}")
-
-    # 5. Running phase — mark all runs as running
-    for r in runs.values():
-        db.execute(
-            "UPDATE benchmark_runs SET status = 'running', updated_at = NOW() WHERE id = %s",
-            (r["run"]["id"],),
-        )
-
-    for query in queries:
-        for eid, eng in engines.items():
-            run_id = runs[eid]["run"]["id"]
-            try:
-                if eng["engine_type"] == "duckdb":
-                    result = await _execute_query_on_duckdb(
-                        eng,
-                        query["query_text"],
-                        databricks_host=_main._databricks_host,
-                        databricks_token=_main._databricks_token,
-                    )
-                elif eng["engine_type"] == "databricks_sql":
-                    wh_id = (eng.get("config") or {}).get(
-                        "warehouse_id", _main._warehouse_id
-                    )
-                    result = _execute_query_on_databricks(
-                        _main._workspace_client,
-                        wh_id,
-                        query["query_text"],
-                    )
-                else:
-                    result = {
-                        "execution_time_ms": None,
-                        "error_message": f"Unknown engine type: {eng['engine_type']}",
-                    }
-            except Exception as e:
-                result = {"execution_time_ms": None, "error_message": str(e)}
-
-            db.execute(
-                "INSERT INTO benchmark_results (run_id, engine_id, query_id, execution_time_ms, error_message) "
-                "VALUES (%s, %s, %s, %s, %s)",
-                (
-                    run_id,
-                    eid,
-                    query["id"],
-                    result.get("execution_time_ms"),
-                    result.get("error_message"),
-                ),
-            )
-
-    # 6. Complete — mark all runs as complete
-    for r in runs.values():
-        db.execute(
-            "UPDATE benchmark_runs SET status = 'complete', updated_at = NOW() WHERE id = %s",
-            (r["run"]["id"],),
-        )
+    # 5. Launch background thread
+    thread = threading.Thread(
+        target=_run_benchmark_thread,
+        args=(
+            runs,
+            engines,
+            queries,
+            _main._workspace_client,
+            _main._warehouse_id,
+            _main._databricks_host,
+            _main._databricks_token,
+        ),
+        daemon=True,
+        name="benchmark-runner",
+    )
+    thread.start()
 
     run_ids = [r["run"]["id"] for r in runs.values()]
-    return {"run_ids": run_ids, "status": "complete"}
+    return {"run_ids": run_ids, "status": "started"}
+
+
+@router.get("/active")
+async def get_active_benchmark():
+    """Return active (non-terminal) benchmark runs, if any.
+
+    Used by frontend to detect in-progress benchmarks on page load/reconnect.
+    """
+    active_runs = db.fetch_all(
+        """
+        SELECT br.id AS run_id, br.definition_id, br.status, br.created_at, br.updated_at,
+               br.error_message,
+               bd.collection_id, bd.engine_id,
+               c.name AS collection_name,
+               e.display_name AS engine_display_name,
+               (SELECT COUNT(*) FROM collection_queries cq WHERE cq.collection_id = bd.collection_id) AS total_queries,
+               (SELECT COUNT(*) FROM benchmark_results res WHERE res.run_id = br.id) AS completed_queries,
+               (SELECT COUNT(*) FROM benchmark_results res WHERE res.run_id = br.id AND res.error_message IS NOT NULL) AS failed_queries
+        FROM benchmark_runs br
+        JOIN benchmark_definitions bd ON bd.id = br.definition_id
+        JOIN collections c ON c.id = bd.collection_id
+        LEFT JOIN engines e ON e.id = bd.engine_id
+        WHERE br.status IN ('pending', 'warming_up', 'running')
+        ORDER BY br.created_at ASC
+        """
+    )
+    return active_runs
+
+
+@router.get("/runs/{run_id}/progress")
+async def get_run_progress(run_id: int):
+    """Get live progress for a benchmark run.
+
+    Returns status, query progress counts, engine info, and timing.
+    Lightweight query suitable for 2-3s polling.
+    """
+    run = db.fetch_one(
+        """
+        SELECT br.id AS run_id, br.definition_id, br.status, br.created_at, br.updated_at,
+               br.error_message,
+               bd.collection_id, bd.engine_id,
+               c.name AS collection_name,
+               e.display_name AS engine_display_name
+        FROM benchmark_runs br
+        JOIN benchmark_definitions bd ON bd.id = br.definition_id
+        JOIN collections c ON c.id = bd.collection_id
+        LEFT JOIN engines e ON e.id = bd.engine_id
+        WHERE br.id = %s
+        """,
+        (run_id,),
+    )
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    total_queries = db.fetch_one(
+        "SELECT COUNT(*) AS cnt FROM collection_queries WHERE collection_id = %s",
+        (run["collection_id"],),
+    )["cnt"]
+
+    completed = db.fetch_one(
+        "SELECT COUNT(*) AS cnt FROM benchmark_results WHERE run_id = %s",
+        (run_id,),
+    )["cnt"]
+
+    failed = db.fetch_one(
+        "SELECT COUNT(*) AS cnt FROM benchmark_results WHERE run_id = %s AND error_message IS NOT NULL",
+        (run_id,),
+    )["cnt"]
+
+    # Calculate elapsed from created_at
+    import datetime
+
+    created = run["created_at"]
+    if isinstance(created, str):
+        created = datetime.datetime.fromisoformat(created)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    elapsed_ms = (now - created).total_seconds() * 1000
+
+    return {
+        "run_id": run["run_id"],
+        "definition_id": run["definition_id"],
+        "status": run["status"],
+        "engine_id": run["engine_id"],
+        "engine_display_name": run["engine_display_name"],
+        "collection_id": run["collection_id"],
+        "collection_name": run["collection_name"],
+        "total_queries": total_queries,
+        "completed_queries": completed,
+        "failed_queries": failed,
+        "elapsed_ms": round(elapsed_ms),
+        "error_message": run["error_message"],
+    }
 
 
 @router.get("")

@@ -276,7 +276,7 @@ export interface BenchmarkDefinition {
 export interface BenchmarkRunSummary {
   id: number;
   definition_id: number;
-  status: "warming_up" | "running" | "complete" | "failed";
+  status: "pending" | "warming_up" | "running" | "complete" | "failed";
   created_at: string;
   updated_at: string;
 }
@@ -284,6 +284,45 @@ export interface BenchmarkRunSummary {
 export interface BenchmarkRunDetail extends BenchmarkRunSummary {
   warmups: BenchmarkWarmup[];
   results: BenchmarkResult[];
+}
+
+// Live progress for a benchmark run (polled every 2-3s)
+export interface BenchmarkRunProgress {
+  run_id: number;
+  definition_id: number;
+  status: "pending" | "warming_up" | "running" | "complete" | "failed";
+  engine_id: string;
+  engine_display_name: string;
+  collection_id: number;
+  collection_name: string;
+  total_queries: number;
+  completed_queries: number;
+  failed_queries: number;
+  elapsed_ms: number;
+  error_message: string | null;
+}
+
+// Active benchmark runs (non-terminal)
+export interface ActiveBenchmarkRun {
+  run_id: number;
+  definition_id: number;
+  status: "pending" | "warming_up" | "running";
+  created_at: string;
+  updated_at: string;
+  error_message: string | null;
+  collection_id: number;
+  engine_id: string;
+  collection_name: string;
+  engine_display_name: string;
+  total_queries: number;
+  completed_queries: number;
+  failed_queries: number;
+}
+
+// POST /api/benchmarks response (async)
+export interface BenchmarkStartResponse {
+  run_ids: number[];
+  status: "started";
 }
 
 // --- Left panel tab ---

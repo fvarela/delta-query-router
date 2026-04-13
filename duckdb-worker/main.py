@@ -80,23 +80,142 @@ def _rewrite_sql(sql: str, resolved: dict[str, ResolvedTable]) -> str:
 
     Handles both quoted and unquoted identifiers. Replaces longest names
     first to avoid partial matches.
+
+    Automatically adds ``AS <short_table_name>`` alias when the table
+    reference doesn't already have one, so column references like
+    ``date_dim.d_date_sk`` continue to work after rewriting.
     """
     rewritten = sql
+
+    # SQL keywords that can follow a table reference (NOT aliases)
+    _SQL_KEYWORDS = {
+        "where",
+        "on",
+        "join",
+        "left",
+        "right",
+        "inner",
+        "outer",
+        "cross",
+        "full",
+        "group",
+        "order",
+        "limit",
+        "having",
+        "union",
+        "intersect",
+        "except",
+        "and",
+        "or",
+        "set",
+        "into",
+        "when",
+        "then",
+        "else",
+        "end",
+        "case",
+        "exists",
+        "not",
+        "in",
+        "between",
+        "like",
+        "is",
+        "natural",
+        "using",
+        "lateral",
+        "tablesample",
+        "window",
+        "fetch",
+        "offset",
+        "for",
+        "values",
+        "returning",
+        "with",
+        "select",
+        "from",
+    }
 
     # Sort by name length descending to avoid partial replacements
     for full_name in sorted(resolved, key=len, reverse=True):
         table = resolved[full_name]
         parquet_expr = _build_read_parquet_expr(table.file_urls)
 
-        # Build regex pattern matching the three-part name with optional quoting
+        # Short table name (last part) for alias
+        short_name = full_name.rsplit(".", 1)[-1]
+
+        # Build regex pattern matching the three-part name with optional quoting.
         parts = full_name.split(".")
         part_patterns = []
         for part in parts:
             escaped = re.escape(part)
-            # Match: part OR `part` OR "part" (case-insensitive)
             part_patterns.append(rf"(?:`{escaped}`|\"{escaped}\"|{escaped})")
-        pattern = r"\.".join(part_patterns)
-        rewritten = re.sub(pattern, parquet_expr, rewritten, flags=re.IGNORECASE)
+
+        # Capture groups:
+        #   1: trailing dot (column reference like catalog.schema.table.col)
+        #   2: existing AS + alias (e.g. " AS dt")
+        #   3: potential bare alias (word after whitespace, no AS)
+        pattern = (
+            r"\.".join(part_patterns)
+            + r"(?:"
+            + r"(\.)?"  # group 1: trailing dot
+            + r"(\s+AS\s+\w+)?"  # group 2: explicit AS alias
+            + r")"
+        )
+
+        def _make_replacer(pq_expr, alias, sql_keywords):
+            def _replacer(m):
+                trailing_dot = m.group(1)
+                existing_as_alias = m.group(2)
+
+                if trailing_dot:
+                    # Column ref: catalog.schema.table.col -> alias.col
+                    return alias + "."
+                if existing_as_alias:
+                    # Has explicit AS alias — keep it
+                    return f"{pq_expr}{existing_as_alias}"
+
+                # Check what follows the match for bare alias
+                rest = rewritten[m.end() :]
+                bare_match = re.match(r"\s+(\w+)", rest)
+                if bare_match:
+                    next_word = bare_match.group(1)
+                    if next_word.lower() not in sql_keywords:
+                        # Bare alias follows — don't add our own
+                        return pq_expr
+
+                # No alias present — add AS short_name
+                return f"{pq_expr} AS {alias}"
+
+            return _replacer
+
+        rewritten = re.sub(
+            pattern,
+            _make_replacer(parquet_expr, short_name, _SQL_KEYWORDS),
+            rewritten,
+            flags=re.IGNORECASE,
+        )
+
+        def _make_replacer(pq_expr, alias):
+            def _replacer(m):
+                trailing_dot = m.group(1)
+                existing_alias = m.group(2)
+                if trailing_dot:
+                    # Column reference: catalog.schema.table.column -> alias.column
+                    return alias + "."
+                if existing_alias:
+                    # Already has explicit alias (e.g., "... AS dt")
+                    return f"{pq_expr} {existing_alias}"
+                # No alias — add one using short table name
+                return f"{pq_expr} AS {alias}"
+
+            return _replacer
+
+        rewritten = re.sub(
+            pattern,
+            _make_replacer(parquet_expr, short_name),
+            rewritten,
+            flags=re.IGNORECASE,
+        )
 
     return rewritten
 

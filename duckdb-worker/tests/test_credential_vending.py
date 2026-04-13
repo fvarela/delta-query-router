@@ -171,6 +171,40 @@ class TestRewriteSql:
         assert "a.b.c" not in result
         assert result.count("read_parquet(") == 2
 
+    def test_adds_alias_when_no_alias(self):
+        """Table with no alias gets AS <short_name> for column ref support."""
+        resolved = {"cat.sch.date_dim": self._make_resolved("cat.sch.date_dim")}
+        sql = (
+            "SELECT date_dim.d_year FROM cat.sch.date_dim WHERE date_dim.d_year = 2000"
+        )
+        result = _rewrite_sql(sql, resolved)
+        assert "AS date_dim" in result
+        assert "date_dim.d_year" in result
+
+    def test_preserves_explicit_as_alias(self):
+        """Explicit AS alias is preserved, no extra alias added."""
+        resolved = {"cat.sch.date_dim": self._make_resolved("cat.sch.date_dim")}
+        sql = "SELECT dt.d_year FROM cat.sch.date_dim AS dt WHERE dt.d_year = 2000"
+        result = _rewrite_sql(sql, resolved)
+        assert "AS dt" in result
+        assert "AS date_dim" not in result
+
+    def test_bare_alias_not_doubled(self):
+        """Bare alias (no AS keyword) should not trigger an extra AS alias."""
+        resolved = {"cat.sch.t1": self._make_resolved("cat.sch.t1")}
+        sql = "SELECT a.x FROM cat.sch.t1 a WHERE a.x > 1"
+        result = _rewrite_sql(sql, resolved)
+        assert "AS t1" not in result  # bare alias 'a' present, no extra alias
+        assert "read_parquet(" in result
+
+    def test_full_qualified_column_ref(self):
+        """catalog.schema.table.column becomes alias.column."""
+        resolved = {"cat.sch.tbl": self._make_resolved("cat.sch.tbl")}
+        sql = "SELECT cat.sch.tbl.col1 FROM cat.sch.tbl"
+        result = _rewrite_sql(sql, resolved)
+        assert "tbl.col1" in result
+        assert "cat.sch.tbl" not in result
+
 
 # ---------------------------------------------------------------------------
 # Data classes

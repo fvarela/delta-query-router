@@ -81,7 +81,10 @@ def analyze_query(sql: str) -> QueryAnalysis:
     else:
         statement_type = "OTHER"
 
-    # 3. Extract tables - find all Table nodes, build qualified names
+    # 3. Extract tables - find all Table nodes, build qualified names.
+    #    Filter out CTE aliases (WITH clause names) — they look like Table
+    #    nodes in sqlglot when referenced in FROM, but aren't real tables.
+    cte_names = {cte.alias for cte in tree.find_all(exp.CTE) if cte.alias}
     tables = []
     for table in tree.find_all(exp.Table):
         parts = []
@@ -92,7 +95,9 @@ def analyze_query(sql: str) -> QueryAnalysis:
         if table.name:
             parts.append(table.name)
         if parts:
-            tables.append(".".join(parts))
+            name = ".".join(parts)
+            if name not in cte_names:
+                tables.append(name)
     # Deduplicate while preserving order
     seen = set()
     unique_tables = []
