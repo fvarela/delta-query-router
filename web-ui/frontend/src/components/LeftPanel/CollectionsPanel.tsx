@@ -8,7 +8,7 @@ import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 import { MOCK_COLLECTIONS_WITH_QUERIES, MOCK_TPCDS_CONFIGURED, MOCK_BENCHMARK_RUN_DETAILS, getRunsForDefinition } from "@/mocks/engineSetupData";
 import { TpcdsSetupDialog } from "@/components/LeftPanel/TpcdsWizard";
 import type { Collection, CollectionWithQueries, BenchmarkSummary, BenchmarkDetail, BenchmarkRunDetail, BenchmarkRunSummary, BenchmarkRunProgress, BenchmarkStartResponse, ActiveBenchmarkRun, BenchmarkQueryResult, BenchmarkCancelResponse } from "@/types";
-import { ArrowLeft, Plus, Trash2, X, Database, AlertTriangle, Lock, BarChart3, Clock, ExternalLink, Settings2, Activity, Square, CheckCircle2, XCircle } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, X, Database, AlertTriangle, Lock, BarChart3, Clock, ExternalLink, Settings2, Activity, Square, CheckCircle2, XCircle, SkipForward } from "lucide-react";
 
 export const CollectionsPanel: React.FC = () => {
   const {
@@ -561,29 +561,56 @@ export const CollectionsPanel: React.FC = () => {
                               p.status === "failed" ? "bg-red-100 text-red-700" :
                               p.status === "cancelled" ? "bg-amber-100 text-amber-700" :
                               p.status === "warming_up" ? "bg-blue-100 text-blue-700" :
+                              p.status === "pending" ? "bg-gray-100 text-gray-600" :
                               "bg-amber-100 text-amber-700"
                             }`}>
                               {p.status === "warming_up" ? "Warming up" :
                                p.status === "running" ? `${pct}%` :
                                p.status === "complete" ? "Done" :
-                               p.status === "cancelled" ? "Stopped" :
+                               p.status === "cancelled" ? (p.completed_queries === 0 ? "Skipped" : "Stopped") :
                                p.status === "failed" ? "Failed" :
+                               p.status === "pending" ? "Queued" :
                                p.status}
                             </span>
                             {isActive && (
-                              <button
-                                onClick={() => handleCancelRun(runId)}
-                                disabled={isCancelling}
-                                className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
-                                  isCancelling
-                                    ? "bg-muted text-muted-foreground cursor-not-allowed"
-                                    : "bg-red-50 text-red-600 hover:bg-red-100 border border-red-200"
-                                }`}
-                                title="Stop this engine's benchmark"
-                              >
-                                <Square size={8} />
-                                {isCancelling ? "Stopping..." : "Stop"}
-                              </button>
+                              (() => {
+                                const isRunningNow = p.status === "running" || p.status === "warming_up";
+                                if (isRunningNow) {
+                                  // Currently executing engine — Stop button
+                                  return (
+                                    <button
+                                      onClick={() => handleCancelRun(runId)}
+                                      disabled={isCancelling}
+                                      className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                                        isCancelling
+                                          ? "bg-muted text-muted-foreground cursor-not-allowed"
+                                          : "bg-red-50 text-red-600 hover:bg-red-100 border border-red-200"
+                                      }`}
+                                      title={isCancelling ? `Will stop after current query (Q${p.completed_queries + 1}) finishes` : "Stop after current query finishes"}
+                                    >
+                                      <Square size={8} />
+                                      {isCancelling ? `Stopping after Q${p.completed_queries + 1}...` : "Stop"}
+                                    </button>
+                                  );
+                                } else {
+                                  // Pending/queued engine — Skip button
+                                  return (
+                                    <button
+                                      onClick={() => handleCancelRun(runId)}
+                                      disabled={isCancelling}
+                                      className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                                        isCancelling
+                                          ? "bg-muted text-muted-foreground cursor-not-allowed"
+                                          : "bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200"
+                                      }`}
+                                      title="Skip this engine — don't run it"
+                                    >
+                                      <SkipForward size={8} />
+                                      {isCancelling ? "Skipping..." : "Skip"}
+                                    </button>
+                                  );
+                                }
+                              })()
                             )}
                           </div>
                         </div>
@@ -645,6 +672,7 @@ export const CollectionsPanel: React.FC = () => {
                             <thead className="sticky top-0 bg-muted z-10">
                               <tr>
                                 <th className="text-left px-1.5 py-1 border-b border-border font-medium">Q#</th>
+                                <th className="text-left px-1.5 py-1 border-b border-border font-medium">Engine</th>
                                 <th className="text-left px-1.5 py-1 border-b border-border font-medium">Status</th>
                                 <th className="text-right px-1.5 py-1 border-b border-border font-medium">Time</th>
                               </tr>
@@ -654,6 +682,9 @@ export const CollectionsPanel: React.FC = () => {
                                 <tr key={r.result_id} className="even:bg-card/50">
                                   <td className="px-1.5 py-0.5 border-b border-border/50 font-mono">
                                     Q{r.sequence_number}
+                                  </td>
+                                  <td className="px-1.5 py-0.5 border-b border-border/50 truncate max-w-[80px]" title={r.engineName}>
+                                    {r.engineName}
                                   </td>
                                   <td className="px-1.5 py-0.5 border-b border-border/50">
                                     {r.error_message ? (

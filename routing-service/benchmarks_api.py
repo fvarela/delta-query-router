@@ -551,8 +551,11 @@ async def get_run_progress(run_id: int):
 async def cancel_run(run_id: int):
     """Cancel a running benchmark run.
 
-    Adds the run_id to the cancellation set, which the background thread
-    checks between queries. Already-completed results are preserved.
+    For pending runs (queued, not yet started): marks as cancelled immediately
+    in the DB so the frontend sees the status change without waiting.
+    For running/warming_up runs: adds the run_id to the cancellation set,
+    which the background thread checks between queries.
+    Already-completed results are preserved in both cases.
     """
     run = db.fetch_one(
         "SELECT id, status FROM benchmark_runs WHERE id = %s",
@@ -569,7 +572,20 @@ async def cancel_run(run_id: int):
         )
 
     _cancelled_run_ids.add(run_id)
-    logger.info("Cancel requested for benchmark run %d", run_id)
+
+    # For pending runs, mark cancelled immediately in DB — the background
+    # thread hasn't started this engine yet, so waiting is unnecessary.
+    if run["status"] == "pending":
+        db.execute(
+            "UPDATE benchmark_runs SET status = 'cancelled', error_message = 'Skipped before execution', updated_at = NOW() WHERE id = %s",
+            (run_id,),
+        )
+        logger.info("Benchmark run %d skipped (was pending)", run_id)
+        return {"run_id": run_id, "status": "cancelled"}
+
+    logger.info(
+        "Cancel requested for benchmark run %d (status: %s)", run_id, run["status"]
+    )
     return {"run_id": run_id, "status": "cancel_requested"}
 
 

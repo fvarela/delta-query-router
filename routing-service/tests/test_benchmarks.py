@@ -877,14 +877,24 @@ class TestCancelRun:
         # Clean up
         benchmarks_api._cancelled_run_ids.discard(42)
 
+    @patch("benchmarks_api.db.execute")
     @patch("benchmarks_api.db.fetch_one")
-    def test_cancel_pending_run(self, mock_one):
-        """Can cancel a pending run too (not just running)."""
+    def test_cancel_pending_run(self, mock_one, mock_exec):
+        """Cancelling a pending run marks it cancelled immediately in DB."""
         mock_one.return_value = {"id": 10, "status": "pending"}
         benchmarks_api._cancelled_run_ids.discard(10)
 
         resp = client.post("/api/benchmarks/runs/10/cancel", headers=_auth_header())
         assert resp.status_code == 200
+        data = resp.json()
+        assert data["run_id"] == 10
+        assert data["status"] == "cancelled"
+        # Should have updated DB directly with status='cancelled'
+        mock_exec.assert_called_once()
+        call_sql = mock_exec.call_args[0][0]
+        assert "cancelled" in call_sql
+        assert "Skipped" in call_sql
+        # Also adds to cancellation set (so background thread skips too)
         assert 10 in benchmarks_api._cancelled_run_ids
         benchmarks_api._cancelled_run_ids.discard(10)
 
