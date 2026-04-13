@@ -45,12 +45,9 @@ async def health_services():
             resp = await client.get(f"{ROUTING_SERVICE_URL}/health/backends")
             resp.raise_for_status()
             backends = resp.json()
-            for svc_key, backend_key in [
-                ("postgresql", "postgresql"),
-                ("duckdb_worker", "duckdb_worker"),
-                ("databricks", "databricks"),
-            ]:
-                backend = backends.get(backend_key, {})
+            # Map simple keys directly
+            for svc_key in ("postgresql", "databricks"):
+                backend = backends.get(svc_key, {})
                 status = backend.get("status")
                 if status == "connected":
                     result[svc_key] = {"status": "connected"}
@@ -59,6 +56,16 @@ async def health_services():
                 else:
                     detail = backend.get("detail", "unhealthy")
                     result[svc_key] = {"status": "error", "detail": detail}
+
+            # DuckDB workers use dynamic keys (e.g. "duckdb-worker-small")
+            duckdb_statuses = [v for k, v in backends.items() if k.startswith("duckdb")]
+            if not duckdb_statuses:
+                result["duckdb_worker"] = {"status": "unknown"}
+            elif any(d.get("status") == "connected" for d in duckdb_statuses):
+                result["duckdb_worker"] = {"status": "connected"}
+            else:
+                detail = duckdb_statuses[0].get("detail", "unhealthy")
+                result["duckdb_worker"] = {"status": "error", "detail": detail}
 
         except (httpx.HTTPError, httpx.ConnectError):
             pass  # Leave as "unknown"

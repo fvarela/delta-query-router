@@ -70,13 +70,14 @@ export const CatalogBrowser: React.FC = () => {
     setEusLoading(prev => new Set(prev).add(key));
     try {
       await api.post(`/api/databricks/catalogs/${catalog}/schemas/${schema}/external-use`);
-      // Update local schema state
+      // Update local schema state + clear any previous error
       setSchemas(prev => ({
         ...prev,
         [catalog]: prev[catalog]?.map(s =>
           s.name === schema ? { ...s, external_use_schema: true } : s
         ) ?? [],
       }));
+      setTreeErrors(prev => { const n = { ...prev }; delete n[key]; return n; });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to grant";
       setTreeErrors(prev => ({ ...prev, [key]: msg }));
@@ -95,6 +96,7 @@ export const CatalogBrowser: React.FC = () => {
           s.name === schema ? { ...s, external_use_schema: false } : s
         ) ?? [],
       }));
+      setTreeErrors(prev => { const n = { ...prev }; delete n[key]; return n; });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to revoke";
       setTreeErrors(prev => ({ ...prev, [key]: msg }));
