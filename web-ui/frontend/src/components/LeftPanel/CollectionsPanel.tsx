@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { api } from "@/lib/api";
 import { useApp } from "@/contexts/AppContext";
 import { isMockMode } from "@/lib/mockMode";
@@ -39,7 +39,7 @@ export const CollectionsPanel: React.FC = () => {
   // Live per-query results for active benchmark (keyed by run_id → results array)
   const [liveResults, setLiveResults] = useState<Record<number, BenchmarkQueryResult[]>>({});
   // Track the last result_id seen per run for incremental polling
-  const [lastResultId, setLastResultId] = useState<Record<number, number>>({});
+  const lastResultIdRef = useRef<Record<number, number>>({});
   // Cancellation in-flight state (per run_id)
   const [cancellingRunIds, setCancellingRunIds] = useState<Set<number>>(new Set());
 
@@ -205,7 +205,7 @@ export const CollectionsPanel: React.FC = () => {
     setBenchmarkRunning(true);
     setBenchmarkError(null);
     setLiveResults({});
-    setLastResultId({});
+    lastResultIdRef.current = {};
     try {
       const result = await api.post<BenchmarkStartResponse>('/api/benchmarks', { collection_id: activeCollection.id, engine_ids: engineIds });
       setActiveRunIds(result.run_ids);
@@ -276,7 +276,7 @@ export const CollectionsPanel: React.FC = () => {
 
         // Poll incremental results for this run
         try {
-          const since = lastResultId[runId] ?? 0;
+          const since = lastResultIdRef.current[runId] ?? 0;
           const newResults = await api.get<BenchmarkQueryResult[]>(
             `/api/benchmarks/runs/${runId}/results`,
             { since: String(since) }
@@ -286,10 +286,10 @@ export const CollectionsPanel: React.FC = () => {
               ...prev,
               [runId]: [...(prev[runId] ?? []), ...newResults],
             }));
-            setLastResultId(prev => ({
-              ...prev,
+            lastResultIdRef.current = {
+              ...lastResultIdRef.current,
               [runId]: newResults[newResults.length - 1].result_id,
-            }));
+            };
           }
         } catch {
           // Results fetch failed — skip this cycle
@@ -326,7 +326,7 @@ export const CollectionsPanel: React.FC = () => {
           setActiveRunIds([]);
           setRunProgress({});
           setLiveResults({});
-          setLastResultId({});
+          lastResultIdRef.current = {};
           setCancellingRunIds(new Set());
         }, 5000);
       }
