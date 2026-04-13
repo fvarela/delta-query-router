@@ -364,6 +364,34 @@ class TestCreateTpcds:
         )
         assert resp.status_code == 403
 
+    @patch("main._warehouse_id", "wh-123")
+    @patch("main._workspace_client")
+    @patch("tpcds_api.db")
+    @patch("tpcds_api.check_samples_available", return_value=True)
+    @patch("tpcds_api.threading.Thread")
+    def test_use_existing_catalog_flag_passed(
+        self, mock_thread, mock_samples, mock_db, mock_wc
+    ):
+        """use_existing_catalog=True is accepted and passed to the thread."""
+        mock_db.fetch_one.side_effect = [
+            None,  # duplicate check
+            _tpcds_row(id=10, status="creating"),
+        ]
+        resp = client.post(
+            "/api/tpcds/create",
+            json={
+                "catalog_name": "existing_cat",
+                "schema_name": "sf1",
+                "scale_factor": 1,
+                "use_existing_catalog": True,
+            },
+            headers=_admin_header(),
+        )
+        assert resp.status_code == 200
+        # Thread should be started with use_existing_catalog kwarg
+        thread_kwargs = mock_thread.call_args[1]
+        assert thread_kwargs.get("kwargs", {}).get("use_existing_catalog") is True
+
 
 # ---------------------------------------------------------------------------
 # _sf1_ctas_sync  (T90 — unit test the background function)
@@ -388,6 +416,25 @@ class TestSf1CtasSync:
         calls = [str(c) for c in mock_db.execute.call_args_list]
         ready_calls = [c for c in calls if "ready" in c]
         assert len(ready_calls) >= 1
+
+    @patch("tpcds_api.db")
+    @patch("tpcds_api._execute_sql")
+    def test_use_existing_catalog_skips_create_catalog(self, mock_exec_sql, mock_db):
+        """With use_existing_catalog=True, CREATE CATALOG is skipped."""
+        wc = MagicMock()
+        wc.current_user.me.return_value = _mock_me()
+        wc.catalogs.update.return_value = None
+
+        tpcds_api._sf1_ctas_sync(
+            1, "mycat", "sf1", wc, "wh-123", use_existing_catalog=True
+        )
+
+        # Should call CREATE SCHEMA + 25 CTAS + 1 GRANT = 27 (no CREATE CATALOG)
+        assert mock_exec_sql.call_count == 27
+        # First SQL call should be CREATE SCHEMA, not CREATE CATALOG
+        first_sql = mock_exec_sql.call_args_list[0][0][2]
+        assert "CREATE SCHEMA" in first_sql
+        assert "CREATE CATALOG" not in first_sql
 
     @patch("tpcds_api.db")
     @patch("tpcds_api._execute_sql")
@@ -460,6 +507,69 @@ class TestBuildDsdgenScript:
         script = tpcds_api._build_dsdgen_script("cat1", "sch1", 10)
         # dbgen_version should NOT be in the tables list
         assert "dbgen_version" not in script
+
+    def test_includes_create_catalog_by_default(self):
+        script = tpcds_api._build_dsdgen_script("cat1", "sch1", 10)
+        assert "CREATE CATALOG" in script
+
+    def test_skips_create_catalog_when_use_existing(self):
+        script = tpcds_api._build_dsdgen_script(
+            "cat1", "sch1", 10, use_existing_catalog=True
+        )
+        assert "CREATE CATALOG" not in script
+        # Should still have CREATE SCHEMA
+        assert "CREATE SCHEMA" in script
+
+
+# ---------------------------------------------------------------------------
+# GET /api/tpcds/available-catalogs
+# ---------------------------------------------------------------------------
+
+
+class TestAvailableCatalogs:
+    @patch("main._workspace_client")
+    def test_returns_catalogs(self, mock_wc):
+        cat1 = MagicMock()
+        cat1.name = "main"
+        cat1.comment = "Default catalog"
+        cat2 = MagicMock()
+        cat2.name = "my_data"
+        cat2.comment = None
+        mock_wc.catalogs.list.return_value = [cat1, cat2]
+        resp = client.get("/api/tpcds/available-catalogs", headers=_admin_header())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 2
+        assert data[0]["name"] == "main"
+        assert data[0]["comment"] == "Default catalog"
+        assert data[1]["name"] == "my_data"
+        assert data[1]["comment"] == ""
+
+    @patch("main._workspace_client")
+    def test_filters_system_catalogs(self, mock_wc):
+        """system, samples, __databricks_internal are excluded."""
+        names = ["system", "samples", "__databricks_internal", "real_catalog"]
+        cats = []
+        for name in names:
+            c = MagicMock()
+            c.name = name
+            c.comment = None
+            cats.append(c)
+        mock_wc.catalogs.list.return_value = cats
+        resp = client.get("/api/tpcds/available-catalogs", headers=_admin_header())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["name"] == "real_catalog"
+
+    def test_403_for_non_admin(self):
+        resp = client.get("/api/tpcds/available-catalogs", headers=_user_header())
+        assert resp.status_code == 403
+
+    def test_503_when_not_configured(self):
+        with patch("main._workspace_client", None):
+            resp = client.get("/api/tpcds/available-catalogs", headers=_admin_header())
+        assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------
@@ -695,48 +805,197 @@ class TestDetectTpcds:
         resp = client.get("/api/tpcds/detect")
         assert resp.status_code == 401
 
+    @patch("tpcds_api.db")
     @patch.object(_main_module, "_workspace_client", None)
-    def test_no_workspace_returns_all_false(self):
+    def test_no_workspace_no_db_returns_all_false(self, mock_db):
+        """No workspace, no DB records → all not found."""
+        mock_db.fetch_all.return_value = []
         resp = client.get("/api/tpcds/detect", headers=_admin_header())
         assert resp.status_code == 200
         data = resp.json()
-        assert data == {"sf1": False, "sf10": False, "sf100": False}
+        assert data["sf1"]["found"] is False
+        assert data["sf10"]["found"] is False
+        assert data["sf100"]["found"] is False
 
+    @patch("tpcds_api.db")
     @patch.object(_main_module, "_workspace_client")
-    def test_all_schemas_exist(self, mock_wc):
-        """All 3 scale factors detected."""
-        mock_wc.schemas.get.return_value = MagicMock()  # no exception = exists
+    def test_db_records_detected(self, mock_wc, mock_db):
+        """DB records with status='ready' are detected without UC probe."""
+        mock_db.fetch_all.return_value = [
+            {"scale_factor": 1, "catalog_name": "mycat", "schema_name": "sf1"},
+            {"scale_factor": 10, "catalog_name": "mycat", "schema_name": "sf10"},
+        ]
+        # UC probe should not be called for sf1/sf10 since DB already says ready
+        mock_wc.catalogs.list.return_value = []
+        mock_wc.schemas.get.side_effect = Exception("NOT_FOUND")
         resp = client.get("/api/tpcds/detect", headers=_admin_header())
         assert resp.status_code == 200
         data = resp.json()
-        assert data == {"sf1": True, "sf10": True, "sf100": True}
-        assert mock_wc.schemas.get.call_count == 3
+        assert data["sf1"]["found"] is True
+        assert data["sf1"]["registered"] is True
+        assert data["sf1"]["catalog_name"] == "mycat"
+        assert data["sf10"]["found"] is True
+        assert data["sf100"]["found"] is False  # not in DB, no catalogs to probe
 
+    @patch("tpcds_api.db")
     @patch.object(_main_module, "_workspace_client")
-    def test_mixed_results(self, mock_wc):
-        """sf1 exists, sf10 missing, sf100 exists."""
+    def test_uc_fallback_for_missing_db_records(self, mock_wc, mock_db):
+        """SFs not in DB are probed via UC schema check across all catalogs."""
+        mock_db.fetch_all.return_value = []  # no DB records
+        # Simulate one catalog with all TPC-DS schemas
+        cat = MagicMock()
+        cat.name = "testcat"
+        mock_wc.catalogs.list.return_value = [cat]
+        mock_wc.schemas.get.return_value = MagicMock()  # all schemas exist
+        resp = client.get("/api/tpcds/detect", headers=_admin_header())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["sf1"]["found"] is True
+        assert data["sf1"]["registered"] is False
+        assert data["sf1"]["catalog_name"] == "testcat"
+        assert data["sf10"]["found"] is True
+        assert data["sf100"]["found"] is True
+
+    @patch("tpcds_api.db")
+    @patch.object(_main_module, "_workspace_client")
+    def test_mixed_db_and_uc(self, mock_wc, mock_db):
+        """sf1 from DB, sf100 from UC, sf10 missing from both."""
+        mock_db.fetch_all.return_value = [
+            {"scale_factor": 1, "catalog_name": "dbcat", "schema_name": "sf1"},
+        ]
+
+        cat = MagicMock()
+        cat.name = "uccat"
+        mock_wc.catalogs.list.return_value = [cat]
 
         def schema_side_effect(full_name):
-            if full_name.endswith(".sf10"):
-                raise Exception("NOT_FOUND")
-            return MagicMock()
+            if full_name == "uccat.sf100":
+                return MagicMock()
+            raise Exception("NOT_FOUND")
 
         mock_wc.schemas.get.side_effect = schema_side_effect
         resp = client.get("/api/tpcds/detect", headers=_admin_header())
         assert resp.status_code == 200
         data = resp.json()
-        assert data["sf1"] is True
-        assert data["sf10"] is False
-        assert data["sf100"] is True
+        assert data["sf1"]["found"] is True  # from DB
+        assert data["sf1"]["registered"] is True
+        assert data["sf10"]["found"] is False  # not in DB, not in UC
+        assert data["sf100"]["found"] is True  # from UC fallback
+        assert data["sf100"]["registered"] is False
+        assert data["sf100"]["catalog_name"] == "uccat"
 
+    @patch("tpcds_api.db")
     @patch.object(_main_module, "_workspace_client")
-    def test_all_missing(self, mock_wc):
-        """Catalog doesn't exist — all SFs false."""
-        mock_wc.schemas.get.side_effect = Exception("CATALOG_DOES_NOT_EXIST")
-        resp = client.get("/api/tpcds/detect", headers=_admin_header())
+    def test_catalog_query_param_scopes_probe(self, mock_wc, mock_db):
+        """When ?catalog=foo is passed, only that catalog is probed."""
+        mock_db.fetch_all.return_value = []
+        mock_wc.schemas.get.return_value = MagicMock()  # all exist
+        resp = client.get(
+            "/api/tpcds/detect?catalog=specific_cat", headers=_admin_header()
+        )
         assert resp.status_code == 200
         data = resp.json()
-        assert data == {"sf1": False, "sf10": False, "sf100": False}
+        assert data["sf1"]["found"] is True
+        assert data["sf1"]["catalog_name"] == "specific_cat"
+        # Should NOT call catalogs.list since we specified a catalog
+        mock_wc.catalogs.list.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# POST /api/tpcds/register — register existing TPC-DS data
+# ---------------------------------------------------------------------------
+
+
+class TestRegisterTpcds:
+    """POST /api/tpcds/register — register pre-existing TPC-DS data."""
+
+    def test_requires_auth(self):
+        resp = client.post(
+            "/api/tpcds/register",
+            json={"catalog_name": "mycat", "schema_name": "sf1", "scale_factor": 1},
+        )
+        assert resp.status_code == 401
+
+    @patch("tpcds_api._create_tpcds_collection", return_value=42)
+    @patch("tpcds_api.db")
+    @patch.object(_main_module, "_workspace_client")
+    def test_registers_existing_data(self, mock_wc, mock_db, mock_create_coll):
+        """Valid schema → creates tpcds_catalogs record + collection."""
+        mock_wc.schemas.get.return_value = MagicMock()
+        mock_wc.tables.get.return_value = MagicMock()
+        mock_db.fetch_one.side_effect = [
+            None,  # no existing tpcds_catalogs record
+            {"id": 10},  # INSERT RETURNING id
+        ]
+        resp = client.post(
+            "/api/tpcds/register",
+            json={"catalog_name": "mycat", "schema_name": "sf1", "scale_factor": 1},
+            headers=_admin_header(),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["message"] == "Registered successfully"
+        assert data["tpcds_catalog_id"] == 10
+        assert data["collection_id"] == 42
+        mock_create_coll.assert_called_once_with(10, "mycat", "sf1", 1)
+
+    @patch("tpcds_api.db")
+    @patch.object(_main_module, "_workspace_client")
+    def test_schema_not_found(self, mock_wc, mock_db):
+        """If schema doesn't exist in UC, returns 404."""
+        mock_wc.schemas.get.side_effect = Exception("NOT_FOUND")
+        resp = client.post(
+            "/api/tpcds/register",
+            json={"catalog_name": "badcat", "schema_name": "sf1", "scale_factor": 1},
+            headers=_admin_header(),
+        )
+        assert resp.status_code == 404
+        assert "not found" in resp.json()["detail"].lower()
+
+    @patch("tpcds_api.db")
+    @patch.object(_main_module, "_workspace_client")
+    def test_no_tpcds_tables(self, mock_wc, mock_db):
+        """If schema exists but no TPC-DS tables, returns 400."""
+        mock_wc.schemas.get.return_value = MagicMock()
+        mock_wc.tables.get.side_effect = Exception("NOT_FOUND")
+        resp = client.post(
+            "/api/tpcds/register",
+            json={"catalog_name": "mycat", "schema_name": "sf1", "scale_factor": 1},
+            headers=_admin_header(),
+        )
+        assert resp.status_code == 400
+        assert "No TPC-DS tables found" in resp.json()["detail"]
+
+    @patch("tpcds_api.db")
+    @patch.object(_main_module, "_workspace_client")
+    def test_invalid_scale_factor(self, mock_wc, mock_db):
+        """Invalid SF returns 400."""
+        resp = client.post(
+            "/api/tpcds/register",
+            json={"catalog_name": "mycat", "schema_name": "sf5", "scale_factor": 5},
+            headers=_admin_header(),
+        )
+        assert resp.status_code == 400
+        assert "scale_factor" in resp.json()["detail"]
+
+    @patch("tpcds_api.db")
+    @patch.object(_main_module, "_workspace_client")
+    def test_already_registered(self, mock_wc, mock_db):
+        """If already registered with collection, returns immediately."""
+        mock_wc.schemas.get.return_value = MagicMock()
+        mock_wc.tables.get.return_value = MagicMock()
+        mock_db.fetch_one.return_value = {
+            "id": 5,
+            "status": "ready",
+            "collection_id": 42,
+        }
+        resp = client.post(
+            "/api/tpcds/register",
+            json={"catalog_name": "mycat", "schema_name": "sf1", "scale_factor": 1},
+            headers=_admin_header(),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["message"] == "Already registered"
 
 
 # ---------------------------------------------------------------------------

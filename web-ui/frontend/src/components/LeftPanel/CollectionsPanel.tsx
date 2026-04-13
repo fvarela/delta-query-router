@@ -41,10 +41,10 @@ export const CollectionsPanel: React.FC = () => {
   // Detect TPC-DS on mount (real mode only)
   useEffect(() => {
     if (mock) return;
-    api.get<Record<string, boolean>>("/api/tpcds/detect")
+    api.get<Record<string, { found: boolean; registered?: boolean }>>("/api/tpcds/detect")
       .then(result => {
-        const anyExists = Object.values(result).some(v => v);
-        setTpcdsConfigured(anyExists);
+        const anyRegistered = Object.values(result).some(v => v.found && v.registered);
+        setTpcdsConfigured(anyRegistered);
       })
       .catch(() => {
         // Detect failed (no workspace connected, etc.) — leave as unconfigured

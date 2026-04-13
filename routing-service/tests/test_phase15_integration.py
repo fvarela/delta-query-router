@@ -222,9 +222,11 @@ class TestBenchmarkDefinitionsAndRuns:
 
 
 class TestTpcdsDetect:
-    """TPC-DS detect returns all false when no workspace."""
+    """TPC-DS detect returns all not-found when no workspace."""
 
-    def test_detect_no_workspace_all_false(self):
+    @patch("tpcds_api.db")
+    def test_detect_no_workspace_all_false(self, mock_db):
+        mock_db.fetch_all.return_value = []  # no DB records
         headers = _auth_header()
         original_wc = main._workspace_client
         try:
@@ -235,7 +237,9 @@ class TestTpcdsDetect:
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data == {"sf1": False, "sf10": False, "sf100": False}
+        assert data["sf1"]["found"] is False
+        assert data["sf10"]["found"] is False
+        assert data["sf100"]["found"] is False
 
 
 # ---------------------------------------------------------------------------

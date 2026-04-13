@@ -29,7 +29,7 @@ class RoutingConfig(BaseModel):
     enabledEngineIds: list[str] = []
     routingPriority: float = 0.5
     workspaceBinding: dict[str, Any] | None = None
-    warehouseMappings: dict[str, Any] = {}
+    warehouseMappings: list[Any] = []
 
     @field_validator("routingMode")
     @classmethod

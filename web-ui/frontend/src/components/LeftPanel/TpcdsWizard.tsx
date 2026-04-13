@@ -6,6 +6,8 @@ import type {
   TpcdsPreFlight,
   TpcdsCreateResponse,
   TpcdsStatusResponse,
+  TpcdsDetectResult,
+  TpcdsRegisterResponse,
 } from "@/types";
 import {
   ArrowLeft,
@@ -20,13 +22,14 @@ import {
   Clock,
   DollarSign,
   Info,
+  Link,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
-// Constants — hardcoded catalog path
+// Constants — default catalog name for new catalogs
 // ---------------------------------------------------------------------------
 
-const TPCDS_CATALOG = "delta_router_tpcds";
+const DEFAULT_CATALOG = "delta_router_tpcds";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -67,6 +70,12 @@ interface SfStatus {
   sf: number;
   exists: boolean;
   loading: boolean;
+  /** Catalog where the data was found (from detect) */
+  catalogName?: string;
+  /** Schema where the data was found */
+  schemaName?: string;
+  /** Whether the data is registered in the DB (has tpcds_catalogs + collection) */
+  registered?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -89,7 +98,7 @@ function mockCreate(sf: number): TpcdsCreateResponse {
   setTimeout(() => { mockExistingSfs.add(sf); }, 2000);
   return {
     id: Date.now(),
-    catalog_name: TPCDS_CATALOG,
+    catalog_name: DEFAULT_CATALOG,
     schema_name: `sf${sf}`,
     scale_factor: sf,
     status: "creating",
@@ -101,7 +110,7 @@ function mockStatus(sf: number): TpcdsStatusResponse {
   const exists = mockExistingSfs.has(sf);
   return {
     id: 0,
-    catalog_name: TPCDS_CATALOG,
+    catalog_name: DEFAULT_CATALOG,
     schema_name: `sf${sf}`,
     scale_factor: sf,
     status: exists ? "ready" : "creating",
@@ -124,6 +133,15 @@ export const TpcdsSetupDialog: React.FC<TpcdsSetupDialogProps> = ({ open, onClos
   // Wizard step
   const [step, setStep] = useState<"detect" | "info" | "create" | "running" | "done">("detect");
 
+  // Catalog mode: "new" = create a new catalog, "existing" = use an existing one
+  const [catalogMode, setCatalogMode] = useState<"new" | "existing">("existing");
+  const [catalogName, setCatalogName] = useState(DEFAULT_CATALOG);
+  const [availableCatalogs, setAvailableCatalogs] = useState<{ name: string; comment: string }[]>([]);
+  const [catalogsLoading, setCatalogsLoading] = useState(false);
+
+  // Derived: the effective catalog name used everywhere
+  const effectiveCatalog = catalogName || DEFAULT_CATALOG;
+
   // Per-SF existence detection
   const [sfStatuses, setSfStatuses] = useState<SfStatus[]>(
     SCALE_FACTORS.map(sf => ({ sf: sf.sf, exists: false, loading: true }))
@@ -144,11 +162,14 @@ export const TpcdsSetupDialog: React.FC<TpcdsSetupDialogProps> = ({ open, onClos
   const [createError, setCreateError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Register state
+  const [registeringFor, setRegisteringFor] = useState<number | null>(null);
+
   // ---------------------------------------------------------------------------
   // Detection — check which SFs already exist
   // ---------------------------------------------------------------------------
 
-  const detectSfs = useCallback(async () => {
+  const detectSfs = useCallback(async (probeCatalog?: string) => {
     setDetectError(null);
     setSfStatuses(SCALE_FACTORS.map(sf => ({ sf: sf.sf, exists: false, loading: true })));
 
@@ -160,16 +181,26 @@ export const TpcdsSetupDialog: React.FC<TpcdsSetupDialogProps> = ({ open, onClos
           sf: sf.sf,
           exists: mockCheckSf(sf.sf),
           loading: false,
+          registered: mockCheckSf(sf.sf),
         })));
       } else {
-        // Real API: check each SF by trying to list tables in the schema
-        // Backend endpoint: GET /api/tpcds/detect returns { sf1: bool, sf10: bool, sf100: bool }
-        const result = await api.get<Record<string, boolean>>("/api/tpcds/detect");
-        setSfStatuses(SCALE_FACTORS.map(sf => ({
-          sf: sf.sf,
-          exists: result[sf.schema] ?? false,
-          loading: false,
-        })));
+        // Real API: GET /api/tpcds/detect?catalog=<name>
+        const params = probeCatalog ? `?catalog=${encodeURIComponent(probeCatalog)}` : "";
+        const result = await api.get<Record<string, TpcdsDetectResult>>(`/api/tpcds/detect${params}`);
+        setSfStatuses(SCALE_FACTORS.map(sf => {
+          const det = result[sf.schema];
+          if (det && det.found) {
+            return {
+              sf: sf.sf,
+              exists: true,
+              loading: false,
+              catalogName: det.catalog_name,
+              schemaName: det.schema_name,
+              registered: det.registered ?? false,
+            };
+          }
+          return { sf: sf.sf, exists: false, loading: false };
+        }));
       }
     } catch (err) {
       setDetectError(err instanceof Error ? err.message : "Detection failed");
@@ -183,6 +214,33 @@ export const TpcdsSetupDialog: React.FC<TpcdsSetupDialogProps> = ({ open, onClos
       detectSfs();
     }
   }, [open, detectSfs]);
+
+  // ---------------------------------------------------------------------------
+  // Fetch available UC catalogs (for "use existing" mode)
+  // ---------------------------------------------------------------------------
+
+  const loadAvailableCatalogs = useCallback(async () => {
+    if (mock) {
+      setAvailableCatalogs([
+        { name: "main", comment: "Default catalog" },
+        { name: "delta_router_tpcds", comment: "" },
+      ]);
+      return;
+    }
+    setCatalogsLoading(true);
+    try {
+      const cats = await api.get<{ name: string; comment: string }[]>("/api/tpcds/available-catalogs");
+      setAvailableCatalogs(cats);
+      // Pre-select a sensible default if available
+      if (cats.length > 0 && catalogMode === "existing") {
+        const existing = cats.find(c => c.name === DEFAULT_CATALOG);
+        setCatalogName(existing ? existing.name : cats[0].name);
+      }
+    } catch {
+      setAvailableCatalogs([]);
+    }
+    setCatalogsLoading(false);
+  }, [mock, catalogMode]);
 
   // ---------------------------------------------------------------------------
   // Preflight
@@ -248,12 +306,14 @@ export const TpcdsSetupDialog: React.FC<TpcdsSetupDialogProps> = ({ open, onClos
   const allDetecting = sfStatuses.every(s => s.loading);
   const missingSfs = sfStatuses.filter(s => !s.exists && !s.loading);
   const existingSfs = sfStatuses.filter(s => s.exists && !s.loading);
-  const allConfigured = !allDetecting && missingSfs.length === 0;
+  const unregisteredSfs = sfStatuses.filter(s => s.exists && !s.loading && !s.registered);
+  const allConfigured = !allDetecting && missingSfs.length === 0 && unregisteredSfs.length === 0;
 
   const canProceedToCreate = preflight != null
     && preflight.metastore_external_access
     && preflight.warehouse_configured
-    && selectedSf != null;
+    && selectedSf != null
+    && effectiveCatalog.trim().length > 0;
 
   const selectedMeta = SCALE_FACTORS.find(sf => sf.sf === selectedSf);
 
@@ -261,8 +321,28 @@ export const TpcdsSetupDialog: React.FC<TpcdsSetupDialogProps> = ({ open, onClos
   // Actions
   // ---------------------------------------------------------------------------
 
+  const handleRegister = async (sfStatus: SfStatus) => {
+    if (!sfStatus.catalogName || !sfStatus.schemaName) return;
+    setRegisteringFor(sfStatus.sf);
+    try {
+      await api.post<TpcdsRegisterResponse>("/api/tpcds/register", {
+        catalog_name: sfStatus.catalogName,
+        schema_name: sfStatus.schemaName,
+        scale_factor: sfStatus.sf,
+      });
+      // Mark as registered locally
+      setSfStatuses(prev => prev.map(s =>
+        s.sf === sfStatus.sf ? { ...s, registered: true } : s
+      ));
+      onComplete?.();
+    } catch (err) {
+      setDetectError(err instanceof Error ? err.message : "Registration failed");
+    }
+    setRegisteringFor(null);
+  };
+
   const handleSetupClick = async () => {
-    await loadPreflight();
+    await Promise.all([loadPreflight(), loadAvailableCatalogs()]);
     // Pre-select the first missing SF
     if (missingSfs.length > 0 && selectedSf === null) {
       setSelectedSf(missingSfs[0].sf);
@@ -280,15 +360,16 @@ export const TpcdsSetupDialog: React.FC<TpcdsSetupDialogProps> = ({ open, onClos
         resp = mockCreate(selectedSf);
       } else {
         resp = await api.post<TpcdsCreateResponse>("/api/tpcds/create", {
-          catalog_name: TPCDS_CATALOG,
+          catalog_name: effectiveCatalog,
           schema_name: `sf${selectedSf}`,
           scale_factor: selectedSf,
+          use_existing_catalog: catalogMode === "existing",
         });
       }
       setCreateResponse(resp);
       setStatus({
         id: resp.id,
-        catalog_name: TPCDS_CATALOG,
+        catalog_name: effectiveCatalog,
         schema_name: `sf${selectedSf}`,
         scale_factor: selectedSf,
         status: "creating",
@@ -314,6 +395,8 @@ export const TpcdsSetupDialog: React.FC<TpcdsSetupDialogProps> = ({ open, onClos
     setCreateError(null);
     setSelectedSf(null);
     setPreflight(null);
+    setCatalogMode("existing");
+    setCatalogName(DEFAULT_CATALOG);
     onClose();
   };
 
@@ -322,6 +405,8 @@ export const TpcdsSetupDialog: React.FC<TpcdsSetupDialogProps> = ({ open, onClos
     setStatus(null);
     setCreateError(null);
     setSelectedSf(null);
+    setCatalogMode("existing");
+    setCatalogName(DEFAULT_CATALOG);
     // Re-detect to refresh statuses
     setStep("detect");
     detectSfs();
@@ -361,7 +446,7 @@ export const TpcdsSetupDialog: React.FC<TpcdsSetupDialogProps> = ({ open, onClos
         </div>
 
         <div className="px-4 py-3 text-[12px] text-muted-foreground border-b border-border">
-          TPC-DS benchmark tables are stored in <span className="font-mono text-foreground">{TPCDS_CATALOG}</span> as managed Delta tables.
+          TPC-DS benchmark tables are stored as managed Delta tables in Unity Catalog.
           Three scale factors are available — each is independent.
         </div>
 
@@ -381,16 +466,25 @@ export const TpcdsSetupDialog: React.FC<TpcdsSetupDialogProps> = ({ open, onClos
               {SCALE_FACTORS.map(meta => {
                 const sfSt = sfStatuses.find(s => s.sf === meta.sf);
                 const exists = sfSt?.exists ?? false;
+                const registered = sfSt?.registered ?? false;
+                const foundButUnregistered = exists && !registered;
+                const isRegistering = registeringFor === meta.sf;
                 return (
                   <div
                     key={meta.sf}
                     className={`border rounded-md px-3 py-2.5 text-[12px] ${
-                      exists ? "border-status-success/30 bg-status-success/5" : "border-border"
+                      exists && registered
+                        ? "border-status-success/30 bg-status-success/5"
+                        : foundButUnregistered
+                        ? "border-amber-500/30 bg-amber-500/5"
+                        : "border-border"
                     }`}
                   >
                     <div className="flex items-center gap-2">
-                      {exists ? (
+                      {exists && registered ? (
                         <CheckCircle2 size={14} className="text-status-success shrink-0" />
+                      ) : foundButUnregistered ? (
+                        <Link size={14} className="text-amber-500 shrink-0" />
                       ) : (
                         <HardDrive size={14} className="text-muted-foreground/40 shrink-0" />
                       )}
@@ -398,10 +492,27 @@ export const TpcdsSetupDialog: React.FC<TpcdsSetupDialogProps> = ({ open, onClos
                       <span className="text-[11px] text-muted-foreground ml-auto">{meta.size}</span>
                     </div>
                     <div className="ml-[22px] mt-1 text-[11px] text-muted-foreground">
-                      {exists ? (
+                      {exists && registered ? (
                         <span className="text-status-success">
-                          Dataset found in <span className="font-mono">{TPCDS_CATALOG}.{meta.schema}</span>
+                          Registered — <span className="font-mono">{sfSt?.catalogName}.{sfSt?.schemaName}</span>
                         </span>
+                      ) : foundButUnregistered ? (
+                        <div className="flex items-center gap-2">
+                          <span className="text-amber-600">
+                            Found in <span className="font-mono">{sfSt?.catalogName}.{sfSt?.schemaName}</span> — not registered
+                          </span>
+                          <button
+                            onClick={() => sfSt && handleRegister(sfSt)}
+                            disabled={isRegistering}
+                            className="ml-auto px-2 py-0.5 bg-amber-500 text-white rounded text-[10px] font-medium hover:bg-amber-600 disabled:opacity-50 transition-colors shrink-0"
+                          >
+                            {isRegistering ? (
+                              <span className="flex items-center gap-1"><Loader2 size={10} className="animate-spin" /> Registering…</span>
+                            ) : (
+                              "Register"
+                            )}
+                          </button>
+                        </div>
                       ) : (
                         <span>Not created · {meta.time} · {meta.cost}</span>
                       )}
@@ -420,7 +531,7 @@ export const TpcdsSetupDialog: React.FC<TpcdsSetupDialogProps> = ({ open, onClos
           )}
         </div>
 
-        {!allDetecting && !allConfigured && (
+        {!allDetecting && !allConfigured && missingSfs.length > 0 && (
           <div className="px-4 py-3 border-t border-panel-border">
             <button
               onClick={handleSetupClick}
@@ -460,6 +571,78 @@ export const TpcdsSetupDialog: React.FC<TpcdsSetupDialogProps> = ({ open, onClos
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
+          {/* Catalog selection */}
+          <div>
+            <h4 className="font-semibold text-foreground text-[12px] mb-1.5 flex items-center gap-1.5">
+              <Database size={13} className="text-primary" />
+              Target Catalog
+            </h4>
+            <div className="space-y-2">
+              {/* Mode toggle */}
+              <div className="flex gap-1 p-0.5 bg-muted rounded-md">
+                <button
+                  onClick={() => { setCatalogMode("existing"); if (availableCatalogs.length > 0) setCatalogName(availableCatalogs.find(c => c.name === DEFAULT_CATALOG)?.name ?? availableCatalogs[0].name); }}
+                  className={`flex-1 px-2 py-1 rounded text-[11px] font-medium transition-colors ${
+                    catalogMode === "existing"
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Use Existing
+                </button>
+                <button
+                  onClick={() => { setCatalogMode("new"); setCatalogName(DEFAULT_CATALOG); }}
+                  className={`flex-1 px-2 py-1 rounded text-[11px] font-medium transition-colors ${
+                    catalogMode === "new"
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Create New
+                </button>
+              </div>
+
+              {catalogMode === "existing" ? (
+                catalogsLoading ? (
+                  <div className="flex items-center gap-2 py-2 text-[11px] text-muted-foreground">
+                    <LoadingSpinner size={12} />
+                    <span>Loading catalogs…</span>
+                  </div>
+                ) : availableCatalogs.length === 0 ? (
+                  <div className="text-[11px] text-muted-foreground py-1">
+                    No catalogs found. Switch to "Create New" or check permissions.
+                  </div>
+                ) : (
+                  <select
+                    value={catalogName}
+                    onChange={(e) => setCatalogName(e.target.value)}
+                    className="w-full px-2 py-1.5 bg-background border border-border rounded-md text-[12px] text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                  >
+                    {availableCatalogs.map(c => (
+                      <option key={c.name} value={c.name}>
+                        {c.name}{c.comment ? ` — ${c.comment}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                )
+              ) : (
+                <input
+                  type="text"
+                  value={catalogName}
+                  onChange={(e) => setCatalogName(e.target.value)}
+                  placeholder="delta_router_tpcds"
+                  className="w-full px-2 py-1.5 bg-background border border-border rounded-md text-[12px] text-foreground font-mono focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+              )}
+
+              {catalogMode === "new" && (
+                <p className="text-[11px] text-muted-foreground">
+                  Requires <span className="font-mono text-foreground">CREATE CATALOG</span> permission on the metastore.
+                </p>
+              )}
+            </div>
+          </div>
+
           {/* What gets created */}
           <div>
             <h4 className="font-semibold text-foreground text-[12px] mb-1.5 flex items-center gap-1.5">
@@ -467,7 +650,7 @@ export const TpcdsSetupDialog: React.FC<TpcdsSetupDialogProps> = ({ open, onClos
               What gets created
             </h4>
             <p className="text-[12px] text-muted-foreground leading-relaxed">
-              25 standard TPC-DS tables as managed Delta tables in <span className="font-mono text-foreground">{TPCDS_CATALOG}</span>.
+              25 standard TPC-DS tables as managed Delta tables in <span className="font-mono text-foreground">{effectiveCatalog}</span>.
               Access is granted to all workspace users automatically (EXTERNAL USE SCHEMA for DuckDB).
             </p>
           </div>
@@ -583,8 +766,8 @@ export const TpcdsSetupDialog: React.FC<TpcdsSetupDialogProps> = ({ open, onClos
           {/* Summary */}
           <div className="border border-border rounded-md px-3 py-2.5 text-[12px] space-y-1.5">
             <div className="font-semibold text-foreground mb-2">Summary</div>
-            <p className="text-muted-foreground">Catalog: <span className="text-foreground font-mono">{TPCDS_CATALOG}</span></p>
-            <p className="text-muted-foreground">Schema: <span className="text-foreground font-mono">{TPCDS_CATALOG}.{selectedMeta.schema}</span></p>
+            <p className="text-muted-foreground">Catalog: <span className="text-foreground font-mono">{effectiveCatalog}</span>{catalogMode === "existing" ? " (existing)" : " (new)"}</p>
+            <p className="text-muted-foreground">Schema: <span className="text-foreground font-mono">{effectiveCatalog}.{selectedMeta.schema}</span></p>
             <p className="text-muted-foreground">Scale: <span className="text-foreground">{selectedMeta.label} ({selectedMeta.size})</span></p>
             <p className="text-muted-foreground">Tables: <span className="text-foreground">25 TPC-DS tables</span></p>
             <p className="text-muted-foreground">Method: <span className="text-foreground">{selectedMeta.method}</span></p>
@@ -648,8 +831,8 @@ export const TpcdsSetupDialog: React.FC<TpcdsSetupDialogProps> = ({ open, onClos
           </div>
 
           <div className="border border-border rounded-md px-3 py-2.5 text-[12px] space-y-1">
-            <p className="text-muted-foreground">Catalog: <span className="text-foreground font-mono">{TPCDS_CATALOG}</span></p>
-            <p className="text-muted-foreground">Schema: <span className="text-foreground font-mono">{TPCDS_CATALOG}.{meta?.schema}</span></p>
+            <p className="text-muted-foreground">Catalog: <span className="text-foreground font-mono">{effectiveCatalog}</span></p>
+            <p className="text-muted-foreground">Schema: <span className="text-foreground font-mono">{effectiveCatalog}.{meta?.schema}</span></p>
             <p className="text-muted-foreground">Scale: <span className="text-foreground">{meta?.label}</span></p>
             {createResponse?.method && (
               <p className="text-muted-foreground">Method: <span className="text-foreground">{createResponse.method === "ctas" ? "CTAS from samples" : "Databricks Job"}</span></p>

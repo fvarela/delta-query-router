@@ -356,6 +356,7 @@ export interface TpcdsCreateRequest {
   catalog_name: string;
   schema_name: string;
   scale_factor: number;
+  use_existing_catalog?: boolean;
 }
 
 export interface TpcdsCreateResponse {
@@ -385,4 +386,23 @@ export interface TpcdsStatusResponse extends TpcdsCatalog {
   job_run_id: string | null;
   job_state?: string;
   elapsed_time_seconds?: number;
+}
+
+export interface TpcdsDetectResult {
+  found: boolean;
+  catalog_name?: string;
+  schema_name?: string;
+  registered?: boolean;
+}
+
+export interface TpcdsRegisterRequest {
+  catalog_name: string;
+  schema_name: string;
+  scale_factor: number;
+}
+
+export interface TpcdsRegisterResponse {
+  message: string;
+  tpcds_catalog_id: number;
+  collection_id: number | null;
 }

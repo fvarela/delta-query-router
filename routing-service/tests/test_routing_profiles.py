@@ -43,7 +43,7 @@ def _profile_row(
             "enabledEngineIds": [],
             "routingPriority": 0.5,
             "workspaceBinding": None,
-            "warehouseMappings": {},
+            "warehouseMappings": [],
         },
         "created_at": datetime(2026, 4, 1, tzinfo=timezone.utc),
         "updated_at": datetime(2026, 4, 1, tzinfo=timezone.utc),
@@ -144,7 +144,7 @@ class TestCreateProfile:
             "enabledEngineIds": ["duckdb-1", "databricks-serverless-xs"],
             "routingPriority": 1,
             "workspaceBinding": None,
-            "warehouseMappings": {},
+            "warehouseMappings": [],
         }
         mock_fetch.return_value = _profile_row(
             id=6, name="Smart Profile", is_default=False, config=config
@@ -237,7 +237,7 @@ class TestUpdateProfile:
             "enabledEngineIds": [],
             "routingPriority": 0,
             "workspaceBinding": None,
-            "warehouseMappings": {},
+            "warehouseMappings": [],
         }
         mock_fetch.side_effect = [
             _profile_row(),

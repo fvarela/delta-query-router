@@ -255,26 +255,184 @@ TPCDS_SCALE_FACTORS = ["sf1", "sf10", "sf100"]
 @router.get("/detect")
 async def detect_tpcds(
     user: auth.UserContext = Depends(auth.verify_token),
+    catalog: str | None = None,
 ):
-    """Detect which TPC-DS scale factors exist in the connected workspace.
+    """Detect which TPC-DS scale factors exist.
 
-    Returns: {"sf1": bool, "sf10": bool, "sf100": bool}
-    If no workspace is connected, returns all false with 200.
+    Checks the tpcds_catalogs DB table for 'ready' records, then falls back
+    to probing the workspace via Unity Catalog.
+
+    If `catalog` query param is given, probes only that catalog.
+    Otherwise probes ALL visible catalogs (excluding system/samples).
+
+    Returns: {"sf1": {...}, "sf10": {...}, "sf100": {...}} where each value
+    has `found: bool` and optional `catalog_name`, `schema_name`.
     """
+    result: dict[str, dict] = {sf: {"found": False} for sf in TPCDS_SCALE_FACTORS}
+
+    # Check DB records first — these are authoritative for catalogs we created
+    rows = db.fetch_all(
+        "SELECT scale_factor, catalog_name, schema_name "
+        "FROM tpcds_catalogs WHERE status = 'ready'"
+    )
+    for row in rows:
+        sf_key = f"sf{row['scale_factor']}"
+        if sf_key in result:
+            result[sf_key] = {
+                "found": True,
+                "catalog_name": row["catalog_name"],
+                "schema_name": row["schema_name"],
+                "registered": True,
+            }
+
+    # For any still-not-found SFs, probe UC as a fallback
     _main = _get_main()
     wc = _main._workspace_client
-    if not wc:
-        return {sf: False for sf in TPCDS_SCALE_FACTORS}
+    if wc:
+        # Determine which catalogs to probe
+        if catalog:
+            catalogs_to_probe = [catalog]
+        else:
+            # Probe all visible catalogs (skip system ones)
+            try:
+                all_cats = list(wc.catalogs.list())
+                catalogs_to_probe = [
+                    c.name
+                    for c in all_cats
+                    if c.name not in ("system", "samples", "__databricks_internal")
+                ]
+            except Exception:
+                catalogs_to_probe = [TPCDS_CATALOG]
 
-    result = {}
-    for sf in TPCDS_SCALE_FACTORS:
-        try:
-            wc.schemas.get(f"{TPCDS_CATALOG}.{sf}")
-            result[sf] = True
-        except Exception:
-            result[sf] = False
+        for sf in TPCDS_SCALE_FACTORS:
+            if result[sf]["found"]:
+                continue
+            for cat_name in catalogs_to_probe:
+                try:
+                    wc.schemas.get(f"{cat_name}.{sf}")
+                    result[sf] = {
+                        "found": True,
+                        "catalog_name": cat_name,
+                        "schema_name": sf,
+                        "registered": False,
+                    }
+                    break  # Found this SF, no need to check more catalogs
+                except Exception:
+                    pass
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Register existing TPC-DS data  (Phase 18 / schema drift recovery)
+# ---------------------------------------------------------------------------
+
+
+class TpcdsRegisterRequest(BaseModel):
+    catalog_name: str
+    schema_name: str
+    scale_factor: int
+
+
+@router.post("/register")
+async def register_tpcds(
+    body: TpcdsRegisterRequest,
+    user: auth.UserContext = Depends(auth.verify_token),
+):
+    """Register existing TPC-DS data without creating tables.
+
+    Verifies that the schema exists in Unity Catalog and contains at least some
+    TPC-DS tables, then creates a tpcds_catalogs record (status 'ready') and
+    the auto-generated TPC-DS query collection with 99 queries.
+
+    Use this when TPC-DS tables were already created (e.g. in a previous
+    session or after a DB schema reset that wiped tpcds_catalogs records).
+    """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if body.scale_factor not in VALID_SCALE_FACTORS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"scale_factor must be one of {sorted(VALID_SCALE_FACTORS)}",
+        )
+    wc = _require_workspace_client()
+
+    # Verify schema exists in UC
+    full_schema = f"{body.catalog_name}.{body.schema_name}"
+    try:
+        wc.schemas.get(full_schema)
+    except Exception:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Schema '{full_schema}' not found in Unity Catalog",
+        )
+
+    # Verify at least some TPC-DS tables are present (spot-check 3 core tables)
+    spot_check = ["customer", "store_sales", "date_dim"]
+    found = 0
+    for table in spot_check:
+        try:
+            wc.tables.get(f"{full_schema}.{table}")
+            found += 1
+        except Exception:
+            pass
+    if found == 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No TPC-DS tables found in '{full_schema}'. "
+            f"Checked: {', '.join(spot_check)}",
+        )
+
+    # Check for existing record (idempotent)
+    existing = db.fetch_one(
+        "SELECT id, status, collection_id FROM tpcds_catalogs "
+        "WHERE catalog_name = %s AND schema_name = %s AND scale_factor = %s",
+        (body.catalog_name, body.schema_name, body.scale_factor),
+    )
+    if existing and existing["status"] == "ready" and existing["collection_id"]:
+        return {
+            "message": "Already registered",
+            "tpcds_catalog_id": existing["id"],
+            "collection_id": existing["collection_id"],
+        }
+
+    # Delete stale record if exists (failed/creating)
+    if existing:
+        db.execute("DELETE FROM tpcds_catalogs WHERE id = %s", (existing["id"],))
+
+    # Create tpcds_catalogs record as 'ready'
+    row = db.fetch_one(
+        "INSERT INTO tpcds_catalogs "
+        "(catalog_name, schema_name, scale_factor, status, tables_created, total_tables) "
+        "VALUES (%s, %s, %s, 'ready', %s, %s) RETURNING id",
+        (
+            body.catalog_name,
+            body.schema_name,
+            body.scale_factor,
+            len(TPCDS_TABLES),
+            len(TPCDS_TABLES),
+        ),
+    )
+    record_id = row["id"]
+
+    # Create TPC-DS collection with 99 queries
+    collection_id = _create_tpcds_collection(
+        record_id, body.catalog_name, body.schema_name, body.scale_factor
+    )
+
+    logger.info(
+        "Registered existing TPC-DS SF%d at %s.%s (record=%d, collection=%s)",
+        body.scale_factor,
+        body.catalog_name,
+        body.schema_name,
+        record_id,
+        collection_id,
+    )
+    return {
+        "message": "Registered successfully",
+        "tpcds_catalog_id": record_id,
+        "collection_id": collection_id,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +444,7 @@ class TpcdsCreateRequest(BaseModel):
     catalog_name: str
     schema_name: str
     scale_factor: int
+    use_existing_catalog: bool = False
 
 
 def _sf1_ctas_sync(
@@ -294,6 +453,7 @@ def _sf1_ctas_sync(
     schema_name: str,
     wc,
     wh_id: str,
+    use_existing_catalog: bool = False,
 ) -> None:
     """Run SF1 CTAS creation in a background thread.
 
@@ -302,7 +462,8 @@ def _sf1_ctas_sync(
     """
     try:
         # Create catalog and schema
-        _execute_sql(wc, wh_id, f"CREATE CATALOG IF NOT EXISTS `{catalog_name}`")
+        if not use_existing_catalog:
+            _execute_sql(wc, wh_id, f"CREATE CATALOG IF NOT EXISTS `{catalog_name}`")
         _execute_sql(
             wc,
             wh_id,
@@ -378,9 +539,15 @@ def _build_dsdgen_script(
     catalog_name: str,
     schema_name: str,
     scale_factor: int,
+    use_existing_catalog: bool = False,
 ) -> str:
     """Build the Python script content for DuckDB dsdgen + Spark write."""
     tables_str = ", ".join(f'"{t}"' for t in TPCDS_TABLES if t != "dbgen_version")
+    create_catalog_line = (
+        ""
+        if use_existing_catalog
+        else f'spark.sql(f"CREATE CATALOG IF NOT EXISTS `{{catalog_name}}`")'
+    )
     return textwrap.dedent(f"""\
         import subprocess
         import sys
@@ -416,7 +583,7 @@ def _build_dsdgen_script(
 
         catalog_name = "{catalog_name}"
         schema_name = "{schema_name}"
-        spark.sql(f"CREATE CATALOG IF NOT EXISTS `{{catalog_name}}`")
+        {create_catalog_line}
         spark.sql(f"CREATE SCHEMA IF NOT EXISTS `{{catalog_name}}`.`{{schema_name}}`")
 
         for table in tables:
@@ -458,12 +625,15 @@ def _submit_dsdgen_job(
     catalog_name: str,
     schema_name: str,
     scale_factor: int,
+    use_existing_catalog: bool = False,
 ) -> str:
     """Submit a one-time Databricks Job for dsdgen data generation.
 
     Returns the run_id as a string.
     """
-    script_content = _build_dsdgen_script(catalog_name, schema_name, scale_factor)
+    script_content = _build_dsdgen_script(
+        catalog_name, schema_name, scale_factor, use_existing_catalog
+    )
     cluster_spec = _get_cluster_spec(scale_factor)
 
     # Use the REST API directly for runs/submit
@@ -556,6 +726,7 @@ async def create_tpcds(
         thread = threading.Thread(
             target=_sf1_ctas_sync,
             args=(record_id, body.catalog_name, body.schema_name, wc, wh_id),
+            kwargs={"use_existing_catalog": body.use_existing_catalog},
             daemon=True,
         )
         thread.start()
@@ -571,7 +742,11 @@ async def create_tpcds(
         # SF10/SF100 (or SF1 without samples) via Databricks Job
         try:
             run_id = _submit_dsdgen_job(
-                wc, body.catalog_name, body.schema_name, body.scale_factor
+                wc,
+                body.catalog_name,
+                body.schema_name,
+                body.scale_factor,
+                use_existing_catalog=body.use_existing_catalog,
             )
         except Exception as e:
             db.execute(
@@ -725,6 +900,34 @@ def _finalize_job_success(
         _create_tpcds_collection(
             record_id, catalog_name, schema_name, row["scale_factor"]
         )
+
+
+# ---------------------------------------------------------------------------
+# List available Unity Catalog catalogs (for "use existing" picker)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/available-catalogs")
+async def list_available_catalogs(
+    user: auth.UserContext = Depends(auth.verify_token),
+):
+    """List UC catalogs the current user can see, for the 'use existing catalog' picker."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    wc = _require_workspace_client()
+    try:
+        catalogs = list(wc.catalogs.list())
+        return [
+            {
+                "name": c.name,
+                "comment": getattr(c, "comment", None) or "",
+            }
+            for c in catalogs
+            if c.name not in ("system", "samples", "__databricks_internal")
+        ]
+    except Exception as e:
+        logger.warning("Failed to list UC catalogs: %s", e)
+        raise HTTPException(status_code=502, detail=f"Failed to list catalogs: {e}")
 
 
 # ---------------------------------------------------------------------------
