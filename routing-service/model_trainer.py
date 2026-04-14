@@ -1,8 +1,8 @@
-"""Model trainer — reads benchmark data, builds features, trains a model.
+"""Model trainer — reads benchmark data + pre-computed features, trains a model.
 
 Public API:
     train_model(model_dir: str = "/models/") -> dict
-        Reads benchmark_results (joined with collection_queries and engines),
+        Reads benchmark_results joined with pre-computed query_features,
         builds feature vectors, trains a RandomForestRegressor, computes
         hold-out metrics, saves the model to disk, and writes a record to
         the models table.  Returns the new model record dict.
@@ -23,7 +23,6 @@ from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.model_selection import train_test_split
 
 import db
-import query_analyzer
 import feature_builder
 
 logger = logging.getLogger("routing-service.model_trainer")
@@ -32,21 +31,33 @@ MIN_TRAINING_SAMPLES = 10
 
 
 def _fetch_training_data() -> list[dict]:
-    """Fetch benchmark results joined with query text and engine info.
+    """Fetch benchmark results joined with pre-computed features and engine info.
 
-    Returns list of dicts with keys:
-        execution_time_ms, engine_id, sql_text, engine_type, cost_tier
+    Returns list of dicts with keys from query_features (AST + table metadata)
+    plus engine_type, cost_tier, and execution_time_ms.
     """
     return db.fetch_all(
         """
         SELECT br.execution_time_ms,
                br.engine_id,
-               cq.query_text AS sql_text,
                e.engine_type,
-               e.cost_tier
+               e.cost_tier,
+               qf.num_tables,
+               qf.num_joins,
+               qf.num_aggregations,
+               qf.num_subqueries,
+               qf.has_group_by,
+               qf.has_order_by,
+               qf.has_limit,
+               qf.has_window_functions,
+               qf.num_columns_selected,
+               qf.complexity_score,
+               COALESCE(qf.max_table_size_bytes, 0) AS max_table_size_bytes,
+               COALESCE(qf.total_data_bytes, 0) AS total_data_bytes
         FROM benchmark_results br
         JOIN collection_queries cq ON br.query_id = cq.id
         JOIN engines e ON br.engine_id = e.id
+        JOIN query_features qf ON qf.query_id = cq.id
         WHERE br.execution_time_ms IS NOT NULL
         """
     )
@@ -73,43 +84,38 @@ def train_model(
     rows = _fetch_training_data()
     logger.info("Fetched %d benchmark result rows for training", len(rows))
 
-    # Build feature vectors + targets
+    # Build feature vectors + targets from pre-computed features
     X_rows: list[list[float]] = []
     y_values: list[float] = []
     engine_ids: set[str] = set()
-    skipped = 0
 
     for row in rows:
-        # Parse SQL
-        analysis = query_analyzer.analyze_query(row["sql_text"])
-        if analysis.error is not None:
-            logger.warning(
-                "Skipping row (SQL parse error): engine=%s, error=%s",
-                row["engine_id"],
-                analysis.error,
-            )
-            skipped += 1
-            continue
-
-        # Build feature vector (no table metadata available from benchmarks —
-        # pass empty dict; table sizes will be 0)
-        features = feature_builder.build_feature_vector(
-            analysis=analysis,
-            table_metadata={},  # benchmark data doesn't carry table metadata
-            engine_type=row["engine_type"],
-            cost_tier=row["cost_tier"],
-        )
+        features = {
+            "num_tables": float(row["num_tables"]),
+            "num_joins": float(row["num_joins"]),
+            "num_aggregations": float(row["num_aggregations"]),
+            "num_subqueries": float(row["num_subqueries"]),
+            "has_group_by": 1.0 if row["has_group_by"] else 0.0,
+            "has_order_by": 1.0 if row["has_order_by"] else 0.0,
+            "has_limit": 1.0 if row["has_limit"] else 0.0,
+            "has_window_functions": 1.0 if row["has_window_functions"] else 0.0,
+            "num_columns_selected": float(row["num_columns_selected"]),
+            "complexity_score": float(row["complexity_score"]),
+            "max_table_size_bytes": float(row["max_table_size_bytes"]),
+            "total_data_bytes": float(row["total_data_bytes"]),
+            "engine_type": float(
+                feature_builder._ENGINE_TYPE_MAP.get(row["engine_type"], 0)
+            ),
+            "cost_tier": float(row["cost_tier"]),
+        }
         X_rows.append(feature_builder.feature_dict_to_array(features))
         y_values.append(_compute_target(row))
         engine_ids.add(row["engine_id"])
 
-    if skipped > 0:
-        logger.info("Skipped %d rows due to SQL parse errors", skipped)
-
     if len(X_rows) < MIN_TRAINING_SAMPLES:
         raise ValueError(
             f"Need at least {MIN_TRAINING_SAMPLES} valid training samples, "
-            f"got {len(X_rows)} (from {len(rows)} total rows, {skipped} skipped)"
+            f"got {len(X_rows)} (from {len(rows)} total rows)"
         )
 
     # Train / test split

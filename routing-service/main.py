@@ -165,6 +165,16 @@ async def load_databricks_credentials():
 async def init_database():
     db.init_db()
     benchmarks_api.recover_orphaned_runs()
+    # Backfill AST features for any queries added before this feature existed
+    import query_features
+
+    result = query_features.backfill_all()
+    if result["computed"] > 0:
+        logger.info(
+            "Backfilled query features: %d computed, %d skipped",
+            result["computed"],
+            result["skipped"],
+        )
 
 
 @app.on_event("startup")

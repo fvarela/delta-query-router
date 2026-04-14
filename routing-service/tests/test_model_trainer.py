@@ -20,14 +20,36 @@ def _benchmark_row(
     engine_type="duckdb",
     cost_tier=3,
     execution_time_ms=150.0,
-    sql_text="SELECT a, b FROM catalog.schema.t1 WHERE a > 1",
+    num_tables=1,
+    num_joins=0,
+    num_aggregations=0,
+    num_subqueries=0,
+    has_group_by=False,
+    has_order_by=False,
+    has_limit=False,
+    has_window_functions=False,
+    num_columns_selected=2,
+    complexity_score=0.0,
+    max_table_size_bytes=0,
+    total_data_bytes=0,
 ):
     return {
         "execution_time_ms": execution_time_ms,
         "engine_id": engine_id,
-        "sql_text": sql_text,
         "engine_type": engine_type,
         "cost_tier": cost_tier,
+        "num_tables": num_tables,
+        "num_joins": num_joins,
+        "num_aggregations": num_aggregations,
+        "num_subqueries": num_subqueries,
+        "has_group_by": has_group_by,
+        "has_order_by": has_order_by,
+        "has_limit": has_limit,
+        "has_window_functions": has_window_functions,
+        "num_columns_selected": num_columns_selected,
+        "complexity_score": complexity_score,
+        "max_table_size_bytes": max_table_size_bytes,
+        "total_data_bytes": total_data_bytes,
     }
 
 
@@ -44,7 +66,10 @@ def _make_rows(n=20):
                 engine_type=etype,
                 cost_tier=cost,
                 execution_time_ms=100.0 + i * 10,
-                sql_text=f"SELECT col{i} FROM catalog.schema.table{i % 5}",
+                num_tables=1 + (i % 3),
+                num_joins=i % 3,
+                num_aggregations=i % 2,
+                complexity_score=float(i % 3) * 3 + float(i % 2) * 2,
             )
         )
     return rows
@@ -113,57 +138,11 @@ class TestTrainModel:
             model_trainer.train_model(model_dir="/tmp/test")
 
     @patch("model_trainer.db.fetch_all")
-    def test_fewer_than_min_after_skips_raises(self, mock_fetch_all):
-        """If most rows have parse errors, we may fall below the threshold."""
-        # 8 valid + 5 unparseable = 13 total but only 8 valid
-        rows = _make_rows(8)
-        for _ in range(5):
-            rows.append(_benchmark_row(sql_text=""))  # empty SQL → parse error
-        mock_fetch_all.return_value = rows
+    def test_fewer_than_min_raises(self, mock_fetch_all):
+        """If fewer than MIN_TRAINING_SAMPLES rows, raise ValueError."""
+        mock_fetch_all.return_value = _make_rows(8)
         with pytest.raises(ValueError, match="at least 10"):
             model_trainer.train_model(model_dir="/tmp/test")
-
-    @patch("model_trainer.db.fetch_one")
-    @patch("model_trainer.db.execute")
-    @patch("model_trainer.db.fetch_all")
-    def test_skips_parse_errors_continues(self, mock_all, mock_exec, mock_one):
-        """Rows with SQL parse errors are skipped, training continues."""
-        # 15 valid + 3 bad = 18 total
-        rows = _make_rows(15)
-        for _ in range(3):
-            rows.append(_benchmark_row(sql_text=""))
-        mock_all.return_value = rows
-
-        mock_one.side_effect = [
-            {
-                "id": 1,
-                "linked_engines": ["databricks-1", "duckdb-1"],
-                "latency_model": {"r_squared": 0.0, "mae_ms": 0.0, "model_path": ""},
-                "training_queries": 15,
-                "is_active": False,
-                "created_at": "2026-04-04T10:00:00+00:00",
-                "updated_at": "2026-04-04T10:00:00+00:00",
-            },
-            {
-                "id": 1,
-                "linked_engines": ["databricks-1", "duckdb-1"],
-                "latency_model": {
-                    "r_squared": 0.5,
-                    "mae_ms": 50.0,
-                    "model_path": "/tmp/m/model_1.joblib",
-                },
-                "training_queries": 15,
-                "is_active": False,
-                "created_at": "2026-04-04T10:00:00+00:00",
-                "updated_at": "2026-04-04T10:00:00+00:00",
-            },
-        ]
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            result = model_trainer.train_model(model_dir=tmpdir)
-
-        # Should succeed with 15 valid rows
-        assert result["training_queries"] == 15
 
     @patch("model_trainer.db.fetch_one")
     @patch("model_trainer.db.execute")

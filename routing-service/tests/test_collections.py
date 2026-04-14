@@ -305,8 +305,9 @@ class TestDeleteCollection:
 
 
 class TestAddQuery:
+    @patch("collections_api.query_features.compute_and_store")
     @patch("collections_api.db.fetch_one")
-    def test_adds_with_explicit_sequence(self, mock_one):
+    def test_adds_with_explicit_sequence(self, mock_one, _mock_qf):
         # First call: collection exists. Second call: INSERT RETURNING.
         mock_one.side_effect = [
             _collection_row(id=1),
@@ -323,8 +324,9 @@ class TestAddQuery:
         assert resp.json()["query_text"] == "SELECT 42"
         assert resp.json()["sequence_number"] == 5
 
+    @patch("collections_api.query_features.compute_and_store")
     @patch("collections_api.db.fetch_one")
-    def test_auto_sequence_number(self, mock_one):
+    def test_auto_sequence_number(self, mock_one, _mock_qf):
         # First call: collection exists. Second call: MAX seq. Third call: INSERT.
         mock_one.side_effect = [
             _collection_row(id=1),

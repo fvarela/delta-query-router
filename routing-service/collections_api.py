@@ -7,6 +7,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 import db
+import query_features
 
 logger = logging.getLogger("routing-service.collections")
 
@@ -154,11 +155,14 @@ async def add_query(collection_id: int, body: AddQuery):
             (collection_id,),
         )
         seq = result["next_seq"]
-    return db.fetch_one(
+    row = db.fetch_one(
         "INSERT INTO collection_queries (collection_id, query_text, sequence_number) "
         "VALUES (%s, %s, %s) RETURNING *",
         (collection_id, body.query_text, seq),
     )
+    # Eagerly compute and store AST features for ML training
+    query_features.compute_and_store(row["id"], body.query_text)
+    return row
 
 
 @router.delete("/{collection_id}/queries/{query_id}", status_code=204)

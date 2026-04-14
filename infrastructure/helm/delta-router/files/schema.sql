@@ -246,6 +246,37 @@ CREATE TABLE IF NOT EXISTS log_settings (
 INSERT INTO log_settings (id) VALUES (1) ON CONFLICT DO NOTHING;
 
 -- =============================================================================
+-- Phase 18: Pre-computed query features for ML training
+-- =============================================================================
+-- AST features computed eagerly on query insert; table metadata snapshot
+-- captured at benchmark run time.  Keyed on query_id (features are the same
+-- regardless of which engine runs the query).
+CREATE TABLE IF NOT EXISTS query_features (
+    id                   SERIAL PRIMARY KEY,
+    query_id             INTEGER UNIQUE NOT NULL REFERENCES collection_queries(id) ON DELETE CASCADE,
+    -- AST structural features (from query_analyzer.py)
+    statement_type       TEXT NOT NULL DEFAULT 'OTHER',
+    tables               TEXT[] NOT NULL DEFAULT '{}',
+    num_tables           INTEGER NOT NULL DEFAULT 0,
+    num_joins            INTEGER NOT NULL DEFAULT 0,
+    num_aggregations     INTEGER NOT NULL DEFAULT 0,
+    num_subqueries       INTEGER NOT NULL DEFAULT 0,
+    has_group_by         BOOLEAN NOT NULL DEFAULT FALSE,
+    has_order_by         BOOLEAN NOT NULL DEFAULT FALSE,
+    has_limit            BOOLEAN NOT NULL DEFAULT FALSE,
+    has_window_functions BOOLEAN NOT NULL DEFAULT FALSE,
+    num_columns_selected INTEGER NOT NULL DEFAULT 0,
+    complexity_score     FLOAT NOT NULL DEFAULT 0.0,
+    -- Table metadata snapshot (captured at benchmark run time)
+    max_table_size_bytes BIGINT,
+    total_data_bytes     BIGINT,
+    metadata_snapshot_at TIMESTAMPTZ,
+    -- Housekeeping
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- =============================================================================
 -- Indexes
 -- =============================================================================
 CREATE INDEX IF NOT EXISTS idx_api_keys_key_prefix ON api_keys(key_prefix);
@@ -259,3 +290,4 @@ CREATE INDEX IF NOT EXISTS idx_benchmark_definitions_collection ON benchmark_def
 CREATE INDEX IF NOT EXISTS idx_benchmark_runs_definition ON benchmark_runs(definition_id);
 CREATE INDEX IF NOT EXISTS idx_benchmark_results_run_id ON benchmark_results(run_id);
 CREATE INDEX IF NOT EXISTS idx_routing_profiles_default ON routing_profiles(is_default) WHERE is_default = true;
+CREATE INDEX IF NOT EXISTS idx_query_features_query_id ON query_features(query_id);

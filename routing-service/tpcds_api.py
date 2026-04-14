@@ -13,6 +13,7 @@ from pydantic import BaseModel
 import auth
 import db
 import tpcds_queries
+import query_features
 
 logger = logging.getLogger("routing-service.tpcds_api")
 
@@ -102,19 +103,23 @@ def _create_tpcds_collection(
             )
             collection_id = row["id"]
 
-            # Insert 99 rewritten queries
+            # Insert 99 rewritten queries and compute AST features
             queries = tpcds_queries.get_queries(catalog_name, schema_name)
+            feature_rows: list[tuple[int, str]] = []
             for query_id, sql in queries:
-                db.execute(
+                row = db.fetch_one(
                     "INSERT INTO collection_queries (collection_id, query_text, sequence_number) "
-                    "VALUES (%s, %s, %s)",
+                    "VALUES (%s, %s, %s) RETURNING id",
                     (collection_id, sql, query_id),
                 )
+                feature_rows.append((row["id"], sql))
+            stored = query_features.compute_and_store_batch(feature_rows)
             logger.info(
-                "Created TPC-DS collection '%s' (id=%d) with %d queries",
+                "Created TPC-DS collection '%s' (id=%d) with %d queries, %d features stored",
                 collection_name,
                 collection_id,
                 len(queries),
+                stored,
             )
 
             # Validate queries with sqlglot (informational only)

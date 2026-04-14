@@ -23,6 +23,7 @@ from pydantic import BaseModel
 import db
 import engines_api
 import query_analyzer
+import query_features
 
 logger = logging.getLogger("routing-service.benchmarks")
 
@@ -243,6 +244,45 @@ def _execute_query_on_databricks(
         return {"execution_time_ms": wall_ms, "error_message": str(e)}
 
 
+def _snapshot_table_metadata(queries: list[dict], workspace_client) -> None:
+    """Snapshot table sizes from Unity Catalog into query_features.
+
+    Collects all table names across all queries, fetches their metadata
+    from the catalog cache (catalog_service), and updates query_features
+    with max_table_size_bytes and total_data_bytes.
+    """
+    if not workspace_client:
+        return
+
+    import catalog_service
+
+    # Collect all unique table names and query_ids
+    all_tables: set[str] = set()
+    query_ids: list[int] = []
+    for q in queries:
+        analysis = query_analyzer.analyze_query(q["query_text"])
+        if analysis and not analysis.error and analysis.tables:
+            all_tables.update(analysis.tables)
+        query_ids.append(q["id"])
+
+    if not all_tables:
+        return
+
+    # Fetch metadata from catalog (uses cache, falls back to SDK)
+    meta = catalog_service.get_tables_metadata(list(all_tables), workspace_client)
+    # Build size map: table_name -> size_bytes
+    size_map: dict[str, int | None] = {}
+    for name, tm in meta.items():
+        size_map[name] = tm.size_bytes
+
+    updated = query_features.update_table_metadata(query_ids, size_map)
+    logger.info(
+        "Table metadata snapshot: %d tables, %d query features updated",
+        len(all_tables),
+        updated,
+    )
+
+
 def _get_or_create_definition(collection_id: int, engine_id: str) -> dict:
     """Get or create a benchmark definition for a (collection, engine) pair."""
     row = db.fetch_one(
@@ -310,6 +350,14 @@ def _run_benchmark_inner(
 ) -> None:
     """Core benchmark execution (runs inside _benchmark_lock)."""
     total_queries = len(queries)
+
+    # -- Snapshot table metadata for ML training features --
+    # Collect all table names across all queries, fetch sizes from catalog,
+    # and update the query_features table.  Done once per batch (not per engine).
+    try:
+        _snapshot_table_metadata(queries, workspace_client)
+    except Exception as e:
+        logger.warning("Table metadata snapshot failed (non-fatal): %s", e)
 
     for eid, eng in engines.items():
         run_id = runs[eid]["run"]["id"]

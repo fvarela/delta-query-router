@@ -1006,15 +1006,17 @@ class TestRegisterTpcds:
 class TestCreateTpcdsCollection:
     """Unit tests for _create_tpcds_collection helper."""
 
+    @patch("tpcds_api.query_features.compute_and_store_batch")
     @patch("tpcds_api.db")
-    def test_creates_collection_with_99_queries(self, mock_db):
+    def test_creates_collection_with_99_queries(self, mock_db, mock_qf_batch):
         """On first call, creates a new collection with 99 queries."""
         # No existing collection
         mock_db.fetch_one.side_effect = [
             None,  # SELECT id FROM collections WHERE name = ...
             {"id": 42},  # INSERT INTO collections ... RETURNING id
-        ]
+        ] + [{"id": i} for i in range(100, 199)]  # 99 query INSERT RETURNING id
         mock_db.execute.return_value = None
+        mock_qf_batch.return_value = 99
 
         result = tpcds_api._create_tpcds_collection(1, "mycat", "sf1", 1)
 
@@ -1025,13 +1027,18 @@ class TestCreateTpcdsCollection:
         assert insert_call[0][1][0] == "TPC-DS SF1"
         assert "tpcds" in insert_call[0][0]  # tag = 'tpcds'
 
-        # Should insert 99 queries + 1 update to tpcds_catalogs = 100 execute calls
-        execute_calls = mock_db.execute.call_args_list
-        query_inserts = [c for c in execute_calls if "collection_queries" in str(c)]
+        # Should insert 99 queries via fetch_one (RETURNING id)
+        query_inserts = [
+            c
+            for c in mock_db.fetch_one.call_args_list
+            if "collection_queries" in str(c)
+        ]
         assert len(query_inserts) == 99
 
         # Should link collection to tpcds_catalogs
-        link_calls = [c for c in execute_calls if "tpcds_catalogs" in str(c)]
+        link_calls = [
+            c for c in mock_db.execute.call_args_list if "tpcds_catalogs" in str(c)
+        ]
         assert len(link_calls) == 1
         assert link_calls[0][0][1] == (42, 1)  # (collection_id, record_id)
 
@@ -1072,17 +1079,24 @@ class TestCreateTpcdsCollection:
 
         assert result is None
 
+    @patch("tpcds_api.query_features.compute_and_store_batch")
     @patch("tpcds_api.db")
-    def test_queries_are_rewritten_for_catalog_schema(self, mock_db):
+    def test_queries_are_rewritten_for_catalog_schema(self, mock_db, mock_qf_batch):
         """Inserted queries use the correct catalog.schema three-part names."""
-        mock_db.fetch_one.side_effect = [None, {"id": 50}]
+        mock_db.fetch_one.side_effect = [
+            None,
+            {"id": 50},
+        ] + [{"id": i} for i in range(200, 299)]  # 99 query INSERT RETURNING id
         mock_db.execute.return_value = None
+        mock_qf_batch.return_value = 99
 
         tpcds_api._create_tpcds_collection(1, "delta_router_tpcds", "sf1", 1)
 
         # Check the first query insert has three-part names
         query_inserts = [
-            c for c in mock_db.execute.call_args_list if "collection_queries" in str(c)
+            c
+            for c in mock_db.fetch_one.call_args_list
+            if "collection_queries" in str(c)
         ]
         first_sql = query_inserts[0][0][1][1]  # (collection_id, sql, seq)
         assert "delta_router_tpcds.sf1." in first_sql
