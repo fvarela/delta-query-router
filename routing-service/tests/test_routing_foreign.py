@@ -76,7 +76,6 @@ SYSTEM_RULES = [
         "condition_type": "table_type",
         "condition_value": "VIEW",
         "target_engine": "databricks",
-        "is_system": True,
     },
     {
         "id": 2,
@@ -84,7 +83,6 @@ SYSTEM_RULES = [
         "condition_type": "has_governance",
         "condition_value": "row_filter",
         "target_engine": "databricks",
-        "is_system": True,
     },
     {
         "id": 3,
@@ -92,7 +90,6 @@ SYSTEM_RULES = [
         "condition_type": "has_governance",
         "condition_value": "column_mask",
         "target_engine": "databricks",
-        "is_system": True,
     },
     {
         "id": 4,
@@ -100,7 +97,6 @@ SYSTEM_RULES = [
         "condition_type": "table_type",
         "condition_value": "FOREIGN",
         "target_engine": "databricks",
-        "is_system": True,
     },
     {
         "id": 5,
@@ -108,7 +104,6 @@ SYSTEM_RULES = [
         "condition_type": "external_access",
         "condition_value": "false",
         "target_engine": "databricks",
-        "is_system": True,
     },
 ]
 

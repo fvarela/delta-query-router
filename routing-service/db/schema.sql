@@ -56,24 +56,23 @@ CREATE TABLE IF NOT EXISTS api_keys (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     revoked_at      TIMESTAMPTZ
 );
--- Routing rules: system hard rules + user-defined rules
+-- Routing rules: system hard rules (cannot be deleted, only toggled)
 CREATE TABLE IF NOT EXISTS routing_rules (
     id              SERIAL PRIMARY KEY,
     priority        INTEGER NOT NULL,
     condition_type  TEXT NOT NULL,
     condition_value TEXT NOT NULL,
     target_engine   TEXT NOT NULL,
-    is_system       BOOLEAN NOT NULL DEFAULT FALSE,
     enabled         BOOLEAN NOT NULL DEFAULT TRUE
 );
--- Seed system routing rules (hard rules that cannot be deleted, only toggled)
-INSERT INTO routing_rules (id, priority, condition_type, condition_value, target_engine, is_system)
+-- Seed routing rules (hard rules for governance — always evaluated first in the pipeline)
+INSERT INTO routing_rules (id, priority, condition_type, condition_value, target_engine)
 VALUES
-    (1, 1, 'table_type', 'VIEW', 'databricks', true),
-    (2, 2, 'has_governance', 'row_filter', 'databricks', true),
-    (3, 3, 'has_governance', 'column_mask', 'databricks', true),
-    (4, 4, 'table_type', 'FOREIGN', 'databricks', true),
-    (5, 5, 'external_access', 'false', 'databricks', true)
+    (1, 1, 'table_type', 'VIEW', 'databricks'),
+    (2, 2, 'has_governance', 'row_filter', 'databricks'),
+    (3, 3, 'has_governance', 'column_mask', 'databricks'),
+    (4, 4, 'table_type', 'FOREIGN', 'databricks'),
+    (5, 5, 'external_access', 'false', 'databricks')
 ON CONFLICT DO NOTHING;
 
 -- Routing settings: singleton row for global routing configuration

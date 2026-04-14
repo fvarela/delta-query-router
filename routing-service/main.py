@@ -1070,13 +1070,11 @@ async def get_logs(
 
 
 # ---------------------------------------------------------------------------
-# Routing rules (read-only + toggle for system rules)
+# Routing rules (read-only + toggle)
 # ---------------------------------------------------------------------------
 @app.get("/api/routing/rules")
 async def list_routing_rules(user: auth.UserContext = Depends(verify_token)):
-    rows = db.fetch_all(
-        "SELECT * FROM routing_rules WHERE is_system = true ORDER BY priority"
-    )
+    rows = db.fetch_all("SELECT * FROM routing_rules ORDER BY priority")
     return rows
 
 
@@ -1086,8 +1084,6 @@ async def toggle_routing_rule(
 ):
     existing = db.fetch_one("SELECT * FROM routing_rules WHERE id = %s", (rule_id,))
     if not existing:
-        raise HTTPException(status_code=404, detail="Rule not found")
-    if not existing["is_system"]:
         raise HTTPException(status_code=404, detail="Rule not found")
     row = db.fetch_one(
         "UPDATE routing_rules SET enabled = NOT enabled WHERE id = %s RETURNING *",

@@ -77,8 +77,8 @@ def _load_rules() -> list[dict]:
     if _rules_cache is not None and (now - _rules_cache_time) < RULES_CACHE_TTL:
         return _rules_cache
     rows = db.fetch_all(
-        "SELECT id, priority, condition_type, condition_value, target_engine, is_system "
-        "FROM routing_rules WHERE enabled = true AND is_system = true ORDER BY priority"
+        "SELECT id, priority, condition_type, condition_value, target_engine "
+        "FROM routing_rules WHERE enabled = true ORDER BY priority"
     )
     _rules_cache = rows
     _rules_cache_time = now
