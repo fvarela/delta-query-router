@@ -118,14 +118,32 @@ def _warmup_duckdb_sync(
 
 
 def _warmup_databricks(
-    workspace_client, warehouse_id: str, timeout: str = "30s"
+    workspace_client,
+    warehouse_id: str,
+    tables: list[str] | None = None,
+    timeout: str = "50s",
 ) -> float:
-    """Send SELECT 1 to a Databricks warehouse, return elapsed ms."""
+    """Warm up a Databricks warehouse by running a real query.
+
+    If a table name is available, runs ``SELECT 1 FROM <table> LIMIT 1``
+    which forces the warehouse to resolve catalog metadata, warm internal
+    caches (SSD/Delta/result), and fully initialize the session context.
+    This ensures cold_start_time_ms captures the true one-time cost,
+    preventing that overhead from inflating Q1's execution_time_ms.
+
+    Falls back to ``SELECT 1`` if no table is available.
+    Returns elapsed wall-clock milliseconds.
+    """
     from databricks.sdk.service.sql import StatementState
+
+    if tables:
+        warmup_sql = f"SELECT 1 FROM {tables[0]} LIMIT 1"
+    else:
+        warmup_sql = "SELECT 1"
 
     t0 = time.perf_counter()
     response = workspace_client.statement_execution.execute_statement(
-        statement="SELECT 1",
+        statement=warmup_sql,
         warehouse_id=warehouse_id,
         wait_timeout=timeout,
     )
@@ -320,7 +338,15 @@ def _run_benchmark_inner(
                 if not workspace_client or not warehouse_id:
                     raise RuntimeError("Databricks not configured")
                 wh_id = (eng.get("config") or {}).get("warehouse_id", warehouse_id)
-                cold_start_ms = _warmup_databricks(workspace_client, wh_id)
+                # Extract a table from the first query for a real warmup
+                warmup_tables_dbx = None
+                if queries:
+                    analysis = query_analyzer.analyze_query(queries[0]["query_text"])
+                    if analysis and not analysis.error and analysis.tables:
+                        warmup_tables_dbx = analysis.tables
+                cold_start_ms = _warmup_databricks(
+                    workspace_client, wh_id, tables=warmup_tables_dbx
+                )
             else:
                 raise RuntimeError(f"Unknown engine type: {eng['engine_type']}")
 

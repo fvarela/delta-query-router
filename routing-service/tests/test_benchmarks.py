@@ -1213,3 +1213,69 @@ class TestWarmupDuckdbSync:
         payload = call_args[1].get("json") or call_args[0][1]
         assert payload["sql"] == "SELECT 1"
         assert "tables" not in payload
+
+
+class TestWarmupDatabricks:
+    """_warmup_databricks() — real warmup through Databricks SQL statement API."""
+
+    def test_with_tables_sends_real_query(self):
+        """When tables are provided, warmup sends SELECT 1 FROM <table> LIMIT 1."""
+        mock_ws = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status.state = "SUCCEEDED"
+        mock_ws.statement_execution.execute_statement.return_value = mock_response
+
+        with patch(
+            "databricks.sdk.service.sql.StatementState",
+            create=True,
+        ) as mock_state:
+            mock_state.SUCCEEDED = "SUCCEEDED"
+            ms = benchmarks_api._warmup_databricks(
+                mock_ws,
+                "warehouse-123",
+                tables=["catalog.schema.my_table", "catalog.schema.other"],
+            )
+
+        assert ms > 0
+        call_args = mock_ws.statement_execution.execute_statement.call_args
+        assert "my_table" in call_args[1]["statement"]
+        assert "LIMIT 1" in call_args[1]["statement"]
+        assert call_args[1]["warehouse_id"] == "warehouse-123"
+
+    def test_without_tables_falls_back_to_select_1(self):
+        """Without tables, warmup sends plain SELECT 1."""
+        mock_ws = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status.state = "SUCCEEDED"
+        mock_ws.statement_execution.execute_statement.return_value = mock_response
+
+        with patch(
+            "databricks.sdk.service.sql.StatementState",
+            create=True,
+        ) as mock_state:
+            mock_state.SUCCEEDED = "SUCCEEDED"
+            ms = benchmarks_api._warmup_databricks(mock_ws, "warehouse-123")
+
+        assert ms > 0
+        call_args = mock_ws.statement_execution.execute_statement.call_args
+        assert call_args[1]["statement"] == "SELECT 1"
+
+    def test_failure_raises_runtime_error(self):
+        """Warmup raises RuntimeError on non-SUCCEEDED state."""
+        mock_ws = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status.state = "FAILED"
+        mock_response.status.error.message = "Warehouse unavailable"
+        mock_ws.statement_execution.execute_statement.return_value = mock_response
+
+        with patch(
+            "databricks.sdk.service.sql.StatementState",
+            create=True,
+        ) as mock_state:
+            mock_state.SUCCEEDED = "SUCCEEDED"
+            with pytest.raises(RuntimeError, match="Warehouse unavailable"):
+                benchmarks_api._warmup_databricks(
+                    mock_ws,
+                    "warehouse-123",
+                    tables=["catalog.schema.table1"],
+                )
