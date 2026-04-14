@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { useApp } from "@/contexts/AppContext";
 import { isMockMode } from "@/lib/mockMode";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
@@ -8,7 +8,7 @@ import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 import { MOCK_COLLECTIONS_WITH_QUERIES, MOCK_TPCDS_CONFIGURED, MOCK_BENCHMARK_RUN_DETAILS, getRunsForDefinition } from "@/mocks/engineSetupData";
 import { TpcdsSetupDialog } from "@/components/LeftPanel/TpcdsWizard";
 import type { Collection, CollectionWithQueries, BenchmarkSummary, BenchmarkDetail, BenchmarkRunDetail, BenchmarkRunSummary, BenchmarkRunProgress, BenchmarkStartResponse, ActiveBenchmarkRun, BenchmarkQueryResult, BenchmarkCancelResponse } from "@/types";
-import { ArrowLeft, Plus, Trash2, X, Database, AlertTriangle, Lock, BarChart3, Clock, ExternalLink, Settings2, Activity, Square, CheckCircle2, XCircle, SkipForward } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, X, Database, AlertTriangle, Lock, BarChart3, Clock, ExternalLink, Settings2, Activity, CheckCircle2, XCircle } from "lucide-react";
 
 export const CollectionsPanel: React.FC = () => {
   const {
@@ -260,20 +260,26 @@ export const CollectionsPanel: React.FC = () => {
     const pollInterval = setInterval(async () => {
       const newProgress: Record<number, BenchmarkRunProgress> = {};
       let allDone = true;
+      const deletedRunIds: number[] = [];
 
       for (const runId of activeRunIds) {
         try {
           const p = await api.get<BenchmarkRunProgress>(`/api/benchmarks/runs/${runId}/progress`);
           newProgress[runId] = p;
-          if (p.status !== "complete" && p.status !== "failed" && p.status !== "cancelled") {
+          if (p.status !== "complete" && p.status !== "failed") {
             allDone = false;
           }
-        } catch {
-          // If progress fetch fails, keep previous state
-          if (runProgress[runId]) {
-            newProgress[runId] = runProgress[runId];
+        } catch (err: unknown) {
+          // 404 means run was cancelled and deleted — track for removal
+          if (err instanceof ApiError && err.status === 404) {
+            deletedRunIds.push(runId);
+          } else {
+            // Other error — keep previous state
+            if (runProgress[runId]) {
+              newProgress[runId] = runProgress[runId];
+            }
+            allDone = false;
           }
-          allDone = false;
         }
 
         // Poll incremental results for this run
@@ -300,7 +306,27 @@ export const CollectionsPanel: React.FC = () => {
 
       setRunProgress(newProgress);
 
-      if (allDone) {
+      // Remove cancelled/deleted runs from active tracking
+      if (deletedRunIds.length > 0) {
+        setActiveRunIds(prev => prev.filter(id => !deletedRunIds.includes(id)));
+        setLiveResults(prev => {
+          const next = { ...prev };
+          for (const id of deletedRunIds) delete next[id];
+          return next;
+        });
+        setCancellingRunIds(prev => {
+          const next = new Set(prev);
+          for (const id of deletedRunIds) next.delete(id);
+          return next;
+        });
+        reloadBenchmarkDefinitions().catch(() => {});
+      }
+
+      // Check remaining active runs (excluding deleted ones)
+      const remainingRunIds = activeRunIds.filter(id => !deletedRunIds.includes(id));
+      const remainingAllDone = remainingRunIds.length === 0 || (allDone && deletedRunIds.length === 0);
+
+      if (remainingAllDone) {
         // Benchmark finished — stop polling, refresh data
         clearInterval(pollInterval);
         setBenchmarkRunning(false);
@@ -308,9 +334,8 @@ export const CollectionsPanel: React.FC = () => {
         // Check for errors
         const failedRuns = Object.values(newProgress).filter(p => p.status === "failed");
         const completedRuns = Object.values(newProgress).filter(p => p.status === "complete");
-        const cancelledRuns = Object.values(newProgress).filter(p => p.status === "cancelled");
 
-        if (failedRuns.length > 0 && completedRuns.length === 0 && cancelledRuns.length === 0) {
+        if (failedRuns.length > 0 && completedRuns.length === 0) {
           setBenchmarkError(`Benchmark failed: ${failedRuns[0].error_message || "unknown error"}`);
         } else if (failedRuns.length > 0) {
           setBenchmarkError(`${failedRuns.length}/${activeRunIds.length} engine(s) failed`);
@@ -489,7 +514,7 @@ export const CollectionsPanel: React.FC = () => {
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto min-h-0">
           <div className="px-3 space-y-1 py-2">
             {activeCollection.queries.map(q => (
               <div
@@ -512,8 +537,8 @@ export const CollectionsPanel: React.FC = () => {
             ))}
           </div>
 
-          {/* Benchmark section — only if not TPC-DS without dataset */}
-          {!tpcdsNotConfigured && (
+          {/* Active benchmark dashboard — inside scroll area (transient) */}
+          {!tpcdsNotConfigured && benchmarkRunning && activeRunIds.length > 0 && (
             <div className="px-3 py-2 border-t border-panel-border">
               {/* Active benchmark dashboard */}
               {benchmarkRunning && activeRunIds.length > 0 && (
@@ -537,22 +562,21 @@ export const CollectionsPanel: React.FC = () => {
                     const minutes = Math.floor(elapsedSec / 60);
                     const seconds = elapsedSec % 60;
                     const timeStr = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
-                    const isDone = p.status === "complete" || p.status === "failed" || p.status === "cancelled";
+                    const isDone = p.status === "complete" || p.status === "failed";
                     const isCancelling = cancellingRunIds.has(runId);
                     const isActive = !isDone;
 
                     return (
                       <div key={runId} className={`rounded-md border p-2.5 space-y-1.5 ${
-                        p.status === "cancelled" ? "border-amber-300 bg-amber-50/50" :
                         p.status === "failed" ? "border-red-200 bg-red-50/30" :
                         p.status === "complete" ? "border-emerald-200 bg-emerald-50/30" :
                         "border-border bg-card"
                       }`}>
-                        {/* Header: engine name + status + stop button */}
+                        {/* Header: engine name + status + cancel button */}
                         <div className="flex items-center justify-between">
                           <span className={`text-[12px] font-medium ${
                             isDone
-                              ? (p.status === "complete" ? "text-emerald-700" : p.status === "cancelled" ? "text-amber-700" : "text-red-700")
+                              ? (p.status === "complete" ? "text-emerald-700" : "text-red-700")
                               : "text-foreground"
                           }`}>
                             {p.engine_display_name}
@@ -561,7 +585,6 @@ export const CollectionsPanel: React.FC = () => {
                             <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
                               p.status === "complete" ? "bg-emerald-100 text-emerald-700" :
                               p.status === "failed" ? "bg-red-100 text-red-700" :
-                              p.status === "cancelled" ? "bg-amber-100 text-amber-700" :
                               p.status === "warming_up" ? "bg-blue-100 text-blue-700" :
                               p.status === "pending" ? "bg-gray-100 text-gray-600" :
                               "bg-amber-100 text-amber-700"
@@ -569,50 +592,24 @@ export const CollectionsPanel: React.FC = () => {
                               {p.status === "warming_up" ? "Warming up" :
                                p.status === "running" ? `${pct}%` :
                                p.status === "complete" ? "Done" :
-                               p.status === "cancelled" ? (p.completed_queries === 0 ? "Skipped" : "Stopped") :
                                p.status === "failed" ? "Failed" :
                                p.status === "pending" ? "Queued" :
                                p.status}
                             </span>
                             {isActive && (
-                              (() => {
-                                const isRunningNow = p.status === "running" || p.status === "warming_up";
-                                if (isRunningNow) {
-                                  // Currently executing engine — Stop button
-                                  return (
-                                    <button
-                                      onClick={() => handleCancelRun(runId)}
-                                      disabled={isCancelling}
-                                      className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
-                                        isCancelling
-                                          ? "bg-muted text-muted-foreground cursor-not-allowed"
-                                          : "bg-red-50 text-red-600 hover:bg-red-100 border border-red-200"
-                                      }`}
-                                      title={isCancelling ? `Will stop after current query (Q${p.completed_queries + 1}) finishes` : "Stop after current query finishes"}
-                                    >
-                                      <Square size={8} />
-                                      {isCancelling ? `Stopping after Q${p.completed_queries + 1}...` : "Stop"}
-                                    </button>
-                                  );
-                                } else {
-                                  // Pending/queued engine — Skip button
-                                  return (
-                                    <button
-                                      onClick={() => handleCancelRun(runId)}
-                                      disabled={isCancelling}
-                                      className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
-                                        isCancelling
-                                          ? "bg-muted text-muted-foreground cursor-not-allowed"
-                                          : "bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200"
-                                      }`}
-                                      title="Skip this engine — don't run it"
-                                    >
-                                      <SkipForward size={8} />
-                                      {isCancelling ? "Skipping..." : "Skip"}
-                                    </button>
-                                  );
-                                }
-                              })()
+                              <button
+                                onClick={() => handleCancelRun(runId)}
+                                disabled={isCancelling}
+                                className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                                  isCancelling
+                                    ? "bg-muted text-muted-foreground cursor-not-allowed"
+                                    : "bg-red-50 text-red-600 hover:bg-red-100 border border-red-200"
+                                }`}
+                                title={isCancelling ? "Cancelling after current query finishes..." : "Cancel this engine's benchmark run"}
+                              >
+                                <X size={8} />
+                                {isCancelling ? "Cancelling..." : "Cancel"}
+                              </button>
                             )}
                           </div>
                         </div>
@@ -622,7 +619,6 @@ export const CollectionsPanel: React.FC = () => {
                           <div
                             className={`h-full rounded-full transition-all duration-300 ${
                               p.status === "failed" ? "bg-red-500" :
-                              p.status === "cancelled" ? "bg-amber-400" :
                               p.status === "complete" ? "bg-emerald-500" :
                               p.status === "warming_up" ? "bg-blue-400 animate-pulse" :
                               "bg-amber-500"
@@ -720,44 +716,47 @@ export const CollectionsPanel: React.FC = () => {
                   })()}
                 </div>
               )}
+            </div>
+          )}
+        </div>
 
-              {/* Run Benchmark button — hidden while benchmark is running */}
-              {!benchmarkRunning && (
-                <>
-                  {(() => {
-                    const isBenchmarkMode = routingMode === "benchmark";
-                    const hasEnginesSelected = benchmarkEngineIds.size > 0;
-                    const isDisabled = !isBenchmarkMode || !hasEnginesSelected;
-                    return (
-                      <>
-                        <button
-                          onClick={handleRunBenchmark}
-                          disabled={isDisabled}
-                          className={`px-3 py-1.5 rounded-md text-[12px] font-medium w-full ${
-                            isDisabled
-                              ? "bg-muted text-muted-foreground cursor-not-allowed"
-                              : "bg-amber-600 text-white hover:bg-amber-700"
-                          }`}
-                        >
-                          Run Benchmark
-                        </button>
-                        {!isBenchmarkMode && (
-                          <p className="text-[11px] text-muted-foreground mt-1">
-                            Switch to Benchmarking mode in the right panel to run benchmarks.
-                          </p>
-                        )}
-                        {isBenchmarkMode && !hasEnginesSelected && (
-                          <p className="text-[11px] text-amber-600 mt-1">
-                            Select engines in the right panel to enable.
-                          </p>
-                        )}
-                      </>
-                    );
-                  })()}
-                  {benchmarkError && (
-                    <p className="text-[12px] text-status-error mt-1">{benchmarkError}</p>
-                  )}
-                </>
+        {/* Pinned bottom section — Run Benchmark + Runs by Engine */}
+        <div className="shrink-0">
+          {/* Run Benchmark button — hidden while benchmark is running */}
+          {!tpcdsNotConfigured && !benchmarkRunning && (
+            <div className="px-3 py-2 border-t border-panel-border">
+              {(() => {
+                const isBenchmarkMode = routingMode === "benchmark";
+                const hasEnginesSelected = benchmarkEngineIds.size > 0;
+                const isDisabled = !isBenchmarkMode || !hasEnginesSelected;
+                return (
+                  <>
+                    <button
+                      onClick={handleRunBenchmark}
+                      disabled={isDisabled}
+                      className={`px-3 py-1.5 rounded-md text-[12px] font-medium w-full ${
+                        isDisabled
+                          ? "bg-muted text-muted-foreground cursor-not-allowed"
+                          : "bg-amber-600 text-white hover:bg-amber-700"
+                      }`}
+                    >
+                      Run Benchmark
+                    </button>
+                    {!isBenchmarkMode && (
+                      <p className="text-[11px] text-muted-foreground mt-1">
+                        Switch to Benchmarking mode in the right panel to run benchmarks.
+                      </p>
+                    )}
+                    {isBenchmarkMode && !hasEnginesSelected && (
+                      <p className="text-[11px] text-amber-600 mt-1">
+                        Select engines in the right panel to enable.
+                      </p>
+                    )}
+                  </>
+                );
+              })()}
+              {benchmarkError && (
+                <p className="text-[12px] text-status-error mt-1">{benchmarkError}</p>
               )}
             </div>
           )}
@@ -1122,9 +1121,6 @@ const RunListView: React.FC<{
               <div className="flex items-center gap-2">
                 <span className="text-foreground font-medium">{dateStr}</span>
                 <span className="text-muted-foreground">{timeStr}</span>
-                {run.status === "cancelled" && (
-                  <span className="text-[10px] px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded font-medium">Partial</span>
-                )}
                 {run.status === "failed" && (
                   <span className="text-[10px] px-1.5 py-0.5 bg-red-100 text-red-700 rounded font-medium">Failed</span>
                 )}

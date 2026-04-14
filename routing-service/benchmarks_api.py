@@ -38,13 +38,12 @@ _cancelled_run_ids: set[int] = set()
 
 
 def recover_orphaned_runs() -> None:
-    """Mark any non-terminal benchmark runs as failed on startup.
+    """Delete any non-terminal benchmark runs on startup.
 
     When the server restarts (e.g. pod restart, deployment rollout), any
     benchmark runs that were in-progress lose their background thread.
-    Without cleanup, these runs stay in 'running'/'warming_up'/'pending'
-    forever, blocking new benchmarks (the frontend sees them as active)
-    and confusing the UI.
+    These are partial runs — not useful for ML training — so we delete
+    them entirely rather than marking them as failed.
 
     Called from main.py during startup, after db.init_db().
     """
@@ -55,16 +54,13 @@ def recover_orphaned_runs() -> None:
         if not orphaned:
             return
         ids = [r["id"] for r in orphaned]
-        # Use ANY(%s) with a list to update all at once
+        # CASCADE delete removes benchmark_results and warmups too
         db.execute(
-            "UPDATE benchmark_runs SET status = 'failed', "
-            "error_message = 'Interrupted: server restarted during execution', "
-            "updated_at = NOW() "
-            "WHERE id = ANY(%s)",
+            "DELETE FROM benchmark_runs WHERE id = ANY(%s)",
             (ids,),
         )
         logger.info(
-            "Recovered %d orphaned benchmark run(s) on startup: %s",
+            "Deleted %d orphaned benchmark run(s) on startup: %s",
             len(ids),
             ids,
         )
@@ -310,12 +306,12 @@ def _run_benchmark_inner(
         # -- Check cancellation before running phase --
         if run_id in _cancelled_run_ids:
             _cancelled_run_ids.discard(run_id)
-            db.execute(
-                "UPDATE benchmark_runs SET status = 'cancelled', error_message = 'Cancelled before execution', updated_at = NOW() WHERE id = %s",
-                (run_id,),
-            )
+            # Delete the run entirely — partial data is not useful for ML training
+            db.execute("DELETE FROM benchmark_runs WHERE id = %s", (run_id,))
             logger.info(
-                "Benchmark run %d for engine %s cancelled before execution", run_id, eid
+                "Benchmark run %d for engine %s cancelled and deleted before execution",
+                run_id,
+                eid,
             )
             continue
 
@@ -384,17 +380,15 @@ def _run_benchmark_inner(
                 "SELECT COUNT(*) AS cnt FROM benchmark_results WHERE run_id = %s",
                 (run_id,),
             )["cnt"]
-            db.execute(
-                "UPDATE benchmark_runs SET status = 'cancelled', error_message = %s, updated_at = NOW() WHERE id = %s",
-                (f"Cancelled after {completed}/{total_queries} queries", run_id),
-            )
             logger.info(
-                "Benchmark run %d for engine %s cancelled at %d/%d queries",
+                "Benchmark run %d for engine %s cancelled at %d/%d queries — deleting partial data",
                 run_id,
                 eid,
                 completed,
                 total_queries,
             )
+            # Delete the run entirely — partial data is not useful for ML training
+            db.execute("DELETE FROM benchmark_runs WHERE id = %s", (run_id,))
         else:
             status = "complete" if error_count < total_queries else "failed"
             error_msg = (
@@ -584,13 +578,15 @@ async def get_run_progress(run_id: int):
 
 @router.post("/runs/{run_id}/cancel")
 async def cancel_run(run_id: int):
-    """Cancel a running benchmark run.
+    """Cancel a running benchmark run, deleting all partial data.
 
-    For pending runs (queued, not yet started): marks as cancelled immediately
-    in the DB so the frontend sees the status change without waiting.
+    Partial runs are not useful for ML training, so cancellation deletes the
+    run and its results entirely rather than preserving partial data.
+
+    For pending runs (queued, not yet started): deletes the run immediately.
     For running/warming_up runs: adds the run_id to the cancellation set,
-    which the background thread checks between queries.
-    Already-completed results are preserved in both cases.
+    which the background thread checks between queries. The thread then
+    deletes the run and all its results.
     """
     run = db.fetch_one(
         "SELECT id, status FROM benchmark_runs WHERE id = %s",
@@ -608,15 +604,12 @@ async def cancel_run(run_id: int):
 
     _cancelled_run_ids.add(run_id)
 
-    # For pending runs, mark cancelled immediately in DB — the background
-    # thread hasn't started this engine yet, so waiting is unnecessary.
+    # For pending runs, delete immediately — the background
+    # thread hasn't started this engine yet.
     if run["status"] == "pending":
-        db.execute(
-            "UPDATE benchmark_runs SET status = 'cancelled', error_message = 'Skipped before execution', updated_at = NOW() WHERE id = %s",
-            (run_id,),
-        )
-        logger.info("Benchmark run %d skipped (was pending)", run_id)
-        return {"run_id": run_id, "status": "cancelled"}
+        db.execute("DELETE FROM benchmark_runs WHERE id = %s", (run_id,))
+        logger.info("Benchmark run %d deleted (was pending)", run_id)
+        return {"run_id": run_id, "status": "deleted"}
 
     logger.info(
         "Cancel requested for benchmark run %d (status: %s)", run_id, run["status"]

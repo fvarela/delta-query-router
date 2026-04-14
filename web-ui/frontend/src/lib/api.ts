@@ -19,6 +19,14 @@ const TOKEN_KEY = "auth_token";
 /** Custom event fired on 401 — AuthContext listens for this */
 export const AUTH_UNAUTHORIZED_EVENT = "auth:unauthorized";
 
+/** Error class that includes the HTTP status code */
+export class ApiError extends Error {
+  constructor(message: string, public status: number) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 class ApiClient {
   private getToken(): string | null {
     return sessionStorage.getItem(TOKEN_KEY);
@@ -51,10 +59,10 @@ class ApiClient {
   private async handleResponse<T>(resp: Response): Promise<T> {
     if (resp.status === 401) {
       this.handleUnauthorized();
-      throw new Error("Unauthorized");
+      throw new ApiError("Unauthorized", 401);
     }
     if (!resp.ok) {
-      throw new Error(await this.extractErrorMessage(resp));
+      throw new ApiError(await this.extractErrorMessage(resp), resp.status);
     }
     return resp.json();
   }
@@ -90,10 +98,10 @@ class ApiClient {
     });
     if (resp.status === 401) {
       this.handleUnauthorized();
-      throw new Error("Unauthorized");
+      throw new ApiError("Unauthorized", 401);
     }
     if (!resp.ok && resp.status !== 204) {
-      throw new Error(await this.extractErrorMessage(resp));
+      throw new ApiError(await this.extractErrorMessage(resp), resp.status);
     }
   }
 }

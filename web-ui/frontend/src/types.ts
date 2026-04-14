@@ -157,7 +157,7 @@ export interface BenchmarkSummary {
   id: number;
   collection_id: number;
   collection_name?: string;
-  status: "warming_up" | "running" | "complete" | "failed" | "cancelled";
+  status: "warming_up" | "running" | "complete" | "failed";
   engine_count: number;
   created_at: string;
   updated_at: string;
@@ -276,7 +276,7 @@ export interface BenchmarkDefinition {
 export interface BenchmarkRunSummary {
   id: number;
   definition_id: number;
-  status: "pending" | "warming_up" | "running" | "complete" | "failed" | "cancelled";
+  status: "pending" | "warming_up" | "running" | "complete" | "failed";
   created_at: string;
   updated_at: string;
 }
@@ -290,7 +290,7 @@ export interface BenchmarkRunDetail extends BenchmarkRunSummary {
 export interface BenchmarkRunProgress {
   run_id: number;
   definition_id: number;
-  status: "pending" | "warming_up" | "running" | "complete" | "failed" | "cancelled";
+  status: "pending" | "warming_up" | "running" | "complete" | "failed";
   engine_id: string;
   engine_display_name: string;
   collection_id: number;
@@ -328,7 +328,7 @@ export interface BenchmarkStartResponse {
 // POST /api/benchmarks/runs/{id}/cancel response
 export interface BenchmarkCancelResponse {
   run_id: number;
-  status: "cancel_requested";
+  status: "deleted" | "cancel_requested";
 }
 
 // GET /api/benchmarks/runs/{id}/results — incremental per-query results

@@ -880,7 +880,7 @@ class TestCancelRun:
     @patch("benchmarks_api.db.execute")
     @patch("benchmarks_api.db.fetch_one")
     def test_cancel_pending_run(self, mock_one, mock_exec):
-        """Cancelling a pending run marks it cancelled immediately in DB."""
+        """Cancelling a pending run deletes it immediately from DB."""
         mock_one.return_value = {"id": 10, "status": "pending"}
         benchmarks_api._cancelled_run_ids.discard(10)
 
@@ -888,12 +888,11 @@ class TestCancelRun:
         assert resp.status_code == 200
         data = resp.json()
         assert data["run_id"] == 10
-        assert data["status"] == "cancelled"
-        # Should have updated DB directly with status='cancelled'
+        assert data["status"] == "deleted"
+        # Should have deleted the run from DB
         mock_exec.assert_called_once()
         call_sql = mock_exec.call_args[0][0]
-        assert "cancelled" in call_sql
-        assert "Skipped" in call_sql
+        assert "DELETE" in call_sql
         # Also adds to cancellation set (so background thread skips too)
         assert 10 in benchmarks_api._cancelled_run_ids
         benchmarks_api._cancelled_run_ids.discard(10)
@@ -981,9 +980,9 @@ class TestCancellationInRunner:
 
         # Only 1 query executed (cancelled before 2nd)
         assert mock_run_query.call_count == 1
-        # Status should be 'cancelled'
+        # Run should be deleted (not marked as cancelled)
         exec_calls = [str(c) for c in mock_exec.call_args_list]
-        assert any("cancelled" in s.lower() for s in exec_calls)
+        assert any("DELETE" in s for s in exec_calls)
 
     @patch("benchmarks_api._warmup_duckdb_sync", return_value=10.0)
     @patch("benchmarks_api._execute_query_on_duckdb_sync")
@@ -992,7 +991,7 @@ class TestCancellationInRunner:
     def test_cancellation_before_execution(
         self, mock_fetch_one, mock_exec, mock_run_query, mock_warmup
     ):
-        """Run cancelled during warmup — skip execution entirely, status='cancelled'."""
+        """Run cancelled during warmup — skip execution entirely, run deleted."""
         runs = {"duckdb-1": {"definition": _definition_row(), "run": _run_row(id=50)}}
         engines = {"duckdb-1": _engine_row()}
 
@@ -1013,7 +1012,7 @@ class TestCancellationInRunner:
         # is BEFORE running phase, no queries should execute
         assert mock_run_query.call_count == 0
         exec_calls = [str(c) for c in mock_exec.call_args_list]
-        assert any("cancelled" in s.lower() for s in exec_calls)
+        assert any("DELETE" in s for s in exec_calls)
 
         # Clean up
         benchmarks_api._cancelled_run_ids.discard(50)
@@ -1138,7 +1137,7 @@ class TestRecoverOrphanedRuns:
     @patch("benchmarks_api.db.execute")
     @patch("benchmarks_api.db.fetch_all")
     def test_marks_orphaned_runs_as_failed(self, mock_fetch, mock_exec):
-        """Running/pending/warming_up runs are marked failed on startup."""
+        """Running/pending/warming_up runs are deleted on startup."""
         mock_fetch.return_value = [
             {"id": 1, "status": "running"},
             {"id": 2, "status": "pending"},
@@ -1147,8 +1146,7 @@ class TestRecoverOrphanedRuns:
         benchmarks_api.recover_orphaned_runs()
         mock_exec.assert_called_once()
         call_sql = mock_exec.call_args[0][0]
-        assert "failed" in call_sql
-        assert "Interrupted" in call_sql
+        assert "DELETE" in call_sql
         assert mock_exec.call_args[0][1] == ([1, 2, 3],)
 
     @patch("benchmarks_api.db.fetch_all")
