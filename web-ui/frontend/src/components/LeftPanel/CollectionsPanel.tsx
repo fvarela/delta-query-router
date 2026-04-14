@@ -817,7 +817,19 @@ export const CollectionsPanel: React.FC = () => {
     );
   }
 
-  // Collection List View
+  // Collection List View — or TPC-DS Setup Wizard (takes over panel)
+  if (showTpcdsSetup) {
+    return (
+      <div className="flex flex-col h-full text-[12px]">
+        <TpcdsSetupDialog
+          open={showTpcdsSetup}
+          onClose={() => setShowTpcdsSetup(false)}
+          onComplete={() => { setTpcdsConfigured(true); triggerRefreshCollections(); }}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-full text-[12px]">
       <div className="px-3 py-2 border-b border-panel-border flex items-center justify-between">
@@ -847,15 +859,13 @@ export const CollectionsPanel: React.FC = () => {
             <div className="px-3 py-1.5 flex items-center gap-1.5 bg-muted/30 border-b border-border">
               <Database size={11} className="text-amber-500" />
               <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">TPC-DS Benchmarks</span>
-              {!tpcdsConfigured && (
-                <button
-                  onClick={() => setShowTpcdsSetup(true)}
-                  className="ml-auto flex items-center gap-0.5 text-[10px] text-amber-600 hover:text-amber-800 transition-colors"
-                  title="Configure TPC-DS dataset"
-                >
-                  <AlertTriangle size={10} /> Set up
-                </button>
-              )}
+              <button
+                onClick={() => setShowTpcdsSetup(true)}
+                className="ml-auto flex items-center gap-0.5 text-[10px] text-primary hover:text-primary/80 transition-colors"
+                title="Manage TPC-DS datasets"
+              >
+                <Plus size={10} /> Add
+              </button>
             </div>
             {tpcdsCollections.map(c => (
               <button
@@ -932,13 +942,6 @@ export const CollectionsPanel: React.FC = () => {
           </div>
         )}
       </div>
-
-      {/* TPC-DS Setup Dialog */}
-      <TpcdsSetupDialog
-        open={showTpcdsSetup}
-        onClose={() => setShowTpcdsSetup(false)}
-        onComplete={() => { setTpcdsConfigured(true); triggerRefreshCollections(); }}
-      />
     </div>
   );
 };
