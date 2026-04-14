@@ -1161,3 +1161,55 @@ class TestRecoverOrphanedRuns:
         """DB errors during recovery are logged, not raised."""
         # Should not raise
         benchmarks_api.recover_orphaned_runs()
+
+
+class TestWarmupDuckdbSync:
+    """_warmup_duckdb_sync() — real warmup through credential vending path."""
+
+    @patch("benchmarks_api.httpx.Client")
+    @patch("benchmarks_api.engines_api.engine_url", return_value="http://duckdb:8002")
+    def test_with_tables_sends_real_query(self, mock_url, mock_client_cls):
+        """When tables are provided, warmup sends SELECT 1 FROM <table> LIMIT 1."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.post.return_value = mock_resp
+        mock_client_cls.return_value = mock_client
+
+        ms = benchmarks_api._warmup_duckdb_sync(
+            _engine_row(),
+            tables=["catalog.schema.my_table", "catalog.schema.other"],
+            databricks_host="https://db.cloud.databricks.com",
+            databricks_token="dapi_test",
+        )
+
+        assert ms > 0
+        call_args = mock_client.post.call_args
+        payload = call_args[1].get("json") or call_args[0][1]
+        assert "my_table" in payload["sql"]
+        assert "LIMIT 1" in payload["sql"]
+        assert payload["tables"] == ["catalog.schema.my_table"]
+        assert payload["databricks_host"] == "https://db.cloud.databricks.com"
+        assert payload["databricks_token"] == "dapi_test"
+
+    @patch("benchmarks_api.httpx.Client")
+    @patch("benchmarks_api.engines_api.engine_url", return_value="http://duckdb:8002")
+    def test_without_tables_falls_back_to_select_1(self, mock_url, mock_client_cls):
+        """Without tables, warmup sends plain SELECT 1."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.post.return_value = mock_resp
+        mock_client_cls.return_value = mock_client
+
+        ms = benchmarks_api._warmup_duckdb_sync(_engine_row())
+
+        assert ms > 0
+        call_args = mock_client.post.call_args
+        payload = call_args[1].get("json") or call_args[0][1]
+        assert payload["sql"] == "SELECT 1"
+        assert "tables" not in payload

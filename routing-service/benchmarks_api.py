@@ -79,12 +79,40 @@ class CreateBenchmark(BaseModel):
 # --- Internal helpers ---
 
 
-def _warmup_duckdb_sync(engine: dict, timeout: float = 30.0) -> float:
-    """Send SELECT 1 to a specific DuckDB engine (sync), return elapsed ms."""
+def _warmup_duckdb_sync(
+    engine: dict,
+    tables: list[str] | None = None,
+    databricks_host: str | None = None,
+    databricks_token: str | None = None,
+    timeout: float = 120.0,
+) -> float:
+    """Warm up a DuckDB engine by running a real query through the full path.
+
+    If a table name is available, runs ``SELECT 1 FROM <table> LIMIT 1``
+    which exercises the complete credential vending + Delta log + httpfs
+    pipeline. This ensures cold_start_time_ms captures the true one-time
+    cost of getting the DuckDB path ready (HTTP connections, SAS tokens,
+    Delta log parsing, etc.).
+
+    Falls back to ``SELECT 1`` if no table is available.
+    Returns elapsed wall-clock milliseconds.
+    """
     url = engines_api.engine_url(engine)
+    payload: dict
+    if tables and databricks_host and databricks_token:
+        warmup_table = tables[0]
+        payload = {
+            "sql": f"SELECT 1 FROM {warmup_table} LIMIT 1",
+            "tables": [warmup_table],
+            "databricks_host": databricks_host,
+            "databricks_token": databricks_token,
+        }
+    else:
+        payload = {"sql": "SELECT 1"}
+
     t0 = time.perf_counter()
     with httpx.Client(timeout=timeout) as client:
-        resp = client.post(f"{url}/query", json={"sql": "SELECT 1"})
+        resp = client.post(f"{url}/query", json=payload)
         resp.raise_for_status()
     return (time.perf_counter() - t0) * 1000
 
@@ -276,7 +304,18 @@ def _run_benchmark_inner(
             )
 
             if eng["engine_type"] == "duckdb":
-                cold_start_ms = _warmup_duckdb_sync(eng)
+                # Extract a table from the first query for a real warmup
+                warmup_tables = None
+                if queries:
+                    analysis = query_analyzer.analyze_query(queries[0]["query_text"])
+                    if analysis and not analysis.error and analysis.tables:
+                        warmup_tables = analysis.tables
+                cold_start_ms = _warmup_duckdb_sync(
+                    eng,
+                    tables=warmup_tables,
+                    databricks_host=databricks_host,
+                    databricks_token=databricks_token,
+                )
             elif eng["engine_type"] == "databricks_sql":
                 if not workspace_client or not warehouse_id:
                     raise RuntimeError("Databricks not configured")
