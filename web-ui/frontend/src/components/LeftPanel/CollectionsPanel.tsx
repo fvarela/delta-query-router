@@ -804,6 +804,7 @@ export const CollectionsPanel: React.FC = () => {
             definitionId={runsDialog.definitionId}
             engineName={runsDialog.engineName}
             onClose={() => setRunsDialog(null)}
+            onRunDeleted={() => reloadBenchmarkDefinitions().catch(() => {})}
           />
         )}
 
@@ -957,7 +958,8 @@ const RunsDialog: React.FC<{
   definitionId: number;
   engineName: string;
   onClose: () => void;
-}> = ({ definitionId, engineName, onClose }) => {
+  onRunDeleted?: () => void;
+}> = ({ definitionId, engineName, onClose, onRunDeleted }) => {
   const mock = isMockMode();
   const [runs, setRuns] = useState<BenchmarkRunDetail[]>(() =>
     mock ? getRunsForDefinition(definitionId) : []
@@ -993,7 +995,11 @@ const RunsDialog: React.FC<{
   const handleDeleteRun = async (runId: number) => {
     try {
       await api.del(`/api/benchmarks/${definitionId}/runs/${runId}`);
-      setRuns(prev => prev.filter(r => r.id !== runId));
+      const remaining = runs.filter(r => r.id !== runId);
+      setRuns(remaining);
+      setSelectedRun(null);
+      onRunDeleted?.();
+      if (remaining.length === 0) onClose();
     } catch {
       // Deletion failed — ignore silently
     }
