@@ -42,6 +42,8 @@ export const CollectionsPanel: React.FC = () => {
   const lastResultIdRef = useRef<Record<number, number>>({});
   // Cancellation in-flight state (per run_id)
   const [cancellingRunIds, setCancellingRunIds] = useState<Set<number>>(new Set());
+  // Toggle for collapsible live results feed
+  const [showLiveResults, setShowLiveResults] = useState(false);
 
   const mock = isMockMode();
 
@@ -649,7 +651,7 @@ export const CollectionsPanel: React.FC = () => {
                     );
                   })}
 
-                  {/* Live results feed */}
+                  {/* Live results feed — collapsible */}
                   {(() => {
                     // Merge all live results across runs, sorted newest first
                     const allResults = Object.entries(liveResults)
@@ -664,9 +666,14 @@ export const CollectionsPanel: React.FC = () => {
 
                     return (
                       <div className="mt-2">
-                        <div className="text-[11px] font-medium text-muted-foreground mb-1">
+                        <button
+                          onClick={() => setShowLiveResults(prev => !prev)}
+                          className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground hover:text-foreground mb-1 w-full"
+                        >
+                          <span className={`transition-transform text-[9px] ${showLiveResults ? "rotate-90" : ""}`}>▶</span>
                           Live Results ({allResults.length})
-                        </div>
+                        </button>
+                        {showLiveResults && (
                         <div className="max-h-[200px] overflow-y-auto border border-border rounded">
                           <table className="w-full text-[10px]">
                             <thead className="sticky top-0 bg-muted z-10">
@@ -707,6 +714,7 @@ export const CollectionsPanel: React.FC = () => {
                             </tbody>
                           </table>
                         </div>
+                        )}
                       </div>
                     );
                   })()}
@@ -982,6 +990,15 @@ const RunsDialog: React.FC<{
     return () => { cancelled = true; };
   }, [definitionId, mock]);
 
+  const handleDeleteRun = async (runId: number) => {
+    try {
+      await api.del(`/api/benchmarks/${definitionId}/runs/${runId}`);
+      setRuns(prev => prev.filter(r => r.id !== runId));
+    } catch {
+      // Deletion failed — ignore silently
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
       <div
@@ -1053,7 +1070,7 @@ const RunsDialog: React.FC<{
           ) : view === "statistics" && runs.length >= 2 ? (
             <RunStatisticsView runs={runs} />
           ) : (
-            <RunListView runs={runs} onViewDetail={setSelectedRun} />
+            <RunListView runs={runs} onViewDetail={setSelectedRun} onDeleteRun={mock ? undefined : handleDeleteRun} />
           )}
         </div>
       </div>
@@ -1066,7 +1083,9 @@ const RunsDialog: React.FC<{
 const RunListView: React.FC<{
   runs: BenchmarkRunDetail[];
   onViewDetail: (run: BenchmarkRunDetail) => void;
-}> = ({ runs, onViewDetail }) => {
+  onDeleteRun?: (runId: number) => void;
+}> = ({ runs, onViewDetail, onDeleteRun }) => {
+  const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   if (runs.length === 0) {
     return (
       <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">
@@ -1097,6 +1116,12 @@ const RunListView: React.FC<{
               <div className="flex items-center gap-2">
                 <span className="text-foreground font-medium">{dateStr}</span>
                 <span className="text-muted-foreground">{timeStr}</span>
+                {run.status === "cancelled" && (
+                  <span className="text-[10px] px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded font-medium">Partial</span>
+                )}
+                {run.status === "failed" && (
+                  <span className="text-[10px] px-1.5 py-0.5 bg-red-100 text-red-700 rounded font-medium">Failed</span>
+                )}
               </div>
               <div className="flex items-center gap-3 mt-0.5 text-[11px] text-muted-foreground">
                 <span>Total: <span className="font-mono text-foreground">{totalMs >= 1000 ? `${(totalMs / 1000).toFixed(1)}s` : `${totalMs}ms`}</span></span>
@@ -1104,12 +1129,40 @@ const RunListView: React.FC<{
                 {warmup && <span>Cold start: <span className={`font-mono ${latencyColor(warmup.cold_start_time_ms ?? 0)}`}>{warmup.cold_start_time_ms}ms</span></span>}
               </div>
             </div>
-            <button
-              onClick={() => onViewDetail(run)}
-              className="flex items-center gap-1 text-[11px] text-primary hover:underline shrink-0"
-            >
-              Details <ExternalLink size={9} />
-            </button>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                onClick={() => onViewDetail(run)}
+                className="flex items-center gap-1 text-[11px] text-primary hover:underline"
+              >
+                Details <ExternalLink size={9} />
+              </button>
+              {onDeleteRun && (
+                confirmDelete === run.id ? (
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => { onDeleteRun(run.id); setConfirmDelete(null); }}
+                      className="text-[10px] px-1.5 py-0.5 bg-red-50 text-red-600 border border-red-200 rounded hover:bg-red-100"
+                    >
+                      Confirm
+                    </button>
+                    <button
+                      onClick={() => setConfirmDelete(null)}
+                      className="text-[10px] px-1.5 py-0.5 bg-muted text-muted-foreground rounded hover:bg-muted/80"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setConfirmDelete(run.id)}
+                    className="p-1 text-muted-foreground hover:text-red-500 rounded hover:bg-red-50/50 transition-colors"
+                    title="Delete this run"
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                )
+              )}
+            </div>
           </div>
         );
       })}
