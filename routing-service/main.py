@@ -182,6 +182,23 @@ async def start_log_cleaner():
     log_cleaner.start(interval_seconds=3600)
 
 
+@app.on_event("startup")
+async def cleanup_ephemeral_warehouses():
+    """Delete orphaned ephemeral warehouses from previous crashed benchmark runs."""
+    if _workspace_client is None:
+        return
+    try:
+        import ephemeral_warehouses
+
+        count = ephemeral_warehouses.cleanup_orphans(_workspace_client)
+        if count > 0:
+            logger.info("Cleaned up %d orphaned ephemeral warehouses", count)
+        else:
+            logger.debug("Orphan warehouse cleanup: 0 warehouses found")
+    except Exception as e:
+        logger.warning("Orphan warehouse cleanup failed: %s", e)
+
+
 @app.on_event("shutdown")
 async def close_database():
     log_cleaner.stop()
@@ -351,6 +368,9 @@ _CLUSTER_SIZE_TO_ENGINE: dict[str, str] = {
     "2X-Small": "databricks-serverless-2xs",
     "X-Small": "databricks-serverless-xs",
     "Small": "databricks-serverless-s",
+    "Medium": "databricks-serverless-m",
+    "Large": "databricks-serverless-l",
+    "X-Large": "databricks-serverless-xl",
 }
 
 

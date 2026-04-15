@@ -163,7 +163,7 @@ INSERT INTO routing_settings (id) VALUES (1) ON CONFLICT DO NOTHING;
 
 -- Seed default DuckDB engines
 INSERT INTO engines (id, engine_type, display_name, config, k8s_service_name, cost_tier) VALUES
-    ('duckdb-1', 'duckdb', 'DuckDB — Small', '{"memory_gb": 1, "cpu_count": 1}', 'duckdb-worker-small', 3),
+    ('duckdb-1', 'duckdb', 'DuckDB — Small', '{"memory_gb": 2, "cpu_count": 2}', 'duckdb-worker-small', 3),
     ('duckdb-2', 'duckdb', 'DuckDB — Medium', '{"memory_gb": 2, "cpu_count": 2}', 'duckdb-worker-medium', 4),
     ('duckdb-3', 'duckdb', 'DuckDB — Large', '{"memory_gb": 4, "cpu_count": 4}', 'duckdb-worker-large', 5)
 ON CONFLICT DO NOTHING;
@@ -177,6 +177,16 @@ INSERT INTO engines (id, engine_type, display_name, config, k8s_service_name, co
     ('databricks-serverless-xs', 'databricks_sql', 'Databricks — X-Small', '{"cluster_size": "X-Small", "is_serverless": true, "has_photon": true}', NULL, 6),
     ('databricks-serverless-s', 'databricks_sql', 'Databricks — Small', '{"cluster_size": "Small", "is_serverless": true, "has_photon": true}', NULL, 7)
 ON CONFLICT DO NOTHING;
+
+-- Seed additional Databricks engine sizes (default inactive)
+INSERT INTO engines (id, engine_type, display_name, config, k8s_service_name, cost_tier) VALUES
+    ('databricks-serverless-m', 'databricks_sql', 'Databricks — Medium', '{"cluster_size": "Medium", "is_serverless": true, "has_photon": true}', NULL, 8),
+    ('databricks-serverless-l', 'databricks_sql', 'Databricks — Large', '{"cluster_size": "Large", "is_serverless": true, "has_photon": true}', NULL, 9),
+    ('databricks-serverless-xl', 'databricks_sql', 'Databricks — X-Large', '{"cluster_size": "X-Large", "is_serverless": true, "has_photon": true}', NULL, 10)
+ON CONFLICT DO NOTHING;
+
+-- Default: new Databricks sizes inactive (enable as needed for benchmarking)
+UPDATE engines SET is_active = false WHERE id IN ('databricks-serverless-m', 'databricks-serverless-l', 'databricks-serverless-xl') AND is_active = true;
 
 -- =============================================================================
 -- Phase 13: ML Model Training Pipeline

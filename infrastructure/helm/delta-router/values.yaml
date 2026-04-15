@@ -45,10 +45,10 @@ duckdbWorker:
       replicas: 1
       resources:
         requests:
-          cpu: 200m
+          cpu: 500m
           memory: 512Mi
         limits:
-          cpu: "1"
+          cpu: "2"
           memory: 2Gi
     medium:
       enabled: false

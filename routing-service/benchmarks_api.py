@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 import db
 import engines_api
+import ephemeral_warehouses
 import query_analyzer
 import query_features
 
@@ -361,166 +362,222 @@ def _run_benchmark_inner(
 
     for eid, eng in engines.items():
         run_id = runs[eid]["run"]["id"]
+        ephemeral_wh_id = None  # Track ephemeral warehouse for cleanup
 
-        # -- Warm-up phase --
         try:
-            db.execute(
-                "UPDATE benchmark_runs SET status = 'warming_up', updated_at = NOW() WHERE id = %s",
-                (run_id,),
-            )
-
-            if eng["engine_type"] == "duckdb":
-                # Extract a table from the first query for a real warmup
-                warmup_tables = None
-                if queries:
-                    analysis = query_analyzer.analyze_query(queries[0]["query_text"])
-                    if analysis and not analysis.error and analysis.tables:
-                        warmup_tables = analysis.tables
-                cold_start_ms = _warmup_duckdb_sync(
-                    eng,
-                    tables=warmup_tables,
-                    databricks_host=databricks_host,
-                    databricks_token=databricks_token,
-                )
-            elif eng["engine_type"] == "databricks_sql":
-                if not workspace_client or not warehouse_id:
+            # -- Resolve warehouse ID for Databricks engines --
+            wh_id = None
+            if eng["engine_type"] == "databricks_sql":
+                if not workspace_client:
                     raise RuntimeError("Databricks not configured")
-                wh_id = (eng.get("config") or {}).get("warehouse_id", warehouse_id)
-                # Extract a table from the first query for a real warmup
-                warmup_tables_dbx = None
-                if queries:
-                    analysis = query_analyzer.analyze_query(queries[0]["query_text"])
-                    if analysis and not analysis.error and analysis.tables:
-                        warmup_tables_dbx = analysis.tables
-                cold_start_ms = _warmup_databricks(
-                    workspace_client, wh_id, tables=warmup_tables_dbx
-                )
-            else:
-                raise RuntimeError(f"Unknown engine type: {eng['engine_type']}")
-
-            db.execute(
-                "INSERT INTO benchmark_engine_warmups (run_id, engine_id, cold_start_time_ms) "
-                "VALUES (%s, %s, %s)",
-                (run_id, eid, cold_start_ms),
-            )
-        except Exception as e:
-            logger.warning("Warmup failed for engine %s: %s", eid, e)
-            db.execute(
-                "INSERT INTO benchmark_engine_warmups (run_id, engine_id, cold_start_time_ms) "
-                "VALUES (%s, %s, NULL)",
-                (run_id, eid),
-            )
-            db.execute(
-                "UPDATE benchmark_runs SET status = 'failed', error_message = %s, updated_at = NOW() WHERE id = %s",
-                (f"Warmup failed: {e}", run_id),
-            )
-            continue  # Skip to next engine instead of aborting all
-
-        # -- Check cancellation before running phase --
-        if run_id in _cancelled_run_ids:
-            _cancelled_run_ids.discard(run_id)
-            # Delete the run entirely — partial data is not useful for ML training
-            db.execute("DELETE FROM benchmark_runs WHERE id = %s", (run_id,))
-            logger.info(
-                "Benchmark run %d for engine %s cancelled and deleted before execution",
-                run_id,
-                eid,
-            )
-            continue
-
-        # -- Running phase --
-        db.execute(
-            "UPDATE benchmark_runs SET status = 'running', updated_at = NOW() WHERE id = %s",
-            (run_id,),
-        )
-
-        error_count = 0
-        cancelled = False
-        for query in queries:
-            # Check cancellation between queries
-            if run_id in _cancelled_run_ids:
-                _cancelled_run_ids.discard(run_id)
-                cancelled = True
-                break
-
-            try:
-                if eng["engine_type"] == "duckdb":
-                    # Extract table names so DuckDB worker can resolve via credential vending
-                    analysis = query_analyzer.analyze_query(query["query_text"])
-                    tables = (
-                        analysis.tables if analysis and not analysis.error else None
+                config = eng.get("config") or {}
+                explicit_wh_id = config.get("warehouse_id")
+                if explicit_wh_id:
+                    # Engine has its own warehouse (e.g., synced from Databricks)
+                    wh_id = explicit_wh_id
+                elif warehouse_id:
+                    # Fall back to global warehouse (selected during workspace setup)
+                    wh_id = warehouse_id
+                else:
+                    # No warehouse at all — create an ephemeral one matching engine size
+                    cluster_size = config.get("cluster_size", "2X-Small")
+                    try:
+                        ephemeral_wh_id = ephemeral_warehouses.create_for_benchmark(
+                            workspace_client,
+                            cluster_size,
+                            run_id,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Ephemeral warehouse creation failed for engine %s: %s",
+                            eid,
+                            e,
+                        )
+                        db.execute(
+                            "UPDATE benchmark_runs SET status = 'failed', error_message = %s, updated_at = NOW() WHERE id = %s",
+                            (f"Ephemeral warehouse creation failed: {e}", run_id),
+                        )
+                        continue
+                    db.execute(
+                        "UPDATE benchmark_runs SET status = 'provisioning', updated_at = NOW() WHERE id = %s",
+                        (run_id,),
                     )
-                    result = _execute_query_on_duckdb_sync(
+                    if not ephemeral_warehouses.wait_for_running(
+                        workspace_client, ephemeral_wh_id
+                    ):
+                        db.execute(
+                            "UPDATE benchmark_runs SET status = 'failed', error_message = %s, updated_at = NOW() WHERE id = %s",
+                            (
+                                "Ephemeral warehouse failed to start within timeout",
+                                run_id,
+                            ),
+                        )
+                        continue  # finally block will clean up the warehouse
+                    wh_id = ephemeral_wh_id
+
+            # -- Warm-up phase --
+            try:
+                db.execute(
+                    "UPDATE benchmark_runs SET status = 'warming_up', updated_at = NOW() WHERE id = %s",
+                    (run_id,),
+                )
+
+                if eng["engine_type"] == "duckdb":
+                    # Extract a table from the first query for a real warmup
+                    warmup_tables = None
+                    if queries:
+                        analysis = query_analyzer.analyze_query(
+                            queries[0]["query_text"]
+                        )
+                        if analysis and not analysis.error and analysis.tables:
+                            warmup_tables = analysis.tables
+                    cold_start_ms = _warmup_duckdb_sync(
                         eng,
-                        query["query_text"],
-                        tables=tables,
+                        tables=warmup_tables,
                         databricks_host=databricks_host,
                         databricks_token=databricks_token,
                     )
                 elif eng["engine_type"] == "databricks_sql":
-                    wh_id = (eng.get("config") or {}).get("warehouse_id", warehouse_id)
-                    result = _execute_query_on_databricks(
-                        workspace_client,
-                        wh_id,
-                        query["query_text"],
+                    # Extract a table from the first query for a real warmup
+                    warmup_tables_dbx = None
+                    if queries:
+                        analysis = query_analyzer.analyze_query(
+                            queries[0]["query_text"]
+                        )
+                        if analysis and not analysis.error and analysis.tables:
+                            warmup_tables_dbx = analysis.tables
+                    cold_start_ms = _warmup_databricks(
+                        workspace_client, wh_id, tables=warmup_tables_dbx
                     )
                 else:
-                    result = {
-                        "execution_time_ms": None,
-                        "error_message": f"Unknown engine type: {eng['engine_type']}",
-                    }
+                    raise RuntimeError(f"Unknown engine type: {eng['engine_type']}")
+
+                db.execute(
+                    "INSERT INTO benchmark_engine_warmups (run_id, engine_id, cold_start_time_ms) "
+                    "VALUES (%s, %s, %s)",
+                    (run_id, eid, cold_start_ms),
+                )
             except Exception as e:
-                result = {"execution_time_ms": None, "error_message": str(e)}
+                logger.warning("Warmup failed for engine %s: %s", eid, e)
+                db.execute(
+                    "INSERT INTO benchmark_engine_warmups (run_id, engine_id, cold_start_time_ms) "
+                    "VALUES (%s, %s, NULL)",
+                    (run_id, eid),
+                )
+                db.execute(
+                    "UPDATE benchmark_runs SET status = 'failed', error_message = %s, updated_at = NOW() WHERE id = %s",
+                    (f"Warmup failed: {e}", run_id),
+                )
+                continue  # Skip to next engine instead of aborting all
 
-            if result.get("error_message"):
-                error_count += 1
-
-            db.execute(
-                "INSERT INTO benchmark_results (run_id, engine_id, query_id, execution_time_ms, error_message) "
-                "VALUES (%s, %s, %s, %s, %s)",
-                (
+            # -- Check cancellation before running phase --
+            if run_id in _cancelled_run_ids:
+                _cancelled_run_ids.discard(run_id)
+                # Delete the run entirely — partial data is not useful for ML training
+                db.execute("DELETE FROM benchmark_runs WHERE id = %s", (run_id,))
+                logger.info(
+                    "Benchmark run %d for engine %s cancelled and deleted before execution",
                     run_id,
                     eid,
-                    query["id"],
-                    result.get("execution_time_ms"),
-                    result.get("error_message"),
-                ),
+                )
+                continue
+
+            # -- Running phase --
+            db.execute(
+                "UPDATE benchmark_runs SET status = 'running', updated_at = NOW() WHERE id = %s",
+                (run_id,),
             )
 
-        # -- Complete / Cancelled --
-        if cancelled:
-            completed = db.fetch_one(
-                "SELECT COUNT(*) AS cnt FROM benchmark_results WHERE run_id = %s",
-                (run_id,),
-            )["cnt"]
-            logger.info(
-                "Benchmark run %d for engine %s cancelled at %d/%d queries — deleting partial data",
-                run_id,
-                eid,
-                completed,
-                total_queries,
-            )
-            # Delete the run entirely — partial data is not useful for ML training
-            db.execute("DELETE FROM benchmark_runs WHERE id = %s", (run_id,))
-        else:
-            status = "complete" if error_count < total_queries else "failed"
-            error_msg = (
-                f"{error_count}/{total_queries} queries failed"
-                if error_count > 0
-                else None
-            )
-            db.execute(
-                "UPDATE benchmark_runs SET status = %s, error_message = %s, updated_at = NOW() WHERE id = %s",
-                (status, error_msg, run_id),
-            )
-            logger.info(
-                "Benchmark run %d for engine %s: %s (%d/%d queries ok)",
-                run_id,
-                eid,
-                status,
-                total_queries - error_count,
-                total_queries,
-            )
+            error_count = 0
+            cancelled = False
+            for query in queries:
+                # Check cancellation between queries
+                if run_id in _cancelled_run_ids:
+                    _cancelled_run_ids.discard(run_id)
+                    cancelled = True
+                    break
+
+                try:
+                    if eng["engine_type"] == "duckdb":
+                        # Extract table names so DuckDB worker can resolve via credential vending
+                        analysis = query_analyzer.analyze_query(query["query_text"])
+                        tables = (
+                            analysis.tables if analysis and not analysis.error else None
+                        )
+                        result = _execute_query_on_duckdb_sync(
+                            eng,
+                            query["query_text"],
+                            tables=tables,
+                            databricks_host=databricks_host,
+                            databricks_token=databricks_token,
+                        )
+                    elif eng["engine_type"] == "databricks_sql":
+                        result = _execute_query_on_databricks(
+                            workspace_client,
+                            wh_id,
+                            query["query_text"],
+                        )
+                    else:
+                        result = {
+                            "execution_time_ms": None,
+                            "error_message": f"Unknown engine type: {eng['engine_type']}",
+                        }
+                except Exception as e:
+                    result = {"execution_time_ms": None, "error_message": str(e)}
+
+                if result.get("error_message"):
+                    error_count += 1
+
+                db.execute(
+                    "INSERT INTO benchmark_results (run_id, engine_id, query_id, execution_time_ms, error_message) "
+                    "VALUES (%s, %s, %s, %s, %s)",
+                    (
+                        run_id,
+                        eid,
+                        query["id"],
+                        result.get("execution_time_ms"),
+                        result.get("error_message"),
+                    ),
+                )
+
+            # -- Complete / Cancelled --
+            if cancelled:
+                completed = db.fetch_one(
+                    "SELECT COUNT(*) AS cnt FROM benchmark_results WHERE run_id = %s",
+                    (run_id,),
+                )["cnt"]
+                logger.info(
+                    "Benchmark run %d for engine %s cancelled at %d/%d queries — deleting partial data",
+                    run_id,
+                    eid,
+                    completed,
+                    total_queries,
+                )
+                # Delete the run entirely — partial data is not useful for ML training
+                db.execute("DELETE FROM benchmark_runs WHERE id = %s", (run_id,))
+            else:
+                status = "complete" if error_count < total_queries else "failed"
+                error_msg = (
+                    f"{error_count}/{total_queries} queries failed"
+                    if error_count > 0
+                    else None
+                )
+                db.execute(
+                    "UPDATE benchmark_runs SET status = %s, error_message = %s, updated_at = NOW() WHERE id = %s",
+                    (status, error_msg, run_id),
+                )
+                logger.info(
+                    "Benchmark run %d for engine %s: %s (%d/%d queries ok)",
+                    run_id,
+                    eid,
+                    status,
+                    total_queries - error_count,
+                    total_queries,
+                )
+        finally:
+            # Always clean up ephemeral warehouses, even on exceptions
+            if ephemeral_wh_id:
+                ephemeral_warehouses.delete_warehouse(workspace_client, ephemeral_wh_id)
 
 
 # --- Endpoints ---
