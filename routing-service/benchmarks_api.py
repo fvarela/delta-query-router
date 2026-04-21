@@ -86,7 +86,7 @@ def _warmup_duckdb_sync(
     tables: list[str] | None = None,
     databricks_host: str | None = None,
     databricks_token: str | None = None,
-    timeout: float = 120.0,
+    timeout: float = 300.0,
 ) -> float:
     """Warm up a DuckDB engine by running a real query through the full path.
 
@@ -178,7 +178,7 @@ def _execute_query_on_duckdb_sync(
 
     t0 = time.perf_counter()
     try:
-        with httpx.Client(timeout=120.0) as client:
+        with httpx.Client(timeout=600.0) as client:
             resp = client.post(f"{url}/query", json=payload)
         wall_ms = (time.perf_counter() - t0) * 1000
 
@@ -721,14 +721,28 @@ async def get_run_progress(run_id: int):
         (run_id,),
     )["cnt"]
 
-    # Calculate elapsed from created_at
+    # Calculate elapsed — only count time from when the run actually started
     import datetime
 
     created = run["created_at"]
     if isinstance(created, str):
         created = datetime.datetime.fromisoformat(created)
     now = datetime.datetime.now(datetime.timezone.utc)
-    elapsed_ms = (now - created).total_seconds() * 1000
+
+    if run["status"] == "pending":
+        # Not started yet — no elapsed time
+        elapsed_ms = 0.0
+    else:
+        # Use updated_at as proxy for when the run first transitioned from pending
+        # (updated_at is set on every status change; for complete/failed runs it
+        # gives total wall time from start to finish)
+        if run["status"] in ("complete", "failed"):
+            updated = run["updated_at"]
+            if isinstance(updated, str):
+                updated = datetime.datetime.fromisoformat(updated)
+            elapsed_ms = (updated - created).total_seconds() * 1000
+        else:
+            elapsed_ms = (now - created).total_seconds() * 1000
 
     return {
         "run_id": run["run_id"],

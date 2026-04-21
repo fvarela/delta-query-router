@@ -135,7 +135,7 @@ CREATE TABLE IF NOT EXISTS benchmark_definitions (
 CREATE TABLE IF NOT EXISTS benchmark_runs (
     id              SERIAL PRIMARY KEY,
     definition_id   INTEGER NOT NULL REFERENCES benchmark_definitions(id) ON DELETE CASCADE,
-    status          TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'warming_up', 'running', 'complete', 'failed')),
+    status          TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'warming_up', 'provisioning', 'running', 'complete', 'failed')),
     error_message   TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()

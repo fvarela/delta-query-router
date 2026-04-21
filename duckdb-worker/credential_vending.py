@@ -32,6 +32,7 @@ import json
 import logging
 import re
 import ssl
+import time
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
@@ -81,6 +82,12 @@ class ResolvedTable:
     has_deletion_vectors: bool = False
 
 
+_SSL_CTX = ssl.create_default_context()
+
+_MAX_RETRIES = 3
+_RETRY_DELAY = 1.0  # seconds
+
+
 def _make_request(
     url: str,
     token: str,
@@ -88,31 +95,47 @@ def _make_request(
     method: str = "GET",
     body: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Make an authenticated HTTP request to the Databricks REST API."""
+    """Make an authenticated HTTP request to the Databricks REST API.
+
+    Retries on transient DNS/connection errors (common in K8s with ndots:5).
+    """
     headers = {"Authorization": f"Bearer {token}"}
     data = None
     if body is not None:
         headers["Content-Type"] = "application/json"
         data = json.dumps(body).encode()
 
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    ctx = ssl.create_default_context()
-
-    try:
-        with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        error_body = ""
+    last_error: Exception | None = None
+    for attempt in range(1, _MAX_RETRIES + 1):
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            error_body = e.read().decode()
-        except Exception:
-            pass
-        raise CredentialVendingError(
-            url,
-            f"HTTP {e.code}: {error_body[:500]}" if error_body else f"HTTP {e.code}",
-        ) from e
-    except urllib.error.URLError as e:
-        raise CredentialVendingError(url, f"Connection error: {e.reason}") from e
+            with urllib.request.urlopen(req, context=_SSL_CTX, timeout=30) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            # HTTP errors are not transient — raise immediately
+            error_body = ""
+            try:
+                error_body = e.read().decode()
+            except Exception:
+                pass
+            raise CredentialVendingError(
+                url,
+                f"HTTP {e.code}: {error_body[:500]}" if error_body else f"HTTP {e.code}",
+            ) from e
+        except urllib.error.URLError as e:
+            last_error = e
+            if attempt < _MAX_RETRIES:
+                logger.warning(
+                    "Transient error on attempt %d/%d for %s: %s — retrying in %.1fs",
+                    attempt, _MAX_RETRIES, url, e.reason, _RETRY_DELAY,
+                )
+                time.sleep(_RETRY_DELAY)
+            else:
+                raise CredentialVendingError(
+                    url, f"Connection error after {_MAX_RETRIES} attempts: {e.reason}"
+                ) from e
+    # Unreachable, but satisfies type checker
+    raise CredentialVendingError(url, f"Connection error: {last_error}")
 
 
 def _abfss_to_https(abfss_uri: str, sas_token: str) -> str:

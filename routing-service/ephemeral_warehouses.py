@@ -99,6 +99,7 @@ def create_for_benchmark(
         name=name,
         cluster_size=cluster_size,
         warehouse_type=CreateWarehouseRequestWarehouseType.PRO,
+        max_num_clusters=1,
         auto_stop_mins=5,
         enable_serverless_compute=True,
         tags=EndpointTags(

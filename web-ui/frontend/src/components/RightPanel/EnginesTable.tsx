@@ -366,7 +366,8 @@ const DatabricksEngineRow: React.FC<{
   isEnabled?: boolean;
   onToggle?: () => void;
   accentColor?: "primary" | "amber";
-}> = ({ engine, isSelected, onSelect, hasWorkspace, workspaceSatisfied, matchingWarehouses, currentMapping, setWarehouseMapping, selectionMode, isEnabled, onToggle, accentColor = "primary" }) => {
+  isBenchmarkMode?: boolean;
+}> = ({ engine, isSelected, onSelect, hasWorkspace, workspaceSatisfied, matchingWarehouses, currentMapping, setWarehouseMapping, selectionMode, isEnabled, onToggle, accentColor = "primary", isBenchmarkMode = false }) => {
   const [warehouseDropdownOpen, setWarehouseDropdownOpen] = useState(false);
 
   if (!hasWorkspace) {
@@ -418,12 +419,14 @@ const DatabricksEngineRow: React.FC<{
     : null;
   const warehouseCount = matchingWarehouses.length;
   const isMapped = mappedWarehouse !== null;
+  // In benchmark mode, ephemeral warehouses are created on the fly — no mapping required
+  const isInteractive = isMapped || isBenchmarkMode;
 
   return (
     <div className={`rounded border transition-colors ${
       isSelected ? "border-primary/30 bg-primary/5" : accentColor === "amber" && isEnabled ? "border-amber-300/30 bg-amber-50" : "border-transparent"
     }`}>
-      <div className={`flex items-center gap-2 px-2 py-1.5 ${!isMapped ? "opacity-60" : ""}`}>
+      <div className={`flex items-center gap-2 px-2 py-1.5 ${!isInteractive ? "opacity-60" : ""}`}>
         {selectionMode === "radio" ? (
           <input
             type="radio"
@@ -439,9 +442,9 @@ const DatabricksEngineRow: React.FC<{
             type="checkbox"
             checked={isEnabled ?? false}
             onChange={onToggle}
-            disabled={!isMapped}
+            disabled={!isInteractive}
             className={accentColor === "amber" ? "accent-amber-600" : "accent-primary"}
-            title={!isMapped ? "Map a warehouse first to enable this engine" : undefined}
+            title={!isInteractive ? "Map a warehouse first to enable this engine" : undefined}
           />
         )}
         <span className="flex items-center gap-1.5 text-[12px] flex-1 min-w-0">
@@ -455,7 +458,9 @@ const DatabricksEngineRow: React.FC<{
       {/* Warehouse mapping row */}
       <div className="px-2 pb-1.5 pl-[30px]">
         {warehouseCount === 0 ? (
-          <span className="text-[11px] text-muted-foreground/60 italic">No matching warehouses found</span>
+          <span className="text-[11px] text-muted-foreground/60 italic">
+            {isBenchmarkMode ? "Ephemeral warehouse — created automatically" : "No matching warehouses found"}
+          </span>
         ) : mappedWarehouse ? (
           <div className="flex items-center gap-1.5">
             <span className={`inline-block w-[4px] h-[4px] rounded-full shrink-0 ${
@@ -863,6 +868,7 @@ const BenchmarkingView: React.FC<{
                   isEnabled={isChecked}
                   onToggle={() => toggleBenchmarkEngine(e.id)}
                   accentColor="amber"
+                  isBenchmarkMode={true}
                 />
               );
             })}
