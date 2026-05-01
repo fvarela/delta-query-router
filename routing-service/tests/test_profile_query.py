@@ -116,7 +116,7 @@ class TestProfileConfigToRoutingParams:
 
     def test_smart_mode_cost_priority(self):
         """routingPriority=0 → fit_weight=0, cost_weight=1 (cost-optimized)."""
-        mode, settings = _profile_config_to_routing_params(
+        mode, settings, engine_ids = _profile_config_to_routing_params(
             {"routingMode": "smart", "routingPriority": 0}
         )
         assert mode == "smart"
@@ -126,7 +126,7 @@ class TestProfileConfigToRoutingParams:
 
     def test_smart_mode_balanced_priority(self):
         """routingPriority=0.5 → fit_weight=0.5, cost_weight=0.5 (balanced)."""
-        mode, settings = _profile_config_to_routing_params(
+        mode, settings, engine_ids = _profile_config_to_routing_params(
             {"routingMode": "smart", "routingPriority": 0.5}
         )
         assert mode == "smart"
@@ -136,7 +136,7 @@ class TestProfileConfigToRoutingParams:
 
     def test_smart_mode_fit_priority(self):
         """routingPriority=1 → fit_weight=1, cost_weight=0 (performance)."""
-        mode, settings = _profile_config_to_routing_params(
+        mode, settings, engine_ids = _profile_config_to_routing_params(
             {"routingMode": "smart", "routingPriority": 1}
         )
         assert mode == "smart"
@@ -148,7 +148,7 @@ class TestProfileConfigToRoutingParams:
     def test_single_mode_duckdb_engine(self, mock_fetch):
         """single mode with a duckdb engine → forced 'duckdb'."""
         mock_fetch.return_value = {"engine_type": "duckdb"}
-        mode, settings = _profile_config_to_routing_params(
+        mode, settings, engine_ids = _profile_config_to_routing_params(
             {"routingMode": "single", "singleEngineId": "duckdb-1"}
         )
         assert mode == "duckdb"
@@ -158,7 +158,7 @@ class TestProfileConfigToRoutingParams:
     def test_single_mode_databricks_engine(self, mock_fetch):
         """single mode with a databricks engine → forced 'databricks'."""
         mock_fetch.return_value = {"engine_type": "databricks_sql"}
-        mode, settings = _profile_config_to_routing_params(
+        mode, settings, engine_ids = _profile_config_to_routing_params(
             {"routingMode": "single", "singleEngineId": "databricks-xs"}
         )
         assert mode == "databricks"
@@ -168,7 +168,7 @@ class TestProfileConfigToRoutingParams:
     def test_single_mode_unknown_engine_fallback(self, mock_fetch):
         """single mode with unknown engine → falls back to 'smart'."""
         mock_fetch.return_value = None
-        mode, settings = _profile_config_to_routing_params(
+        mode, settings, engine_ids = _profile_config_to_routing_params(
             {"routingMode": "single", "singleEngineId": "nonexistent"}
         )
         assert mode == "smart"
@@ -176,13 +176,13 @@ class TestProfileConfigToRoutingParams:
 
     def test_single_mode_no_engine_id(self):
         """single mode without singleEngineId → falls back to 'smart'."""
-        mode, settings = _profile_config_to_routing_params({"routingMode": "single"})
+        mode, settings, engine_ids = _profile_config_to_routing_params({"routingMode": "single"})
         assert mode == "smart"
         assert settings is None
 
     def test_benchmark_mode(self):
         """benchmark mode passes through."""
-        mode, settings = _profile_config_to_routing_params(
+        mode, settings, engine_ids = _profile_config_to_routing_params(
             {"routingMode": "benchmark", "routingPriority": 0.5}
         )
         assert mode == "benchmark"
@@ -190,11 +190,25 @@ class TestProfileConfigToRoutingParams:
 
     def test_empty_config_defaults(self):
         """Empty config defaults to smart mode with balanced priority."""
-        mode, settings = _profile_config_to_routing_params({})
+        mode, settings, engine_ids = _profile_config_to_routing_params({})
         assert mode == "smart"
         assert settings is not None
         assert settings.fit_weight == 0.5
         assert settings.cost_weight == 0.5
+
+    def test_enabled_engine_ids_returned(self):
+        """enabledEngineIds from config is returned as third element."""
+        mode, settings, engine_ids = _profile_config_to_routing_params(
+            {"routingMode": "smart", "routingPriority": 0.5, "enabledEngineIds": ["duckdb-1"]}
+        )
+        assert engine_ids == ["duckdb-1"]
+
+    def test_enabled_engine_ids_none_when_missing(self):
+        """Missing enabledEngineIds returns None."""
+        mode, settings, engine_ids = _profile_config_to_routing_params(
+            {"routingMode": "smart", "routingPriority": 0.5}
+        )
+        assert engine_ids is None
 
 
 # ---------------------------------------------------------------------------

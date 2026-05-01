@@ -262,6 +262,7 @@ def _score_with_ml(
     table_metadata: dict[str, TableMetadata],
     settings: RoutingSettings,
     events: list[RoutingLogEvent],
+    enabled_engine_ids: list[str] | None = None,
 ) -> tuple[str, dict[str, float]]:
     """Full ODQ-10 weighted scoring using ML predictions.
 
@@ -322,6 +323,29 @@ def _score_with_ml(
             )
         )
 
+    # Filter to only user-selected engines (if specified)
+    if enabled_engine_ids:
+        eligible_scores = {eid: s for eid, s in scores.items() if eid in enabled_engine_ids}
+        events.append(
+            RoutingLogEvent(
+                _ts(),
+                "info",
+                "ml_scoring",
+                f"Eligible engines (user selection): {', '.join(eligible_scores.keys()) or 'none'}",
+            )
+        )
+        if eligible_scores:
+            scores = eligible_scores
+        else:
+            events.append(
+                RoutingLogEvent(
+                    _ts(),
+                    "warn",
+                    "ml_scoring",
+                    "No selected engines have ML predictions — using all scored engines",
+                )
+            )
+
     winner = min(scores, key=scores.get)  # type: ignore[arg-type]
     events.append(
         RoutingLogEvent(
@@ -340,6 +364,7 @@ def route_query(
     routing_mode: str = "smart",
     settings: RoutingSettings | None = None,
     engine_states: EngineStates | None = None,
+    enabled_engine_ids: list[str] | None = None,
 ) -> RoutingResult:
     events: list[RoutingLogEvent] = []
     # 0. Error check
@@ -444,7 +469,8 @@ def route_query(
                 )
                 # Full ODQ-10 weighted scoring
                 winner_id, ml_scores = _score_with_ml(
-                    predictions, active_engines, table_metadata, _settings, events
+                    predictions, active_engines, table_metadata, _settings, events,
+                    enabled_engine_ids=enabled_engine_ids,
                 )
                 winner_engine = next(
                     (e for e in active_engines if e["id"] == winner_id), None
@@ -498,8 +524,25 @@ def route_query(
         RoutingLogEvent(_ts(), "info", "scoring", "Evaluating scoring heuristic")
     )
     scores = _score_engines(score, table_metadata, _settings, _engine_states, events)
+    # Filter heuristic scores to user-selected engines if specified
+    if enabled_engine_ids:
+        all_engines = engines_api.get_all_engines()
+        enabled_types = set()
+        for eng in all_engines:
+            if eng["id"] in enabled_engine_ids:
+                etype = eng["engine_type"]
+                if etype.startswith("databricks"):
+                    enabled_types.add("databricks")
+                else:
+                    enabled_types.add(etype)
+        eligible_scores = {k: v for k, v in scores.items() if k in enabled_types}
+        if eligible_scores:
+            scores = eligible_scores
     winner = max(scores, key=scores.get)  # type: ignore[arg-type]
-    margin = abs(scores["duckdb"] - scores["databricks"])
+    if "duckdb" in scores and "databricks" in scores:
+        margin = abs(scores["duckdb"] - scores["databricks"])
+    else:
+        margin = 0.0
     events.append(
         RoutingLogEvent(
             _ts(), "info", "scoring", f"Winner: {winner} (margin={margin:.2f})"
@@ -509,7 +552,7 @@ def route_query(
         engine=winner,
         stage="SCORING",
         reason=f"Scoring: {winner} scored {scores[winner]:.2f} "
-        f"(duckdb={scores['duckdb']:.2f}, databricks={scores['databricks']:.2f})",
+        f"({', '.join(f'{k}={v:.2f}' for k, v in scores.items())})",
         complexity_score=score,
     )
     events.append(

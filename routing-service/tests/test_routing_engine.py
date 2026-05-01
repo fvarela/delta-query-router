@@ -860,3 +860,102 @@ class TestScoreWithMl:
         assert winner == "duck-1"
         # Single engine → normalized values are 0 → score is 0
         assert scores["duck-1"] == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# Enabled engine filtering (Task 150)
+# ---------------------------------------------------------------------------
+
+
+class TestEnabledEngineFiltering:
+    """Tests that ML scoring respects user-selected engines."""
+
+    def _engines(self, *specs):
+        return [
+            {"id": s[0], "engine_type": s[1], "cost_tier": s[2], "is_active": True}
+            for s in specs
+        ]
+
+    @patch("routing_engine.engine_state.get_engine_state", return_value="running")
+    @patch("routing_engine.db")
+    def test_ml_winner_filtered_to_enabled_engines(self, mock_db, mock_es):
+        """ML picks best from enabled engines, not overall best."""
+        mock_db.fetch_one.return_value = None
+        engines = self._engines(
+            ("databricks-2xs", "databricks_sql", 5),
+            ("databricks-xs", "databricks_sql", 6),
+            ("duckdb-1", "duckdb", 3),
+        )
+        # databricks-2xs has best (lowest) latency, but only duckdb-1 is enabled
+        preds = {"databricks-2xs": 100.0, "databricks-xs": 200.0, "duckdb-1": 5000.0}
+        events = []
+        winner, scores = _score_with_ml(
+            preds, engines, {}, RoutingSettings(), events,
+            enabled_engine_ids=["duckdb-1"],
+        )
+        assert winner == "duckdb-1"
+
+    @patch("routing_engine.engine_state.get_engine_state", return_value="running")
+    @patch("routing_engine.db")
+    def test_ml_no_filter_when_enabled_is_none(self, mock_db, mock_es):
+        """No filtering when enabled_engine_ids is None (all engines eligible)."""
+        mock_db.fetch_one.return_value = None
+        engines = self._engines(
+            ("databricks-2xs", "databricks_sql", 5),
+            ("duckdb-1", "duckdb", 3),
+        )
+        preds = {"databricks-2xs": 100.0, "duckdb-1": 5000.0}
+        events = []
+        winner, scores = _score_with_ml(
+            preds, engines, {}, RoutingSettings(), events,
+            enabled_engine_ids=None,
+        )
+        # databricks-2xs wins because it has lower latency
+        assert winner == "databricks-2xs"
+
+    @patch("routing_engine.engine_state.get_engine_state", return_value="running")
+    @patch("routing_engine.db")
+    def test_ml_fallback_when_no_enabled_have_predictions(self, mock_db, mock_es):
+        """If no enabled engines have predictions, use all scored engines."""
+        mock_db.fetch_one.return_value = None
+        engines = self._engines(
+            ("databricks-2xs", "databricks_sql", 5),
+            ("duckdb-1", "duckdb", 3),
+        )
+        preds = {"databricks-2xs": 100.0, "duckdb-1": 5000.0}
+        events = []
+        winner, scores = _score_with_ml(
+            preds, engines, {}, RoutingSettings(), events,
+            enabled_engine_ids=["nonexistent-engine"],
+        )
+        # Falls back to all engines since none of the enabled ones have predictions
+        assert winner == "databricks-2xs"
+
+    @patch("routing_engine.engines_api.get_all_engines")
+    @patch("routing_engine.model_inference.predict_for_engines", return_value=None)
+    @patch("routing_engine.engines_api.get_all_engines")
+    @patch("routing_engine._load_rules", return_value=[])
+    def test_heuristic_filtered_to_enabled_engines(self, _rules, mock_all_eng, _pred, mock_all_eng2):
+        """Heuristic scoring respects enabled engine filter."""
+        mock_all_eng.return_value = [
+            {"id": "duckdb-1", "engine_type": "duckdb", "is_active": True},
+            {"id": "databricks-2xs", "engine_type": "databricks_sql", "is_active": True},
+        ]
+        mock_all_eng2.return_value = mock_all_eng.return_value
+        # Simple query → DuckDB normally wins heuristic, but only databricks enabled
+        analysis = _analysis(tables=["cat.sch.t"], complexity_score=0.5)
+        meta = {
+            "cat.sch.t": TableMetadata(
+                full_name="cat.sch.t", table_type="MANAGED",
+                data_source_format="DELTA", storage_location="abfss://x",
+                size_bytes=1000, has_rls=False, has_column_masking=False,
+                external_engine_read_support=True, cached=False,
+            )
+        }
+        result = route_query(
+            analysis, meta, routing_mode="smart",
+            settings=RoutingSettings(),
+            engine_states=EngineStates(),
+            enabled_engine_ids=["databricks-2xs"],
+        )
+        assert result.decision.engine == "databricks"

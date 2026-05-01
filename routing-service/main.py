@@ -447,14 +447,16 @@ def _load_profile_config(profile_id: int | None) -> dict | None:
 
 def _profile_config_to_routing_params(
     config: dict,
-) -> tuple[str, routing_engine.RoutingSettings | None]:
-    """Convert a profile config dict to (routing_mode, RoutingSettings | None).
+) -> tuple[str, routing_engine.RoutingSettings | None, list[str] | None]:
+    """Convert a profile config dict to (routing_mode, RoutingSettings | None, enabled_engine_ids | None).
 
     Returns:
         routing_mode: 'smart', 'duckdb', 'databricks', or a specific engine_id for single mode
         settings_override: RoutingSettings if routingPriority maps to non-default weights, else None
+        enabled_engine_ids: list of engine IDs the user has selected, or None if unset
     """
     routing_mode = config.get("routingMode", "smart")
+    enabled_engine_ids = config.get("enabledEngineIds") or None
 
     # Single-engine mode: map to forced duckdb/databricks
     if routing_mode == "single":
@@ -467,11 +469,11 @@ def _profile_config_to_routing_params(
             if eng:
                 etype = eng["engine_type"]
                 if etype == "duckdb":
-                    return "duckdb", None
+                    return "duckdb", None, enabled_engine_ids
                 elif etype.startswith("databricks"):
-                    return "databricks", None
+                    return "databricks", None, enabled_engine_ids
         # Fallback: if no engine found, use smart
-        return "smart", None
+        return "smart", None, enabled_engine_ids
 
     # Map routingPriority to fit_weight/cost_weight
     priority = config.get("routingPriority", 0.5)
@@ -484,7 +486,7 @@ def _profile_config_to_routing_params(
         cost_weight=cost_weight,
     )
 
-    return routing_mode, settings_override
+    return routing_mode, settings_override, enabled_engine_ids
 
 
 @app.put("/api/settings/warehouse")
@@ -836,6 +838,7 @@ async def execute_query(
 
     # 4b. Profile-aware routing: resolve effective routing_mode and settings
     effective_mode = body.routing_mode
+    profile_engine_ids = None
     if body.routing_mode in ("duckdb", "databricks"):
         # Legacy forced mode — ignore profiles entirely
         pass
@@ -850,7 +853,7 @@ async def execute_query(
             profile_config = None
 
         if profile_config is not None:
-            profile_mode, profile_settings = _profile_config_to_routing_params(
+            profile_mode, profile_settings, profile_engine_ids = _profile_config_to_routing_params(
                 profile_config
             )
             effective_mode = profile_mode
@@ -897,6 +900,7 @@ async def execute_query(
             effective_mode,
             settings=r_settings,
             engine_states=e_states,
+            enabled_engine_ids=profile_engine_ids,
         )
         decision = routing_result.decision
     except ValueError as e:

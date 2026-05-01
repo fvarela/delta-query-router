@@ -136,7 +136,7 @@ class TestProfileConfigToRoutingParams:
 
     def test_smart_mode_balanced(self):
         config = {"routingMode": "smart", "routingPriority": 0.5}
-        mode, settings = _profile_config_to_routing_params(config)
+        mode, settings, _ = _profile_config_to_routing_params(config)
         assert mode == "smart"
         assert settings is not None
         assert settings.fit_weight == 0.5
@@ -145,7 +145,7 @@ class TestProfileConfigToRoutingParams:
     def test_smart_mode_cost_optimized(self):
         """routingPriority=0 → cost-optimized (fit_weight=0, cost_weight=1)."""
         config = {"routingMode": "smart", "routingPriority": 0}
-        mode, settings = _profile_config_to_routing_params(config)
+        mode, settings, _ = _profile_config_to_routing_params(config)
         assert mode == "smart"
         assert settings.fit_weight == 0.0
         assert settings.cost_weight == 1.0
@@ -153,7 +153,7 @@ class TestProfileConfigToRoutingParams:
     def test_smart_mode_performance_optimized(self):
         """routingPriority=1 → performance-optimized (fit_weight=1, cost_weight=0)."""
         config = {"routingMode": "smart", "routingPriority": 1}
-        mode, settings = _profile_config_to_routing_params(config)
+        mode, settings, _ = _profile_config_to_routing_params(config)
         assert mode == "smart"
         assert settings.fit_weight == 1.0
         assert settings.cost_weight == 0.0
@@ -163,7 +163,7 @@ class TestProfileConfigToRoutingParams:
         """Single mode with a DuckDB engine → forced 'duckdb'."""
         mock_db.fetch_one.return_value = {"engine_type": "duckdb"}
         config = {"routingMode": "single", "singleEngineId": "duckdb-2gb-2cpu"}
-        mode, settings = _profile_config_to_routing_params(config)
+        mode, settings, _ = _profile_config_to_routing_params(config)
         assert mode == "duckdb"
         assert settings is None
 
@@ -175,7 +175,7 @@ class TestProfileConfigToRoutingParams:
             "routingMode": "single",
             "singleEngineId": "databricks-serverless-2xs",
         }
-        mode, settings = _profile_config_to_routing_params(config)
+        mode, settings, _ = _profile_config_to_routing_params(config)
         assert mode == "databricks"
         assert settings is None
 
@@ -184,7 +184,7 @@ class TestProfileConfigToRoutingParams:
         """Single mode with an engine not found in DB → fallback to smart."""
         mock_db.fetch_one.return_value = None
         config = {"routingMode": "single", "singleEngineId": "nonexistent"}
-        mode, settings = _profile_config_to_routing_params(config)
+        mode, settings, _ = _profile_config_to_routing_params(config)
         assert mode == "smart"
         assert settings is None
 
@@ -192,7 +192,7 @@ class TestProfileConfigToRoutingParams:
     def test_single_mode_no_engine_id_falls_back_to_smart(self, mock_db):
         """Single mode without singleEngineId → fallback to smart."""
         config = {"routingMode": "single"}
-        mode, settings = _profile_config_to_routing_params(config)
+        mode, settings, _ = _profile_config_to_routing_params(config)
         assert mode == "smart"
         assert settings is None
         # db.fetch_one should NOT be called since there's no engine_id
@@ -201,7 +201,7 @@ class TestProfileConfigToRoutingParams:
     def test_missing_routing_mode_defaults_to_smart(self):
         """Empty config → defaults to smart mode."""
         config = {}
-        mode, settings = _profile_config_to_routing_params(config)
+        mode, settings, _ = _profile_config_to_routing_params(config)
         assert mode == "smart"
         assert settings is not None
         # Default routingPriority is 0.5
@@ -209,7 +209,7 @@ class TestProfileConfigToRoutingParams:
 
     def test_missing_routing_priority_defaults_to_balanced(self):
         config = {"routingMode": "smart"}
-        mode, settings = _profile_config_to_routing_params(config)
+        mode, settings, _ = _profile_config_to_routing_params(config)
         assert settings.fit_weight == 0.5
         assert settings.cost_weight == 0.5
 
