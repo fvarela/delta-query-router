@@ -50,9 +50,6 @@ pods:
 # --- Full deploy (minikube) ---
 apply:
 	kubectl apply -f k8s/
-# --- Test ---
-smoke-test:
-	./scripts/smoke-test.sh
 # --- Azure / Terraform ---
 tf-init:
 	terraform -chdir=infrastructure/terraform init

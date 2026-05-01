@@ -1,28 +1,18 @@
-import React, { useState, useCallback, useEffect, useRef } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import { useApp } from "@/contexts/AppContext";
 import { mockApi } from "@/mocks/api";
 import { api } from "@/lib/api";
 import { isMockMode } from "@/lib/mockMode";
+import { parseRoutingEvents } from "@/lib/routingEventParser";
+import type { RoutingDecisionData } from "@/lib/routingEventParser";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { StatusBadge } from "@/components/shared/StatusBadge";
+import { RoutingDecisionView } from "./RoutingDecisionView";
 import type { QueryExecutionResult, LogEntry, RoutingLogEvent, Query } from "@/types";
-import { Play, Clock, Terminal, Info, X, FolderPlus } from "lucide-react";
+import { Play, Clock, FolderPlus } from "lucide-react";
 
 /* ── colour helpers ── */
 
-const levelColor: Record<string, string> = {
-  info: "text-muted-foreground",
-  rule: "text-status-success",
-  decision: "text-primary",
-  warn: "text-status-warning",
-  error: "text-status-error",
-};
-const levelLabel: Record<string, string> = {
-  info: "INFO", rule: "RULE", decision: "ROUTE", warn: "WARN", error: "ERROR",
-};
-const stageLabel: Record<string, string> = {
-  parse: "PARSE", rules: "RULES", ml_model: "ML", engine: "ENGINE", execute: "EXEC", complete: "DONE",
-};
 const latencyColor = (ms: number) => {
   if (ms < 100) return "text-status-success";
   if (ms < 500) return "text-status-warning";
@@ -32,12 +22,12 @@ const latencyColor = (ms: number) => {
 /* ── main component ── */
 
 export const CenterPanel: React.FC = () => {
-  const { editorSql, setEditorSql, runMode, singleEngineId, engines, queryResult, setQueryResult, collectionContext, activeCollectionId, triggerRefreshCollections, enabledEngineIds, warehouseMappings } = useApp();
+  const { editorSql, setEditorSql, runMode, singleEngineId, engines, queryResult, setQueryResult, collectionContext, activeCollectionId, triggerRefreshCollections, enabledEngineIds, warehouseMappings, routingSettings } = useApp();
   const [executing, setExecuting] = useState(false);
   const [queryError, setQueryError] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [logFilter, setLogFilter] = useState("all");
-  const [modalEntry, setModalEntry] = useState<LogEntry | null>(null);
+  const [modalData, setModalData] = useState<RoutingDecisionData | null>(null);
   const [modalLoading, setModalLoading] = useState(false);
 
   const isModified = collectionContext && editorSql !== collectionContext.originalSql;
@@ -82,7 +72,7 @@ export const CenterPanel: React.FC = () => {
   const handleRun = async () => {
     if (!editorSql.trim()) return;
     setExecuting(true);
-    setModalEntry(null);
+    setModalData(null);
     setQueryError(null);
     setQueryResult(null);
     try {
@@ -138,25 +128,36 @@ export const CenterPanel: React.FC = () => {
           engine_display_name: string;
           reason: string;
           complexity_score: number;
+          stage?: string;
+          compute_time_ms?: number;
+          cold_start_ms?: number;
+          total_latency_ms?: number;
         };
         routing_log_events?: RoutingLogEvent[];
       }>(`/api/query/${entry.correlation_id}`);
-      // Merge backend detail into the LogEntry shape for the modal
-      const enriched: LogEntry = {
-        ...entry,
-        routing_decision: {
-          engine: detail.routing_decision.engine,
-          engine_display_name: detail.routing_decision.engine_display_name,
-          stage: "fallback", // backend doesn't persist stage yet
-          reason: detail.routing_decision.reason,
-          complexity_score: detail.routing_decision.complexity_score,
-        },
-        routing_events: detail.routing_log_events,
-      };
-      setModalEntry(enriched);
+
+      const events = detail.routing_log_events ?? [];
+      const parsed = parseRoutingEvents(
+        events,
+        detail.routing_decision,
+        detail.query_text,
+        entry.latency_ms,
+        { engines, routingSettings, enabledEngineIds, warehouseMappings },
+      );
+      setModalData(parsed);
     } catch {
-      // Fallback: show modal with whatever we have from the log entry
-      setModalEntry(entry);
+      // Fallback: build minimal data from the log entry itself
+      if (entry.routing_decision) {
+        const events = entry.routing_events ?? [];
+        const parsed = parseRoutingEvents(
+          events,
+          entry.routing_decision,
+          entry.query_text,
+          entry.latency_ms,
+          { engines, routingSettings, enabledEngineIds, warehouseMappings },
+        );
+        setModalData(parsed);
+      }
     } finally {
       setModalLoading(false);
     }
@@ -298,11 +299,13 @@ export const CenterPanel: React.FC = () => {
       </div>
 
       {/* ── Query Detail Modal ── */}
-      {modalEntry && (
-        <QueryDetailModal
-          entry={modalEntry}
-          onClose={() => setModalEntry(null)}
-        />
+      {modalData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setModalData(null)} />
+          <div className="relative bg-card border border-border rounded-lg shadow-xl w-[750px] max-w-[90vw] max-h-[80vh] flex flex-col">
+            <RoutingDecisionView data={modalData} onClose={() => setModalData(null)} />
+          </div>
+        </div>
       )}
     </div>
   );
@@ -344,138 +347,3 @@ const ResultsView: React.FC<{ result: QueryExecutionResult }> = ({ result }) => 
   </div>
 );
 
-/* ── Query Detail Modal ── */
-
-const QueryDetailModal: React.FC<{
-  entry: LogEntry;
-  onClose: () => void;
-}> = ({ entry, onClose }) => {
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const events = entry.routing_events || [];
-  const decision = entry.routing_decision;
-
-  useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [events.length]);
-
-  // Close on Escape
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [onClose]);
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-
-      {/* Modal */}
-      <div className="relative bg-card border border-border rounded-lg shadow-xl w-[700px] max-w-[90vw] max-h-[80vh] flex flex-col">
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
-          <div>
-            <h3 className="text-[13px] font-semibold text-foreground">Query Details</h3>
-            <p className="text-[11px] text-muted-foreground font-mono mt-0.5 max-w-[550px] truncate">
-              {entry.query_text}
-            </p>
-          </div>
-          <button onClick={onClose} className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground">
-            <X size={16} />
-          </button>
-        </div>
-
-        {/* Summary row */}
-        <div className="flex items-center gap-4 px-4 py-2 border-b border-border text-[11px] shrink-0">
-          <span className="text-muted-foreground">{entry.timestamp}</span>
-          <span className="text-foreground">{entry.engine_display_name}</span>
-          <StatusBadge variant={entry.status === "success" ? "success" : "error"}>
-            {entry.status === "success" ? "Success" : "Error"}
-          </StatusBadge>
-          <span className={latencyColor(entry.latency_ms)}>{entry.latency_ms}ms</span>
-        </div>
-
-        {/* Scrollable content */}
-        <div className="flex-1 min-h-0 overflow-y-auto">
-          {/* Routing Decision */}
-          {decision && (
-            <div className="px-4 py-3 border-b border-border">
-              <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground mb-2">
-                <Info size={11} />
-                <span className="font-semibold">Routing Decision</span>
-              </div>
-              <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
-                <span className="text-muted-foreground">Engine</span>
-                <span><StatusBadge variant={decision.engine.startsWith("duckdb") ? "success" : "info"}>{decision.engine_display_name}</StatusBadge></span>
-                <span className="text-muted-foreground">Stage</span>
-                <span className="text-foreground">{decision.stage.replace(/_/g, " ")}</span>
-                <span className="text-muted-foreground">Reason</span>
-                <span className="text-foreground">{decision.reason}</span>
-                <span className="text-muted-foreground">Complexity</span>
-                <span className="text-foreground">{decision.complexity_score}</span>
-
-                {/* Decomposed latency (ODQ-9 / ODQ-10) */}
-                {decision.total_latency_ms != null && (
-                  <>
-                    <span className="text-muted-foreground">Latency</span>
-                    <span className="text-foreground font-mono">
-                      Compute: {decision.compute_time_ms ?? "?"}ms
-                      {decision.cold_start_ms != null && decision.cold_start_ms > 0 && <> + Cold: {decision.cold_start_ms}ms</>}
-                      {" "}= <span className={latencyColor(decision.total_latency_ms)}>{decision.total_latency_ms}ms</span>
-                    </span>
-                  </>
-                )}
-                {decision.weighted_score != null && (
-                  <>
-                    <span className="text-muted-foreground">Scoring</span>
-                    <span className="text-foreground font-mono text-[10px]">
-                      Latency: {decision.latency_score?.toFixed(2) ?? "—"}
-                      {" · "}Cost Tier: {decision.cost_score?.toFixed(2) ?? "—"}
-                      {" · "}<span className="font-semibold">Weighted: {decision.weighted_score.toFixed(2)}</span>
-                    </span>
-                  </>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Routing Log */}
-          {events.length > 0 && (
-            <div className="bg-[#1a1a2e]">
-              <div className="flex items-center gap-1.5 px-4 py-1.5 border-b border-white/10">
-                <Terminal size={11} className="text-primary" />
-                <span className="text-[11px] font-semibold text-[#888]">Routing Log</span>
-                <span className="text-[10px] text-[#666]">({events.length} events)</span>
-              </div>
-              <div ref={scrollRef} className="p-3 font-mono text-[11px] leading-relaxed">
-                {events.map((ev, i) => (
-                  <div key={i} className="flex gap-2 py-px hover:bg-white/5">
-                    <span className="text-[#666] shrink-0 select-none">{ev.timestamp}</span>
-                    <span className={`shrink-0 w-[42px] text-right font-semibold ${levelColor[ev.level] || "text-muted-foreground"}`}>
-                      {levelLabel[ev.level] || ev.level}
-                    </span>
-                    <span className="shrink-0 w-[48px] text-[#888]">
-                      [{stageLabel[ev.stage] || ev.stage}]
-                    </span>
-                    <span className={`${ev.level === "decision" ? "text-primary font-semibold" : ev.level === "rule" ? "text-status-success" : ev.level === "warn" ? "text-status-warning" : ev.level === "error" ? "text-status-error" : "text-[#ccc]"}`}>
-                      {ev.message}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* No detail available */}
-          {!decision && events.length === 0 && (
-            <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">
-              No routing details available for this query.
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-};
