@@ -562,7 +562,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   });
 
   const setWarehouseMapping = useCallback((engineId: string, warehouseId: string | null, warehouseName: string | null) => {
-    setWarehouseMappings(prev => {
+    // Compute updated mappings for both local state and auto-save
+    const computeUpdatedMappings = (prev: WarehouseMapping[]): WarehouseMapping[] => {
       const existing = prev.findIndex(m => m.engineId === engineId);
       const newMapping: WarehouseMapping = { engineId, warehouseId, warehouseName };
       if (existing >= 0) {
@@ -571,21 +572,45 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return next;
       }
       return [...prev, newMapping];
-    });
+    };
+
+    setWarehouseMappings(computeUpdatedMappings);
     // Sync to backend so _warehouse_id is set for query execution
     if (warehouseId !== null) {
       selectWarehouse(warehouseId);
     }
+
+    // Compute workspace binding for auto-save
+    let newBinding = profileWorkspaceBinding;
     // Round 17: Implicitly bind workspace when a warehouse is mapped
     // If user maps a Databricks engine to a warehouse, the profile becomes dependent on the current workspace
     if (warehouseId !== null && connectedWorkspace) {
-      setProfileWorkspaceBinding({
+      newBinding = {
         workspaceId: connectedWorkspace.id,
         workspaceName: connectedWorkspace.name,
         workspaceUrl: connectedWorkspace.url,
-      });
+      };
+      setProfileWorkspaceBinding(newBinding);
     }
-  }, [connectedWorkspace, selectWarehouse]);
+
+    // Auto-save warehouse mappings to the active profile (Task 154)
+    // Update savedRoutingConfig so hasUnsavedChanges doesn't trigger the Save/Rollback bar
+    setSavedRoutingConfig(prev => {
+      const updatedMappings = computeUpdatedMappings(toMappingsArray(prev.warehouseMappings));
+      const updatedConfig = {
+        ...prev,
+        warehouseMappings: updatedMappings,
+        workspaceBinding: newBinding ?? prev.workspaceBinding,
+      };
+      // Persist to backend profile if one is active (fire-and-forget)
+      if (activeProfileId !== null && !mock) {
+        api.put(`/api/routing/profiles/${activeProfileId}`, { config: updatedConfig }).catch(() => {
+          // API error — local state already updated, profile will sync on next full save
+        });
+      }
+      return updatedConfig;
+    });
+  }, [connectedWorkspace, selectWarehouse, profileWorkspaceBinding, activeProfileId, mock]);
 
   // Round 17: Unlink profile from workspace — clear binding AND all warehouse mappings
   const unlinkProfileWorkspace = useCallback(() => {
