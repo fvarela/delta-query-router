@@ -26,6 +26,7 @@ def _qf_row(query_id=1, **overrides):
         "has_group_by": False,
         "has_order_by": False,
         "has_limit": False,
+        "limit_value": None,
         "has_window_functions": False,
         "num_columns_selected": 2,
         "complexity_score": 0.0,
@@ -92,6 +93,22 @@ class TestComputeAndStore:
         assert params[6] >= 1  # num_subqueries
         assert params[7] is True  # has_group_by
         assert params[8] is True  # has_order_by
+
+    @patch("query_features.db.fetch_one")
+    def test_limit_value_included(self, mock_fetch_one):
+        """Queries with LIMIT include limit_value in stored features."""
+        mock_fetch_one.return_value = _qf_row(has_limit=True, limit_value=100)
+
+        result = query_features.compute_and_store(
+            1, "SELECT a FROM t1 LIMIT 100"
+        )
+
+        assert result is not None
+        sql_arg = mock_fetch_one.call_args[0][0]
+        assert "limit_value" in sql_arg
+        params = mock_fetch_one.call_args[0][1]
+        # params tuple should contain 100 as the limit_value
+        assert 100 in params
 
     def test_empty_sql_returns_none(self):
         """Empty SQL returns None without DB call."""

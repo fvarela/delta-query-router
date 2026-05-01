@@ -30,6 +30,7 @@ class QueryAnalysis:
     has_window_functions: bool
     num_columns_selected: int
     complexity_score: float
+    limit_value: int | None = None
     error: str | None = None
 
 
@@ -113,7 +114,14 @@ def analyze_query(sql: str) -> QueryAnalysis:
     num_subqueries = len(list(tree.find_all(exp.Subquery)))
     has_group_by = tree.find(exp.Group) is not None
     has_order_by = tree.find(exp.Order) is not None
-    has_limit = tree.find(exp.Limit) is not None
+    limit_node = tree.find(exp.Limit)
+    has_limit = limit_node is not None
+    limit_value: int | None = None
+    if limit_node is not None:
+        try:
+            limit_value = int(limit_node.expression.this)
+        except (AttributeError, ValueError, TypeError):
+            pass
     has_window_functions = tree.find(exp.Window) is not None
 
     # 5. Count selected columns (only meaningful for SELECT)
@@ -145,4 +153,5 @@ def analyze_query(sql: str) -> QueryAnalysis:
         has_window_functions=has_window_functions,
         num_columns_selected=num_columns_selected,
         complexity_score=complexity_score,
+        limit_value=limit_value,
     )

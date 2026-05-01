@@ -22,6 +22,7 @@ def _make_analysis(**overrides) -> QueryAnalysis:
         has_group_by=True,
         has_order_by=False,
         has_limit=True,
+        limit_value=10,
         has_window_functions=False,
         num_columns_selected=5,
         complexity_score=8.5,
@@ -64,6 +65,7 @@ class TestBuildFeatureVector:
         assert features["has_group_by"] == 1.0
         assert features["has_order_by"] == 0.0
         assert features["has_limit"] == 1.0
+        assert features["limit_value"] == 10.0
         assert features["has_window_functions"] == 0.0
         assert features["num_columns_selected"] == 5.0
         assert features["complexity_score"] == 8.5
@@ -113,12 +115,14 @@ class TestBuildFeatureVector:
             has_group_by=False,
             has_order_by=False,
             has_limit=False,
+            limit_value=None,
             has_window_functions=False,
         )
         features = build_feature_vector(analysis, {}, "duckdb", 3)
         assert features["has_group_by"] == 0.0
         assert features["has_order_by"] == 0.0
         assert features["has_limit"] == 0.0
+        assert features["limit_value"] == -1.0
         assert features["has_window_functions"] == 0.0
 
     def test_boolean_features_true(self):
@@ -126,12 +130,14 @@ class TestBuildFeatureVector:
             has_group_by=True,
             has_order_by=True,
             has_limit=True,
+            limit_value=50,
             has_window_functions=True,
         )
         features = build_feature_vector(analysis, {}, "duckdb", 3)
         assert features["has_group_by"] == 1.0
         assert features["has_order_by"] == 1.0
         assert features["has_limit"] == 1.0
+        assert features["limit_value"] == 50.0
         assert features["has_window_functions"] == 1.0
 
     def test_feature_vector_has_all_keys(self):
@@ -181,7 +187,7 @@ class TestGetFeatureNames:
     def test_returns_list(self):
         names = get_feature_names()
         assert isinstance(names, list)
-        assert len(names) == 14  # 10 query + 2 table + 2 engine
+        assert len(names) == 15  # 11 query + 2 table + 2 engine
 
     def test_returns_copy(self):
         """Modifying return value doesn't affect module constant."""

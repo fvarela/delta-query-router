@@ -273,6 +273,7 @@ CREATE TABLE IF NOT EXISTS query_features (
     has_group_by         BOOLEAN NOT NULL DEFAULT FALSE,
     has_order_by         BOOLEAN NOT NULL DEFAULT FALSE,
     has_limit            BOOLEAN NOT NULL DEFAULT FALSE,
+    limit_value          INTEGER,
     has_window_functions BOOLEAN NOT NULL DEFAULT FALSE,
     num_columns_selected INTEGER NOT NULL DEFAULT 0,
     complexity_score     FLOAT NOT NULL DEFAULT 0.0,

@@ -82,6 +82,10 @@ class TestFeatureExtraction:
         result = analyze_query(self.COMPLEX_QUERY)
         assert result.num_columns_selected == 2
 
+    def test_limit_value_extracted(self):
+        result = analyze_query(self.COMPLEX_QUERY)
+        assert result.limit_value == 10
+
     def test_simple_select_minimal_features(self):
         result = analyze_query("SELECT 1")
         assert result.num_tables == 0
@@ -97,6 +101,26 @@ class TestFeatureExtraction:
         sql = "SELECT * FROM foo WHERE id IN (SELECT id FROM bar)"
         result = analyze_query(sql)
         assert result.num_subqueries >= 1
+
+
+class TestLimitValue:
+    """Verify limit_value extraction."""
+
+    def test_limit_100(self):
+        result = analyze_query("SELECT * FROM t LIMIT 100")
+        assert result.limit_value == 100
+
+    def test_no_limit(self):
+        result = analyze_query("SELECT * FROM t")
+        assert result.limit_value is None
+
+    def test_limit_0(self):
+        result = analyze_query("SELECT * FROM t LIMIT 0")
+        assert result.limit_value == 0
+
+    def test_limit_large(self):
+        result = analyze_query("SELECT * FROM t LIMIT 999999")
+        assert result.limit_value == 999999
 
 
 class TestComplexityScore:

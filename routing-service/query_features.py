@@ -42,12 +42,12 @@ def compute_and_store(query_id: int, sql_text: str) -> dict | None:
         INSERT INTO query_features (
             query_id, statement_type, tables,
             num_tables, num_joins, num_aggregations, num_subqueries,
-            has_group_by, has_order_by, has_limit, has_window_functions,
+            has_group_by, has_order_by, has_limit, limit_value, has_window_functions,
             num_columns_selected, complexity_score
         ) VALUES (
             %s, %s, %s,
             %s, %s, %s, %s,
-            %s, %s, %s, %s,
+            %s, %s, %s, %s, %s,
             %s, %s
         )
         ON CONFLICT (query_id) DO UPDATE SET
@@ -60,6 +60,7 @@ def compute_and_store(query_id: int, sql_text: str) -> dict | None:
             has_group_by = EXCLUDED.has_group_by,
             has_order_by = EXCLUDED.has_order_by,
             has_limit = EXCLUDED.has_limit,
+            limit_value = EXCLUDED.limit_value,
             has_window_functions = EXCLUDED.has_window_functions,
             num_columns_selected = EXCLUDED.num_columns_selected,
             complexity_score = EXCLUDED.complexity_score,
@@ -77,6 +78,7 @@ def compute_and_store(query_id: int, sql_text: str) -> dict | None:
             analysis.has_group_by,
             analysis.has_order_by,
             analysis.has_limit,
+            analysis.limit_value,
             analysis.has_window_functions,
             analysis.num_columns_selected,
             analysis.complexity_score,
