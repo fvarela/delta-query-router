@@ -164,7 +164,7 @@ def train_model(
                 }
             ),
             len(X_rows),
-            json.dumps(collection_ids) if collection_ids else None,
+            json.dumps(collection_ids if collection_ids is not None else []),
         ),
     )
 

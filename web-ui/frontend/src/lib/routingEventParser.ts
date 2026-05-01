@@ -109,11 +109,14 @@ export function parseRoutingEvents(
   let tables: string[] = [];
   let complexityScore = routingDecision.complexity_score;
 
-  // Per-engine parsed data
+  // Per-engine parsed data (ML scoring)
   const predictionMap = new Map<string, { predicted: number; coldStart: number; total: number; costTier: number }>();
   const normMap = new Map<string, { normLat: number; normCost: number; score: number }>();
   const eligibleSet = new Set<string>();
   let winnerId = "";
+
+  // Heuristic scoring data
+  const heuristicMap = new Map<string, { fit: number; cost: number; total: number }>();
 
   // Rules
   const matchedRules = new Set<string>();
@@ -175,8 +178,20 @@ export function parseRoutingEvents(
       continue;
     }
 
-    // Winner: "Winner: duckdb-1 (score=0.500)"
-    const winMatch = msg.match(/^Winner: (.+?) \(score=/);
+    // Heuristic scoring: "DuckDB:      fit=1.00 cost=0.70 → total=0.85"
+    const heurMatch = msg.match(/^(\w+):\s+fit=([\d.]+)\s+cost=([\d.]+)\s+→\s+total=([\d.]+)$/);
+    if (heurMatch) {
+      const rawName = heurMatch[1]; // "DuckDB" or "Databricks"
+      heuristicMap.set(rawName, {
+        fit: parseFloat(heurMatch[2]),
+        cost: parseFloat(heurMatch[3]),
+        total: parseFloat(heurMatch[4]),
+      });
+      continue;
+    }
+
+    // Winner: "Winner: duckdb-1 (score=0.500)" or "Winner: duckdb (margin=0.00)"
+    const winMatch = msg.match(/^Winner: (.+?) \((?:score|margin)=/);
     if (winMatch) { winnerId = winMatch[1]; continue; }
   }
 
@@ -205,6 +220,38 @@ export function parseRoutingEvents(
   }
 
   const engineScores: EngineScore[] = [];
+
+  // Heuristic fallback: if we have heuristic data but no ML prediction data, build engines from it
+  if (heuristicMap.size > 0 && predictionMap.size === 0) {
+    const nameToType: Record<string, "duckdb" | "databricks"> = {
+      DuckDB: "duckdb",
+      Databricks: "databricks",
+    };
+
+    for (const [rawName, h] of heuristicMap) {
+      const engineType = nameToType[rawName] ?? (rawName.toLowerCase().startsWith("duckdb") ? "duckdb" : "databricks");
+      const eid = rawName.toLowerCase(); // "duckdb" or "databricks"
+
+      engineScores.push({
+        engineId: eid,
+        displayName: rawName,
+        engineType,
+        predictedMs: 0,
+        coldStartMs: 0,
+        totalMs: 0,
+        costTier: 0,
+        normLatency: h.fit,
+        normCost: h.cost,
+        latencyContribution: fw * h.fit,
+        costContribution: cw * h.cost,
+        weightedScore: h.total,
+        isEligible: true,
+        isWinner: eid === winnerId,
+        runtimeState: "unknown",
+      });
+    }
+  } else {
+  // ML scoring path: build from predictionMap + catalog
   const allEngineIds = new Set([...predictionMap.keys(), ...ctx.engines.map(e => e.id)]);
 
   for (const eid of allEngineIds) {
@@ -269,6 +316,7 @@ export function parseRoutingEvents(
       runtimeState,
     });
   }
+  } // end ML scoring else
 
   // Sort: winner first, then eligible, then by score ascending
   engineScores.sort((a, b) => {
