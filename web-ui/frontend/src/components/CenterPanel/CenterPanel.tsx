@@ -32,7 +32,7 @@ const latencyColor = (ms: number) => {
 /* ── main component ── */
 
 export const CenterPanel: React.FC = () => {
-  const { editorSql, setEditorSql, runMode, singleEngineId, engines, queryResult, setQueryResult, collectionContext, activeCollectionId, triggerRefreshCollections } = useApp();
+  const { editorSql, setEditorSql, runMode, singleEngineId, engines, queryResult, setQueryResult, collectionContext, activeCollectionId, triggerRefreshCollections, enabledEngineIds, warehouseMappings } = useApp();
   const [executing, setExecuting] = useState(false);
   const [queryError, setQueryError] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -97,7 +97,21 @@ export const CenterPanel: React.FC = () => {
         const result = await mockApi.executeQuery(editorSql, routing_mode);
         setQueryResult(result);
       } else {
-        const result = await api.post<QueryExecutionResult>("/api/query", { sql: editorSql, routing_mode });
+        // Only include engines that can actually execute: DuckDB engines are always
+        // executable, Databricks engines need a warehouse mapped
+        const executableEngineIds = [...enabledEngineIds].filter(id => {
+          const eng = engines.find(e => e.id === id);
+          if (!eng) return false;
+          if (eng.engine_type === "duckdb") return true;
+          // Databricks: only if warehouse is mapped
+          const mapping = warehouseMappings.find(m => m.engineId === id);
+          return mapping?.warehouseId != null;
+        });
+        const result = await api.post<QueryExecutionResult>("/api/query", {
+          sql: editorSql,
+          routing_mode,
+          enabled_engine_ids: executableEngineIds,
+        });
         setQueryResult(result);
       }
     } catch (err) {

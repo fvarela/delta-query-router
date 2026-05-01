@@ -19,6 +19,7 @@ import permissions_api
 import tpcds_api
 import routing_profiles_api
 import log_cleaner
+import engine_state
 from auth import verify_token
 from fastapi import FastAPI, Depends, HTTPException, Header
 from pydantic import BaseModel
@@ -183,6 +184,13 @@ async def start_log_cleaner():
 
 
 @app.on_event("startup")
+async def start_engine_state_polling():
+    """Start background polling of engine runtime states (running/stopped)."""
+    engine_state.set_workspace_client_getter(lambda: _workspace_client)
+    engine_state.start_polling(interval_seconds=30)
+
+
+@app.on_event("startup")
 async def cleanup_ephemeral_warehouses():
     """Delete orphaned ephemeral warehouses from previous crashed benchmark runs."""
     if _workspace_client is None:
@@ -202,6 +210,7 @@ async def cleanup_ephemeral_warehouses():
 @app.on_event("shutdown")
 async def close_database():
     log_cleaner.stop()
+    engine_state.stop_polling()
     query_logger.shutdown()
     db.close_db()
 
@@ -420,6 +429,7 @@ class QueryExecutionRequest(BaseModel):
     sql: str
     routing_mode: str = "smart"  # "smart", "duckdb", or "databricks"
     profile_id: int | None = None  # use this profile's routing config
+    enabled_engine_ids: list[str] | None = None  # override profile's engine selection
 
 
 def _load_profile_config(profile_id: int | None) -> dict | None:
@@ -863,6 +873,10 @@ async def execute_query(
                     fit_weight=profile_settings.fit_weight,
                     cost_weight=profile_settings.cost_weight,
                 )
+
+    # Request-level override takes precedence over profile
+    if body.enabled_engine_ids is not None:
+        profile_engine_ids = body.enabled_engine_ids
 
     # Probe DuckDB: any active engine responding to health?
     duckdb_running = False
