@@ -92,6 +92,19 @@ def _poll_all_engines() -> None:
         logger.exception("Failed to fetch engines for state polling")
         return
 
+    # Build warehouse mapping from default routing profile
+    warehouse_map: dict[str, str] = {}
+    try:
+        profile = db.fetch_one(
+            "SELECT config FROM routing_profiles WHERE is_default = TRUE"
+        )
+        if profile and profile.get("config"):
+            for m in profile["config"].get("warehouseMappings", []):
+                if m.get("engineId") and m.get("warehouseId"):
+                    warehouse_map[m["engineId"]] = m["warehouseId"]
+    except Exception:
+        logger.warning("Failed to fetch routing profile for warehouse mappings", exc_info=True)
+
     for engine in engines:
         engine_id = engine["id"]
         engine_type = engine["engine_type"]
@@ -99,8 +112,9 @@ def _poll_all_engines() -> None:
             if engine_type == "duckdb":
                 _engine_states[engine_id] = _probe_duckdb_health(engine)
             elif engine_type in ("databricks", "databricks_sql"):
+                wh_id = engine.get("config", {}).get("warehouse_id") or warehouse_map.get(engine_id)
                 _engine_states[engine_id] = _poll_databricks_warehouse(
-                    engine.get("config", {})
+                    engine.get("config", {}), wh_id
                 )
             else:
                 _engine_states[engine_id] = "unknown"
@@ -127,10 +141,11 @@ def _probe_duckdb_health(engine: dict) -> str:
         return "stopped"
 
 
-def _poll_databricks_warehouse(config: dict) -> str:
+def _poll_databricks_warehouse(config: dict, warehouse_id: str | None = None) -> str:
     """Poll Databricks warehouse state via SDK.
 
     Returns 'running', 'stopped', 'starting', or 'unknown'.
+    warehouse_id overrides config["warehouse_id"] when provided.
     """
     if _get_workspace_client is None:
         return "unknown"
@@ -139,7 +154,7 @@ def _poll_databricks_warehouse(config: dict) -> str:
     if wc is None:
         return "unknown"
 
-    warehouse_id = config.get("warehouse_id")
+    warehouse_id = warehouse_id or config.get("warehouse_id")
     if not warehouse_id:
         return "unknown"
 
