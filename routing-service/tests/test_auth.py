@@ -15,9 +15,11 @@ def _clear_sessions():
     """Reset session and token stores between tests."""
     auth._user_sessions.clear()
     auth._active_tokens.clear()
+    auth._last_cleanup = 0.0
     yield
     auth._user_sessions.clear()
     auth._active_tokens.clear()
+    auth._last_cleanup = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +229,7 @@ class TestAdminLoginUnchanged:
 class TestVerifyToken:
     @patch("db.fetch_all", return_value=[])
     def test_admin_token_returns_admin_context(self, _mock_db):
-        auth._active_tokens["admin-tok"] = "admin"
+        auth._active_tokens["admin-tok"] = ("admin", time.time())
         resp = client.get(
             "/api/routing/rules", headers={"Authorization": "Bearer admin-tok"}
         )
@@ -316,3 +318,60 @@ class TestVerifyToken:
         )
         assert resp.status_code == 403
         assert "Admin access required" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Admin token TTL
+# ---------------------------------------------------------------------------
+class TestAdminTokenTTL:
+    @patch("db.fetch_all", return_value=[])
+    def test_expired_admin_token_returns_401(self, _mock_db):
+        # Token created 9 hours ago (beyond 8h TTL)
+        auth._active_tokens["old-admin"] = ("admin", time.time() - 9 * 3600)
+        resp = client.get(
+            "/api/routing/rules", headers={"Authorization": "Bearer old-admin"}
+        )
+        assert resp.status_code == 401
+        assert "old-admin" not in auth._active_tokens
+
+    @patch("db.fetch_all", return_value=[])
+    def test_fresh_admin_token_accepted(self, _mock_db):
+        auth._active_tokens["fresh-admin"] = ("admin", time.time())
+        resp = client.get(
+            "/api/routing/rules", headers={"Authorization": "Bearer fresh-admin"}
+        )
+        assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Periodic cleanup via verify_token
+# ---------------------------------------------------------------------------
+class TestPeriodicCleanup:
+    @patch("db.fetch_all", return_value=[])
+    def test_cleanup_runs_after_interval(self, _mock_db):
+        now = time.time()
+        # Add an expired session
+        auth._user_sessions["stale"] = auth.UserSession(
+            username="stale-user",
+            email="s@t.com",
+            databricks_host="h",
+            pat="p",
+            workspace_client=MagicMock(),
+            created_at=now - 7200,
+            expires_at=now - 3600,
+        )
+        # Add an expired admin token
+        auth._active_tokens["stale-admin"] = ("admin", now - 10 * 3600)
+        # Force cleanup interval to have elapsed
+        auth._last_cleanup = now - 400
+
+        # Make any authenticated request (will fail 401 since token is expired,
+        # but cleanup should still run)
+        auth._active_tokens["valid-tok"] = ("admin", now)
+        resp = client.get(
+            "/api/routing/rules", headers={"Authorization": "Bearer valid-tok"}
+        )
+        # Expired entries should be cleaned up
+        assert "stale" not in auth._user_sessions
+        assert "stale-admin" not in auth._active_tokens
+        assert auth._last_cleanup > now - 1  # updated recently

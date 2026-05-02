@@ -12,9 +12,12 @@ from pydantic import BaseModel
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
-# In-memory token store: {token_hex: username}
-_active_tokens: dict[str, str] = {}
+# In-memory token store: {token_hex: (username, created_at)}
+_active_tokens: dict[str, tuple[str, float]] = {}
+ADMIN_TOKEN_TTL = 8 * 3600  # 8 hours
 SESSION_TTL_SECONDS = 3600  # 1 hour
+CLEANUP_INTERVAL = 300  # 5 minutes
+_last_cleanup: float = 0.0
 
 router = APIRouter(tags=["auth"])
 
@@ -68,7 +71,7 @@ async def login(creds: LoginRequest):
     if creds.username != ADMIN_USERNAME or creds.password != ADMIN_PASSWORD:
         raise HTTPException(status_code=401, detail="Invalid credentials")
     token = secrets.token_hex(32)
-    _active_tokens[token] = creds.username
+    _active_tokens[token] = (creds.username, time.time())
     return {"token": token}
 
 @router.post("/api/auth/token")
@@ -100,15 +103,37 @@ async def create_token(req: TokenRequest):
 
 async def verify_token(authorization: str = Header(None)) -> UserContext:
     """FastAPI dependency — extracts and validates Bearer token (admin or user)."""
+    global _last_cleanup
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid token")
     token = authorization.split(" ", 1)[1]
+
+    # Periodic cleanup of expired sessions and admin tokens
+    now = time.time()
+    if now - _last_cleanup > CLEANUP_INTERVAL:
+        _cleanup_expired_sessions()
+        _cleanup_expired_tokens()
+        _last_cleanup = now
+
     # Check admin tokens first
-    admin_username = _active_tokens.get(token)
-    if admin_username:
-        return UserContext(username=admin_username, is_admin=True, session=None)
+    entry = _active_tokens.get(token)
+    if entry:
+        username, created_at = entry
+        if now - created_at > ADMIN_TOKEN_TTL:
+            del _active_tokens[token]
+        else:
+            return UserContext(username=username, is_admin=True, session=None)
     # Check user sessions
     session = _get_user_session(token)
     if session:
         return UserContext(username=session.username, is_admin=False, session=session)
     raise HTTPException(status_code=401, detail="Invalid token")
+
+
+def _cleanup_expired_tokens() -> None:
+    """Remove all expired admin tokens."""
+    now = time.time()
+    expired = [t for t, (_, created) in _active_tokens.items()
+               if now - created > ADMIN_TOKEN_TTL]
+    for t in expired:
+        del _active_tokens[t]
