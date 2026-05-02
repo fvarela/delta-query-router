@@ -102,6 +102,12 @@ async def proxy_to_routing_service(path: str, request: Request):
             status_code=502,
             media_type="application/json",
         )
+    except httpx.ReadTimeout:
+        return Response(
+            content=b'{"detail": "routing-service timed out"}',
+            status_code=504,
+            media_type="application/json",
+        )
 
 
 # --- Static file serving (single page, no SPA fallback) ---
