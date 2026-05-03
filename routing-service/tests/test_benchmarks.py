@@ -1216,20 +1216,40 @@ class TestWarmupDuckdbSync:
 
 
 class TestWarmupDatabricks:
-    """_warmup_databricks() — real warmup through Databricks SQL statement API."""
+    """_warmup_databricks() — cold start measurement via stop + query on stopped warehouse."""
+
+    def _mock_ws_success(self):
+        """Create a mock workspace client that stops, then returns SUCCEEDED on query."""
+        mock_ws = MagicMock()
+        # warehouses.get returns STOPPED state for _wait_for_stopped_benchmarks
+        stopped_wh = MagicMock()
+        stopped_wh.state = MagicMock()
+        stopped_wh.state.value = "STOPPED"
+        # Use the actual State enum comparison
+        mock_ws.warehouses.get.return_value = stopped_wh
+
+        # execute_statement returns async (PENDING), then get_statement returns SUCCEEDED
+        mock_submit = MagicMock()
+        mock_submit.statement_id = "stmt-1"
+        mock_submit.status.state = "PENDING"
+        mock_ws.statement_execution.execute_statement.return_value = mock_submit
+
+        mock_result = MagicMock()
+        mock_result.status.state = "SUCCEEDED"
+        mock_ws.statement_execution.get_statement.return_value = mock_result
+
+        return mock_ws
 
     def test_with_tables_sends_real_query(self):
         """When tables are provided, warmup sends SELECT 1 FROM <table> LIMIT 1."""
-        mock_ws = MagicMock()
-        mock_response = MagicMock()
-        mock_response.status.state = "SUCCEEDED"
-        mock_ws.statement_execution.execute_statement.return_value = mock_response
+        mock_ws = self._mock_ws_success()
 
-        with patch(
-            "databricks.sdk.service.sql.StatementState",
-            create=True,
-        ) as mock_state:
+        with patch("databricks.sdk.service.sql.StatementState", create=True) as mock_state, \
+             patch("databricks.sdk.service.sql.State", create=True) as mock_state_enum:
             mock_state.SUCCEEDED = "SUCCEEDED"
+            mock_state.PENDING = "PENDING"
+            mock_state.RUNNING = "RUNNING"
+            mock_state_enum.STOPPED = mock_ws.warehouses.get.return_value.state
             ms = benchmarks_api._warmup_databricks(
                 mock_ws,
                 "warehouse-123",
@@ -1237,23 +1257,22 @@ class TestWarmupDatabricks:
             )
 
         assert ms > 0
+        mock_ws.warehouses.stop.assert_called_once_with("warehouse-123")
         call_args = mock_ws.statement_execution.execute_statement.call_args
         assert "my_table" in call_args[1]["statement"]
         assert "LIMIT 1" in call_args[1]["statement"]
-        assert call_args[1]["warehouse_id"] == "warehouse-123"
+        assert call_args[1]["wait_timeout"] == "0s"
 
     def test_without_tables_falls_back_to_select_1(self):
         """Without tables, warmup sends plain SELECT 1."""
-        mock_ws = MagicMock()
-        mock_response = MagicMock()
-        mock_response.status.state = "SUCCEEDED"
-        mock_ws.statement_execution.execute_statement.return_value = mock_response
+        mock_ws = self._mock_ws_success()
 
-        with patch(
-            "databricks.sdk.service.sql.StatementState",
-            create=True,
-        ) as mock_state:
+        with patch("databricks.sdk.service.sql.StatementState", create=True) as mock_state, \
+             patch("databricks.sdk.service.sql.State", create=True) as mock_state_enum:
             mock_state.SUCCEEDED = "SUCCEEDED"
+            mock_state.PENDING = "PENDING"
+            mock_state.RUNNING = "RUNNING"
+            mock_state_enum.STOPPED = mock_ws.warehouses.get.return_value.state
             ms = benchmarks_api._warmup_databricks(mock_ws, "warehouse-123")
 
         assert ms > 0
@@ -1263,16 +1282,23 @@ class TestWarmupDatabricks:
     def test_failure_raises_runtime_error(self):
         """Warmup raises RuntimeError on non-SUCCEEDED state."""
         mock_ws = MagicMock()
-        mock_response = MagicMock()
-        mock_response.status.state = "FAILED"
-        mock_response.status.error.message = "Warehouse unavailable"
-        mock_ws.statement_execution.execute_statement.return_value = mock_response
+        stopped_wh = MagicMock()
+        stopped_wh.state = MagicMock()
+        mock_ws.warehouses.get.return_value = stopped_wh
 
-        with patch(
-            "databricks.sdk.service.sql.StatementState",
-            create=True,
-        ) as mock_state:
+        # Submit returns async, poll returns FAILED
+        mock_submit = MagicMock()
+        mock_submit.statement_id = "stmt-1"
+        mock_submit.status.state = "FAILED"
+        mock_submit.status.error.message = "Warehouse unavailable"
+        mock_ws.statement_execution.execute_statement.return_value = mock_submit
+
+        with patch("databricks.sdk.service.sql.StatementState", create=True) as mock_state, \
+             patch("databricks.sdk.service.sql.State", create=True) as mock_state_enum:
             mock_state.SUCCEEDED = "SUCCEEDED"
+            mock_state.PENDING = "PENDING"
+            mock_state.RUNNING = "RUNNING"
+            mock_state_enum.STOPPED = stopped_wh.state
             with pytest.raises(RuntimeError, match="Warehouse unavailable"):
                 benchmarks_api._warmup_databricks(
                     mock_ws,

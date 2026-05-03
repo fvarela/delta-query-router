@@ -689,10 +689,10 @@ const Step1Engines: React.FC<{
   const databricksEngines = engines.filter(e => e.engine_type === "databricks_sql");
 
   const getDefCount = (engineId: string) =>
-    benchmarkDefinitions.filter(d => d.engine_id === engineId).length;
+    benchmarkDefinitions.filter(d => d.engine_id === engineId && d.run_count > 0).length;
 
   const getTotalRuns = (engineId: string) =>
-    benchmarkDefinitions.filter(d => d.engine_id === engineId).reduce((sum, d) => sum + d.run_count, 0);
+    benchmarkDefinitions.filter(d => d.engine_id === engineId && d.run_count > 0).reduce((sum, d) => sum + d.run_count, 0);
 
   // Also show engines with NO benchmarks (greyed out)
   const enginesWithoutBenchmarks = allEngines.filter(e => !engines.some(eb => eb.id === e.id));

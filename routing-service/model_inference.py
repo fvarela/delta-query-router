@@ -120,15 +120,14 @@ def predict_for_engines(
     if model is None:
         return None
 
-    # Check that model covers all engines
+    # Filter to only engines covered by the model
     if _cached_model_record is not None:
         linked = set(_cached_model_record.get("linked_engines", []))
-        engine_ids = {e["id"] for e in engines}
-        if not engine_ids.issubset(linked):
+        engines = [e for e in engines if e["id"] in linked]
+        if not engines:
             logger.info(
-                "Active model (id=%s) doesn't cover engines %s (linked: %s), skipping",
+                "Active model (id=%s) covers none of the active engines (linked: %s), skipping",
                 _cached_model_id,
-                engine_ids - linked,
                 linked,
             )
             return None

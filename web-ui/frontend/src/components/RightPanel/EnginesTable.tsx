@@ -3,6 +3,7 @@ import { useApp } from "@/contexts/AppContext";
 import { Server, AlertTriangle, Brain, ChevronDown, Cloud, HardDrive, Unlink, CheckCircle2, FlaskConical, Settings2, RefreshCw } from "lucide-react";
 import type { EngineCatalogEntry, Model, DiscoveredWarehouse, WarehouseMapping } from "@/types";
 import { ModelsDialog } from "./ModelsDialog";
+import { ColdStartBadge } from "./ColdStartBadge";
 
 export const EnginesTable: React.FC = () => {
   const {
@@ -519,6 +520,13 @@ const DatabricksEngineRow: React.FC<{
             </button>
           </div>
         )}
+
+        {/* Cold start measurement */}
+        {!isBenchmarkMode && (
+          <div className="mt-1">
+            <ColdStartBadge engineId={engine.id} />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -656,8 +664,8 @@ const SmartRoutingView: React.FC<{
                 {duckdbModelEngines.map(e => {
                   const isEnabled = enabledEngineIds.has(e.id);
                   return (
+                    <React.Fragment key={e.id}>
                     <label
-                      key={e.id}
                       className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors hover:bg-muted/50 ${
                         isEnabled ? "bg-primary/5" : ""
                       }`}
@@ -678,6 +686,10 @@ const SmartRoutingView: React.FC<{
                         {e.config.memory_gb}GB / {e.config.cpu_count}CPU
                       </span>
                     </label>
+                    <div className="pl-[30px] pb-1">
+                      <ColdStartBadge engineId={e.id} />
+                    </div>
+                    </React.Fragment>
                   );
                 })}
               </div>

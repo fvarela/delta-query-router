@@ -123,15 +123,18 @@ def _warmup_databricks(
     workspace_client,
     warehouse_id: str,
     tables: list[str] | None = None,
-    timeout: str = "50s",
+    poll_timeout_s: float = 300.0,
 ) -> float:
-    """Warm up a Databricks warehouse by running a real query.
+    """Measure cold start of a Databricks warehouse.
 
-    If a table name is available, runs ``SELECT 1 FROM <table> LIMIT 1``
-    which forces the warehouse to resolve catalog metadata, warm internal
-    caches (SSD/Delta/result), and fully initialize the session context.
-    This ensures cold_start_time_ms captures the true one-time cost,
-    preventing that overhead from inflating Q1's execution_time_ms.
+    Stops the (already-running) warehouse, waits for STOPPED, then sends a
+    dummy query. The wall-clock time from query submission to result captures
+    the full cold start: warehouse auto-start + session init + catalog warming
+    + trivial query execution.
+
+    This is the same protocol used by ``cold_start_measure._measure_databricks``
+    to ensure consistent cold start values between benchmarks and standalone
+    measurements.
 
     Falls back to ``SELECT 1`` if no table is available.
     Returns elapsed wall-clock milliseconds.
@@ -143,22 +146,55 @@ def _warmup_databricks(
     else:
         warmup_sql = "SELECT 1"
 
+    # Stop the warehouse first — we want to measure cold start from stopped state
+    workspace_client.warehouses.stop(warehouse_id)
+    logger.info("Benchmark warmup: stopping warehouse %s for cold start measurement...", warehouse_id)
+    _wait_for_stopped_benchmarks(workspace_client, warehouse_id)
+    logger.info("Benchmark warmup: warehouse %s STOPPED, sending cold query...", warehouse_id)
+
+    # Send query to the STOPPED warehouse — it will auto-start.
+    # Use async mode (wait_timeout="0s") then poll, to avoid the 50s sync ceiling.
     t0 = time.perf_counter()
     response = workspace_client.statement_execution.execute_statement(
         statement=warmup_sql,
         warehouse_id=warehouse_id,
-        wait_timeout=timeout,
+        wait_timeout="0s",
     )
+    statement_id = response.statement_id
+    state = response.status.state if response.status else None
+
+    poll_interval = 2.0
+    deadline = time.monotonic() + poll_timeout_s
+    while state in (StatementState.PENDING, StatementState.RUNNING) and time.monotonic() < deadline:
+        time.sleep(poll_interval)
+        poll_interval = min(poll_interval * 1.5, 10.0)
+        response = workspace_client.statement_execution.get_statement(statement_id)
+        state = response.status.state if response.status else None
+
     elapsed = (time.perf_counter() - t0) * 1000
 
-    state = response.status.state if response.status else None
     if state != StatementState.SUCCEEDED:
         error_msg = "Warmup failed"
         if response.status and response.status.error:
             error_msg = response.status.error.message or str(response.status.error)
         raise RuntimeError(error_msg)
 
+    logger.info("Benchmark warmup: warehouse %s cold start = %.0fms", warehouse_id, elapsed)
     return elapsed
+
+
+def _wait_for_stopped_benchmarks(workspace_client, warehouse_id: str, timeout_s: float = 300.0):
+    """Wait for a warehouse to reach STOPPED state (benchmark context)."""
+    from databricks.sdk.service.sql import State
+    deadline = time.monotonic() + timeout_s
+    wait = 2.0
+    while time.monotonic() < deadline:
+        wh = workspace_client.warehouses.get(warehouse_id)
+        if wh.state == State.STOPPED:
+            return
+        time.sleep(min(wait, max(0.1, deadline - time.monotonic())))
+        wait = min(wait * 1.5, 15.0)
+    raise RuntimeError(f"Warehouse {warehouse_id} did not stop within {timeout_s}s")
 
 
 def _execute_query_on_duckdb_sync(
@@ -456,6 +492,14 @@ def _run_benchmark_inner(
                     "INSERT INTO benchmark_engine_warmups (run_id, engine_id, cold_start_time_ms) "
                     "VALUES (%s, %s, %s)",
                     (run_id, eid, cold_start_ms),
+                )
+                # Dual-write to engine_cold_starts for routing.
+                # DuckDB is always-on (0ms cold start) — the warmup time is credential
+                # vending overhead, not engine startup, and is already in ML predictions.
+                routing_cold_start = 0.0 if eng["engine_type"] == "duckdb" else cold_start_ms
+                db.execute(
+                    "INSERT INTO engine_cold_starts (engine_id, cold_start_ms) VALUES (%s, %s)",
+                    (eid, routing_cold_start),
                 )
             except Exception as e:
                 logger.warning("Warmup failed for engine %s: %s", eid, e)

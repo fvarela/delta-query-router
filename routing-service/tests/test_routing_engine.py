@@ -665,39 +665,49 @@ class TestRoutingLogEvents:
 
 
 class TestNormalize:
-    """Tests for the _normalize helper."""
+    """Tests for the _normalize helper (ratio-based: value/max)."""
 
     def test_empty_list(self):
         assert _normalize([]) == []
 
     def test_single_value(self):
-        """Single value normalizes to [0.0]."""
-        assert _normalize([42.0]) == [0.0]
+        """Single value normalizes to [1.0] (it is its own max)."""
+        assert _normalize([42.0]) == [1.0]
 
     def test_two_values(self):
         result = _normalize([10.0, 20.0])
-        assert result == [0.0, 1.0]
+        assert result == [0.5, 1.0]
 
     def test_three_values(self):
         result = _normalize([10.0, 30.0, 20.0])
-        assert result[0] == pytest.approx(0.0)
+        assert result[0] == pytest.approx(1 / 3)
         assert result[1] == pytest.approx(1.0)
-        assert result[2] == pytest.approx(0.5)
+        assert result[2] == pytest.approx(2 / 3)
 
     def test_all_equal(self):
-        """All equal values normalize to all zeros."""
-        assert _normalize([5.0, 5.0, 5.0]) == [0.0, 0.0, 0.0]
+        """All equal values normalize to all ones (each equals the max)."""
+        assert _normalize([5.0, 5.0, 5.0]) == [1.0, 1.0, 1.0]
+
+    def test_all_zero(self):
+        """All zeros normalize to all zeros (no division by zero)."""
+        assert _normalize([0.0, 0.0]) == [0.0, 0.0]
 
     def test_preserves_order(self):
         result = _normalize([100.0, 50.0, 75.0])
         assert result[0] > result[2] > result[1]
+
+    def test_preserves_magnitude(self):
+        """A value 10x smaller than max normalizes to 0.1, not 0.0."""
+        result = _normalize([10.0, 100.0])
+        assert result[0] == pytest.approx(0.1)
+        assert result[1] == pytest.approx(1.0)
 
 
 # --- Cold start ---
 
 
 class TestGetColdStartMs:
-    """Tests for _get_cold_start_ms."""
+    """Tests for _get_cold_start_ms — now reads from engine_cold_starts table."""
 
     @patch("routing_engine.engine_state.get_engine_state", return_value="running")
     @patch("routing_engine.db")
@@ -708,32 +718,24 @@ class TestGetColdStartMs:
 
     @patch("routing_engine.engine_state.get_engine_state", return_value="stopped")
     @patch("routing_engine.db")
-    def test_stopped_uses_warmup_record(self, mock_db, mock_es):
-        mock_db.fetch_one.return_value = {"cold_start_time_ms": 3500.0}
+    def test_stopped_with_measurement(self, mock_db, mock_es):
+        mock_db.fetch_one.return_value = {"cold_start_ms": 3500.0}
         result = _get_cold_start_ms("eng-1", "databricks_sql")
         assert result == 3500.0
 
     @patch("routing_engine.engine_state.get_engine_state", return_value="stopped")
     @patch("routing_engine.db")
-    def test_stopped_no_warmup_uses_default(self, mock_db, mock_es):
+    def test_stopped_no_measurement_returns_none(self, mock_db, mock_es):
         mock_db.fetch_one.return_value = None
         result = _get_cold_start_ms("eng-1", "databricks_sql")
-        assert result == 5000.0  # _DEFAULT_COLD_START for databricks_sql
+        assert result is None
 
     @patch("routing_engine.engine_state.get_engine_state", return_value="unknown")
     @patch("routing_engine.db")
-    def test_unknown_duckdb_default_is_zero(self, mock_db, mock_es):
+    def test_unknown_no_measurement_returns_none(self, mock_db, mock_es):
         mock_db.fetch_one.return_value = None
         result = _get_cold_start_ms("eng-1", "duckdb")
-        assert result == 0.0
-
-    @patch("routing_engine.engine_state.get_engine_state", return_value="unknown")
-    @patch("routing_engine.db")
-    def test_unknown_engine_type_default_is_zero(self, mock_db, mock_es):
-        """Unrecognized engine_type falls back to 0.0."""
-        mock_db.fetch_one.return_value = None
-        result = _get_cold_start_ms("eng-1", "some_new_engine")
-        assert result == 0.0
+        assert result is None
 
 
 # --- Score with ML ---
@@ -780,14 +782,13 @@ class TestScoreWithMl:
         assert scores["duck-1"] < scores["dbx-1"]
 
     @patch("routing_engine.db")
-    def test_cold_start_penalizes_stopped_engine(self, mock_db):
-        """Stopped engine gets cold_start added to latency, tipping the balance."""
-        mock_db.fetch_one.return_value = None  # no warmup records → use defaults
+    def test_no_cold_start_data_filters_engine(self, mock_db):
+        """Stopped engine with no cold start measurement gets filtered out."""
+        mock_db.fetch_one.return_value = None  # no measurement
         engines = self._engines(
             ("duck-1", "duckdb", 5),
             ("dbx-1", "databricks_sql", 5),
         )
-        # Databricks much faster compute, but it's stopped → +5000ms cold start
         preds = {"duck-1": 200.0, "dbx-1": 100.0}
         events = []
         with patch(
@@ -797,8 +798,10 @@ class TestScoreWithMl:
             winner, scores = _score_with_ml(
                 preds, engines, {}, RoutingSettings(), events
             )
-        # dbx-1 total: 100 + 5000 = 5100, duck-1 total: 200 + 0 = 200
+        # dbx-1 filtered (no cold start data), duck-1 is the only scored engine
         assert winner == "duck-1"
+        assert "dbx-1" not in scores
+        assert any("filtered" in e.message for e in events)
 
     @patch("routing_engine.engine_state.get_engine_state", return_value="running")
     @patch("routing_engine.db")
@@ -850,16 +853,40 @@ class TestScoreWithMl:
 
     @patch("routing_engine.engine_state.get_engine_state", return_value="running")
     @patch("routing_engine.db")
-    def test_single_engine_scores_zero(self, mock_db, mock_es):
-        """Single engine → normalized latency=0, normalized cost=0 → score near 0."""
+    def test_single_engine_scores_one(self, mock_db, mock_es):
+        """Single engine → normalized latency=1.0, normalized cost=1.0 → score=1.0."""
         mock_db.fetch_one.return_value = None
         engines = self._engines(("duck-1", "duckdb", 5))
         preds = {"duck-1": 100.0}
         events = []
         winner, scores = _score_with_ml(preds, engines, {}, RoutingSettings(), events)
         assert winner == "duck-1"
-        # Single engine → normalized values are 0 → score is 0
-        assert scores["duck-1"] == pytest.approx(0.0)
+        assert scores["duck-1"] == pytest.approx(1.0)
+
+    @patch("routing_engine.engine_state.get_engine_state", return_value="running")
+    @patch("routing_engine.db")
+    def test_two_engine_no_tie_with_different_magnitudes(self, mock_db, mock_es):
+        """Ratio normalization breaks the 2-engine tie that min-max produces.
+
+        Fast+expensive (5s, tier 5) vs slow+cheap (53s, tier 3) at 50/50 weights.
+        Min-max would give both 0.500. Ratio gives distinct scores.
+        """
+        mock_db.fetch_one.return_value = None
+        engines = self._engines(
+            ("dbx-1", "databricks_sql", 5),
+            ("duck-1", "duckdb", 3),
+        )
+        # Databricks: 5s total, DuckDB: 53s total
+        preds = {"dbx-1": 5000.0, "duck-1": 53000.0}
+        events = []
+        settings = RoutingSettings(fit_weight=0.5, cost_weight=0.5)
+        winner, scores = _score_with_ml(preds, engines, {}, settings, events)
+        # Scores should NOT be tied
+        assert scores["dbx-1"] != pytest.approx(scores["duck-1"])
+        # Databricks: norm_lat=5/53≈0.094, norm_cost=5/5=1.0 → 0.5*0.094 + 0.5*1.0 = 0.547
+        # DuckDB:     norm_lat=53/53=1.0,   norm_cost=3/5=0.6 → 0.5*1.0   + 0.5*0.6 = 0.800
+        assert winner == "dbx-1"
+        assert scores["dbx-1"] < scores["duck-1"]
 
 
 # ---------------------------------------------------------------------------

@@ -1,13 +1,17 @@
 """Engine registry API — database-backed engine catalog with runtime probes."""
 
+import asyncio
 import logging
+import threading
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 
 import db
+import auth
+from auth import verify_token
 
 logger = logging.getLogger("routing-service.engines")
 
@@ -94,47 +98,46 @@ def engine_url(engine: dict) -> str:
 async def list_engines():
     """List all engines with live runtime status probes."""
     rows = get_all_engines()
-    engines = []
 
-    async with httpx.AsyncClient(timeout=3.0) as client:
-        for row in rows:
-            entry = {
-                "id": row["id"],
-                "engine_type": row["engine_type"],
-                "display_name": row["display_name"],
-                "config": row["config"] or {},
-                "is_default": False,
-                "enabled": row["is_active"],
-                "cost_tier": row["cost_tier"],
-                "k8s_service_name": row.get("k8s_service_name"),
-                "created_at": row["created_at"].isoformat()
-                if row.get("created_at") and hasattr(row["created_at"], "isoformat")
-                else row.get("created_at"),
-                "updated_at": row["updated_at"].isoformat()
-                if row.get("updated_at") and hasattr(row["updated_at"], "isoformat")
-                else row.get("updated_at"),
-            }
+    async def _build_entry(row: dict, client: httpx.AsyncClient) -> dict:
+        entry = {
+            "id": row["id"],
+            "engine_type": row["engine_type"],
+            "display_name": row["display_name"],
+            "config": row["config"] or {},
+            "is_default": False,
+            "enabled": row["is_active"],
+            "cost_tier": row["cost_tier"],
+            "k8s_service_name": row.get("k8s_service_name"),
+            "created_at": row["created_at"].isoformat()
+            if row.get("created_at") and hasattr(row["created_at"], "isoformat")
+            else row.get("created_at"),
+            "updated_at": row["updated_at"].isoformat()
+            if row.get("updated_at") and hasattr(row["updated_at"], "isoformat")
+            else row.get("updated_at"),
+        }
 
-            if row["engine_type"] == "duckdb" and row.get("k8s_service_name"):
-                # Probe health endpoint
-                try:
-                    resp = await client.get(f"{engine_url(row)}/health")
-                    resp.raise_for_status()
-                    entry["runtime_state"] = "running"
-                except Exception:
-                    entry["runtime_state"] = "stopped"
-                entry["scalable"] = True
-            elif row["engine_type"] == "databricks_sql":
-                # Databricks state is stored in config at sync time
-                entry["runtime_state"] = row["config"].get("runtime_state", "unknown")
-                entry["scalable"] = False
-            else:
-                entry["runtime_state"] = "unknown"
-                entry["scalable"] = False
+        if row["engine_type"] == "duckdb" and row.get("k8s_service_name"):
+            try:
+                resp = await client.get(f"{engine_url(row)}/health")
+                resp.raise_for_status()
+                entry["runtime_state"] = "running"
+            except Exception:
+                entry["runtime_state"] = "stopped"
+            entry["scalable"] = True
+        elif row["engine_type"] == "databricks_sql":
+            entry["runtime_state"] = row["config"].get("runtime_state", "unknown")
+            entry["scalable"] = False
+        else:
+            entry["runtime_state"] = "unknown"
+            entry["scalable"] = False
 
-            engines.append(entry)
+        return entry
 
-    return engines
+    async with httpx.AsyncClient(timeout=1.0) as client:
+        engines = await asyncio.gather(*[_build_entry(row, client) for row in rows])
+
+    return list(engines)
 
 
 @router.get("/{engine_id}")
@@ -269,3 +272,93 @@ async def sync_databricks_engines(body: SyncDatabricksRequest):
         synced.append(row)
 
     return {"synced": len(synced), "engines": synced}
+
+
+# --- Cold start measurement endpoints ---
+
+_measuring: set[str] = set()
+_measuring_lock = threading.Lock()
+
+
+def _do_measure(engine_id: str):
+    """Background thread target for cold start measurement."""
+    import cold_start_measure
+    try:
+        cold_start_measure.measure_cold_start(engine_id)
+    except Exception as e:
+        logger.error("Cold start measurement failed for %s: %s", engine_id, e)
+    finally:
+        with _measuring_lock:
+            _measuring.discard(engine_id)
+
+
+@router.post("/{engine_id}/measure-cold-start", status_code=202)
+async def measure_cold_start(engine_id: str, user: auth.UserContext = Depends(verify_token)):
+    """Trigger cold start measurement for an engine (admin-only)."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    # Verify engine exists
+    engine = db.fetch_one("SELECT id FROM engines WHERE id = %s", (engine_id,))
+    if not engine:
+        raise HTTPException(status_code=404, detail="Engine not found")
+
+    with _measuring_lock:
+        if engine_id in _measuring:
+            raise HTTPException(status_code=409, detail="Measurement already in progress")
+        _measuring.add(engine_id)
+
+    thread = threading.Thread(target=_do_measure, args=(engine_id,), daemon=True)
+    thread.start()
+    return {"status": "measuring", "engine_id": engine_id}
+
+
+@router.get("/{engine_id}/cold-start")
+async def get_cold_start(engine_id: str):
+    """Get latest cold start measurement for an engine."""
+    row = db.fetch_one(
+        """
+        SELECT cold_start_ms, measured_at
+        FROM engine_cold_starts
+        WHERE engine_id = %s
+        ORDER BY measured_at DESC
+        LIMIT 1
+        """,
+        (engine_id,),
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="No cold start measurement found")
+
+    with _measuring_lock:
+        measuring = engine_id in _measuring
+
+    return {
+        "engine_id": engine_id,
+        "cold_start_ms": row["cold_start_ms"],
+        "measured_at": row["measured_at"].isoformat(),
+        "measuring": measuring,
+    }
+
+
+@router.get("/cold-starts/all")
+async def get_all_cold_starts():
+    """Get latest cold start measurement for all engines."""
+    rows = db.fetch_all(
+        """
+        SELECT DISTINCT ON (engine_id) engine_id, cold_start_ms, measured_at
+        FROM engine_cold_starts
+        ORDER BY engine_id, measured_at DESC
+        """
+    )
+    with _measuring_lock:
+        measuring_set = set(_measuring)
+
+    return [
+        {
+            "engine_id": r["engine_id"],
+            "cold_start_ms": r["cold_start_ms"],
+            "measured_at": r["measured_at"].isoformat(),
+            "measuring": r["engine_id"] in measuring_set,
+        }
+        for r in rows
+    ]

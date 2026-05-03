@@ -16,7 +16,7 @@ router = APIRouter(prefix="/api/routing/profiles", tags=["routing-profiles"])
 # --- Constants ---
 
 VALID_ROUTING_MODES = {"single", "smart", "benchmark"}
-VALID_ROUTING_PRIORITIES = {0, 0.5, 1}
+VALID_ROUTING_PRIORITIES = {0, 0.2, 0.5, 0.8, 1}
 
 
 # --- Pydantic models ---

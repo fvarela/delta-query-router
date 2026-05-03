@@ -461,3 +461,10 @@ export interface TpcdsRegisterResponse {
   tpcds_catalog_id: number;
   collection_id: number | null;
 }
+
+export interface ColdStartMeasurement {
+  engine_id: string;
+  cold_start_ms: number;
+  measured_at: string;
+  measuring: boolean;
+}

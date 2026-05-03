@@ -210,50 +210,47 @@ def _score_engines(
     return {"duckdb": duckdb_total, "databricks": databricks_total}
 
 
-# ── Default cold-start estimates (ms) when no warmup data exists ──────────
-_DEFAULT_COLD_START: dict[str, float] = {
-    "duckdb": 0.0,
-    "databricks": 5000.0,
-    "databricks_sql": 5000.0,
-}
+def _get_cold_start_ms(engine_id: str, engine_type: str) -> float | None:
+    """Get cold-start latency for an engine from standalone measurements.
 
-
-def _get_cold_start_ms(engine_id: str, engine_type: str) -> float:
-    """Estimate cold-start latency for an engine.
-
-    Returns 0 for running engines, historical warmup time for stopped/unknown,
-    or a default if no warmup data exists (REQ-012).
+    Returns 0.0 for running engines, the latest measured value from
+    engine_cold_starts, or None if no measurement exists.
     """
     state = engine_state.get_engine_state(engine_id)
     if state == "running":
         return 0.0
 
-    # Look up latest warmup record for this engine
     row = db.fetch_one(
         """
-        SELECT cold_start_time_ms
-        FROM benchmark_engine_warmups
+        SELECT cold_start_ms
+        FROM engine_cold_starts
         WHERE engine_id = %s
-        ORDER BY started_at DESC
+        ORDER BY measured_at DESC
         LIMIT 1
         """,
         (engine_id,),
     )
-    if row and row["cold_start_time_ms"] is not None:
-        return float(row["cold_start_time_ms"])
+    if row and row["cold_start_ms"] is not None:
+        return float(row["cold_start_ms"])
 
-    return _DEFAULT_COLD_START.get(engine_type, 0.0)
+    return None
 
 
 def _normalize(values: list[float]) -> list[float]:
-    """Min-max normalize a list of values to [0, 1]. Returns all zeros if constant."""
+    """Ratio-based normalization: each value divided by the max.
+
+    Preserves magnitude differences — a value 10× larger than the minimum
+    will normalize to a proportionally higher number, unlike min-max which
+    always produces {0, 1} for two values.
+
+    Returns all zeros if all values are zero or the list is empty.
+    """
     if not values:
         return []
-    lo, hi = min(values), max(values)
-    span = hi - lo
-    if span == 0:
+    hi = max(values)
+    if hi == 0:
         return [0.0] * len(values)
-    return [(v - lo) / span for v in values]
+    return [v / hi for v in values]
 
 
 def _score_with_ml(
@@ -274,18 +271,33 @@ def _score_with_ml(
     """
     engine_map = {e["id"]: e for e in active_engines}
 
-    # Build per-engine scoring components
+    # Build per-engine scoring components, filtering out engines without cold start data
     engine_ids = list(predictions.keys())
+    scored_engine_ids = []
     latencies = []
     cost_tiers = []
     cold_starts = []
+    filtered_engines: list[tuple[str, str]] = []  # (engine_id, reason)
 
     for eid in engine_ids:
         eng = engine_map.get(eid, {})
-        predicted_ms = predictions[eid]
         cold_ms = _get_cold_start_ms(eid, eng.get("engine_type", ""))
+        if cold_ms is None:
+            filtered_engines.append((eid, "No cold start data"))
+            events.append(
+                RoutingLogEvent(
+                    _ts(),
+                    "warn",
+                    "ml_scoring",
+                    f"{eid}: filtered — no cold start data",
+                )
+            )
+            continue
+
+        predicted_ms = predictions[eid]
         total = predicted_ms + cold_ms
 
+        scored_engine_ids.append(eid)
         latencies.append(total)
         cost_tiers.append(float(eng.get("cost_tier", 5)))
         cold_starts.append(cold_ms)
@@ -300,6 +312,18 @@ def _score_with_ml(
             )
         )
 
+    if not scored_engine_ids:
+        events.append(
+            RoutingLogEvent(
+                _ts(),
+                "warn",
+                "ml_scoring",
+                "All engines filtered (no cold start data) — cannot score",
+            )
+        )
+        # Return empty scores — caller will fall through to heuristic
+        return "", {}
+
     # Normalize
     norm_lat = _normalize(latencies)
     norm_cost = _normalize(cost_tiers)
@@ -308,8 +332,17 @@ def _score_with_ml(
     fw = settings.fit_weight  # latency weight
     cw = settings.cost_weight
 
+    events.append(
+        RoutingLogEvent(
+            _ts(),
+            "info",
+            "ml_scoring",
+            f"Weights: performance={fw:.0%} cost={cw:.0%}",
+        )
+    )
+
     scores: dict[str, float] = {}
-    for i, eid in enumerate(engine_ids):
+    for i, eid in enumerate(scored_engine_ids):
         weighted = fw * norm_lat[i] + cw * norm_cost[i]
         scores[eid] = weighted
 

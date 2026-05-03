@@ -158,6 +158,16 @@ CREATE TABLE IF NOT EXISTS benchmark_results (
     error_message   TEXT
 );
 
+-- Standalone cold start measurements (decoupled from benchmarks)
+CREATE TABLE IF NOT EXISTS engine_cold_starts (
+    id          SERIAL PRIMARY KEY,
+    engine_id   TEXT NOT NULL REFERENCES engines(id),
+    cold_start_ms FLOAT NOT NULL,
+    measured_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_engine_cold_starts_latest
+    ON engine_cold_starts (engine_id, measured_at DESC);
+
 -- Seed with defaults
 INSERT INTO routing_settings (id) VALUES (1) ON CONFLICT DO NOTHING;
 

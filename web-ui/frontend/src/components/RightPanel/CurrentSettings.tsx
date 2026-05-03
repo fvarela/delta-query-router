@@ -3,8 +3,8 @@ import { useApp } from "@/contexts/AppContext";
 import { Zap, Scale, DollarSign, Brain, Radio, Bookmark, Cloud, AlertTriangle, CheckCircle2, FlaskConical, Activity } from "lucide-react";
 
 const priorityLabel = (costWeight: number): { label: string; icon: React.ReactNode } => {
-  if (costWeight < 0.01) return { label: "High Performance", icon: <Zap size={12} className="text-amber-500" /> };
-  if (costWeight > 0.99) return { label: "Low Cost", icon: <DollarSign size={12} className="text-emerald-500" /> };
+  if (costWeight < 0.3) return { label: "High Performance", icon: <Zap size={12} className="text-amber-500" /> };
+  if (costWeight > 0.7) return { label: "Low Cost", icon: <DollarSign size={12} className="text-emerald-500" /> };
   return { label: "Balanced", icon: <Scale size={12} className="text-blue-500" /> };
 };
 
@@ -36,7 +36,7 @@ const WorkspaceDep: React.FC<{
 };
 
 export const CurrentSettings: React.FC = () => {
-  const { routingMode, singleEngineId, engines, enabledEngineIds, connectedWorkspace, routingSettings, activeModelId, models, activeProfileName, hasUnsavedChanges, profileWorkspaceBinding, benchmarkEngineIds, benchmarkRunning } = useApp();
+  const { routingMode, singleEngineId, engines, enabledEngineIds, connectedWorkspace, routingSettings, activeModelId, models, activeProfileName, profileWorkspaceBinding, benchmarkEngineIds, benchmarkRunning } = useApp();
 
   const activeModel = models.find(m => m.id === activeModelId);
   const priority = priorityLabel(routingSettings.cost_weight);
@@ -52,7 +52,6 @@ export const CurrentSettings: React.FC = () => {
             <div className="flex items-center gap-1.5">
               <Bookmark size={11} className="text-[hsl(217,91%,60%)] shrink-0" />
               <span className="text-[11px] font-medium text-[hsl(217,91%,45%)] truncate">{activeProfileName}</span>
-              {hasUnsavedChanges && <span className="text-[10px] text-amber-600 font-medium">*</span>}
             </div>
           )}
 
@@ -164,7 +163,6 @@ export const CurrentSettings: React.FC = () => {
           <div className="flex items-center gap-1.5">
             <Bookmark size={11} className="text-[hsl(217,91%,60%)] shrink-0" />
             <span className="text-[11px] font-medium text-[hsl(217,91%,45%)] truncate">{activeProfileName}</span>
-            {hasUnsavedChanges && <span className="text-[10px] text-amber-600 font-medium">*</span>}
           </div>
         )}
 

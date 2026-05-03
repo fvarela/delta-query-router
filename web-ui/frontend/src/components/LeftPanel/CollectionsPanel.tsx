@@ -1224,7 +1224,7 @@ const RunDetailView: React.FC<{ runDetail: BenchmarkRunDetail }> = ({ runDetail 
 
               return (
                 <tr key={i} className="even:bg-card/50">
-                  <td className="px-2 py-1 border-b border-border font-mono text-foreground">Q{r.query_id}</td>
+                  <td className="px-2 py-1 border-b border-border font-mono text-foreground">Q{r.sequence_number ?? r.query_id}</td>
                   <td className={`px-2 py-1 border-b border-border text-right font-mono ${latencyColor(r.execution_time_ms ?? 0)}`}>
                     {r.execution_time_ms ?? "ERR"}
                   </td>

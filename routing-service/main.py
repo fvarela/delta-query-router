@@ -487,9 +487,10 @@ def _profile_config_to_routing_params(
 
     # Map routingPriority to fit_weight/cost_weight
     priority = config.get("routingPriority", 0.5)
-    # priority: 0 = cost-optimized, 0.5 = balanced, 1 = fit-optimized (performance)
-    fit_weight = float(priority)
-    cost_weight = round(1.0 - fit_weight, 10)
+    # priority: 0 = performance-optimized, 0.5 = balanced, 1 = cost-optimized
+    # Frontend stores routingPriority = cost_weight
+    cost_weight = float(priority)
+    fit_weight = round(1.0 - cost_weight, 10)
 
     settings_override = routing_engine.RoutingSettings(
         fit_weight=fit_weight,
@@ -535,14 +536,13 @@ async def list_schemas(catalog: str, user: auth.UserContext = Depends(verify_tok
     except Exception as e:
         raise _databricks_error_to_http(e)
 
-    # Check EXTERNAL_USE_SCHEMA grant for each schema
-    # NOTE: SDK grants.get(securable_type=SecurableType.SCHEMA) sends uppercase
-    # "SCHEMA" in the URL path, but the API requires lowercase "schema".
-    # Use raw api_client.do() as a workaround.
-    result = []
-    for s in schemas:
-        external_use_schema = False
+    # Check EXTERNAL_USE_SCHEMA grant for each schema — concurrently
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _check_grant(s):
         full_name = f"{s.catalog_name}.{s.name}"
+        external_use_schema = False
         try:
             resp = _workspace_client.api_client.do(
                 "GET",
@@ -554,14 +554,18 @@ async def list_schemas(catalog: str, user: auth.UserContext = Depends(verify_tok
                     break
         except Exception as e:
             logger.debug("Could not check grants for schema %s: %s", full_name, e)
-        result.append(
-            {
-                "name": s.name,
-                "catalog_name": s.catalog_name,
-                "external_use_schema": external_use_schema,
-            }
+        return {
+            "name": s.name,
+            "catalog_name": s.catalog_name,
+            "external_use_schema": external_use_schema,
+        }
+
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor(max_workers=min(len(schemas), 8)) as pool:
+        result = await asyncio.gather(
+            *[loop.run_in_executor(pool, _check_grant, s) for s in schemas]
         )
-    return result
+    return list(result)
 
 
 @app.get("/api/databricks/catalogs/{catalog}/schemas/{schema}/tables")

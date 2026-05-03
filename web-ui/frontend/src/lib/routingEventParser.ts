@@ -115,6 +115,10 @@ export function parseRoutingEvents(
   const eligibleSet = new Set<string>();
   let winnerId = "";
 
+  // Weights from the routing events (historical, not live)
+  let eventFitWeight: number | null = null;
+  let eventCostWeight: number | null = null;
+
   // Heuristic scoring data
   const heuristicMap = new Map<string, { fit: number; cost: number; total: number }>();
 
@@ -139,6 +143,22 @@ export function parseRoutingEvents(
     // Complexity score
     const cxMatch = msg.match(/^Complexity score: ([\d.]+)$/);
     if (cxMatch) { complexityScore = parseFloat(cxMatch[1]); continue; }
+
+    // ML scoring weights: "Weights: performance=0% cost=100%"
+    const wMatch = msg.match(/^Weights: performance=(\d+)% cost=(\d+)%$/);
+    if (wMatch) {
+      eventFitWeight = parseInt(wMatch[1]) / 100;
+      eventCostWeight = parseInt(wMatch[2]) / 100;
+      continue;
+    }
+
+    // Heuristic scoring weights: "Weights: fit=0% cost=100%"
+    const hwMatch = msg.match(/^Weights: fit=(\d+)% cost=(\d+)%$/);
+    if (hwMatch) {
+      eventFitWeight = parseInt(hwMatch[1]) / 100;
+      eventCostWeight = parseInt(hwMatch[2]) / 100;
+      continue;
+    }
 
     // System rule matched
     const rmMatch = msg.match(/^System rule matched: (.+?) → (.+)$/);
@@ -210,9 +230,9 @@ export function parseRoutingEvents(
   // Sort: matched first, then by name
   rules.sort((a, b) => (a.matched === b.matched ? a.name.localeCompare(b.name) : a.matched ? -1 : 1));
 
-  // Build engines array
-  const fw = ctx.routingSettings.fit_weight;
-  const cw = ctx.routingSettings.cost_weight;
+  // Build engines array — use historical weights from events if available, fall back to live context
+  const fw = eventFitWeight ?? ctx.routingSettings.fit_weight;
+  const cw = eventCostWeight ?? ctx.routingSettings.cost_weight;
 
   // If no prediction data from events, fall back to the decision winner only
   if (!winnerId && routingDecision.engine) {
@@ -266,7 +286,10 @@ export function parseRoutingEvents(
 
     const engineType: "duckdb" | "databricks" = (catalogEntry?.engine_type ?? eid).startsWith("duckdb") ? "duckdb" : "databricks";
     const displayName = catalogEntry?.display_name ?? eid;
-    const runtimeState = (catalogEntry?.runtime_state as EngineScore["runtimeState"]) ?? "unknown";
+    // Infer state at routing time from cold_start (historical, not live)
+    const runtimeState: EngineScore["runtimeState"] = pred
+      ? (pred.coldStart === 0 ? "running" : "stopped")
+      : "unknown";
 
     const predictedMs = pred?.predicted ?? 0;
     const coldStartMs = pred?.coldStart ?? 0;
@@ -295,6 +318,13 @@ export function parseRoutingEvents(
         }
       }
       if (!filterReason) filterReason = "Not eligible";
+    }
+
+    // Check if engine was filtered in ML scoring events (e.g., no cold start data)
+    if (isEligible && !norm && pred) {
+      // Engine has prediction but no normalization data — it was filtered during scoring
+      isEligible = false;
+      filterReason = "No cold start data";
     }
 
     engineScores.push({

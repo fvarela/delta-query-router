@@ -22,7 +22,7 @@ const latencyColor = (ms: number) => {
 /* ── main component ── */
 
 export const CenterPanel: React.FC = () => {
-  const { editorSql, setEditorSql, runMode, singleEngineId, engines, queryResult, setQueryResult, collectionContext, activeCollectionId, triggerRefreshCollections, enabledEngineIds, warehouseMappings, routingSettings } = useApp();
+  const { editorSql, setEditorSql, runMode, singleEngineId, engines, queryResult, setQueryResult, collectionContext, activeCollectionId, triggerRefreshCollections, enabledEngineIds, warehouseMappings, routingSettings, activeProfileId } = useApp();
   const [executing, setExecuting] = useState(false);
   const [queryError, setQueryError] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -100,6 +100,7 @@ export const CenterPanel: React.FC = () => {
         const result = await api.post<QueryExecutionResult>("/api/query", {
           sql: editorSql,
           routing_mode,
+          profile_id: activeProfileId,
           enabled_engine_ids: executableEngineIds,
         });
         setQueryResult(result);

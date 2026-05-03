@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback, useEffect, useMemo } from "react";
+import React, { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef } from "react";
 import type { RunMode, RoutingMode, PanelMode, LeftPanelTab, RoutingConfig, RoutingProfile, WorkspaceBinding, WarehouseMapping, DiscoveredWarehouse, QueryExecutionResult, Workspace, Warehouse, DatabricksSettings, EngineCatalogEntry, Model, RoutingSettings, RoutingSettingsResponse, BenchmarkDefinition, LogSettings } from "../types";
 import { api } from "@/lib/api";
 import { isMockMode } from "@/lib/mockMode";
@@ -99,11 +99,8 @@ interface AppContextType {
   leftPanelTab: LeftPanelTab;
   setLeftPanelTab: (tab: LeftPanelTab) => void;
 
-  // Saved routing config (persistent settings — Round 8)
+  // Saved routing config (persistent settings — auto-saved)
   savedRoutingConfig: RoutingConfig;
-  hasUnsavedChanges: boolean;
-  saveRoutingConfig: () => Promise<void>;
-  rollbackRoutingConfig: () => void;
 
   // Routing profiles (persistent named configs — Round 13)
   routingProfiles: RoutingProfile[];
@@ -542,7 +539,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [routingMode, activeProfileId, preBenchmarkProfileId, routingProfiles]);
 
   // Workspace binding for current profile (Round 16)
-  // MUST be declared before loadProfile/saveProfile/hasUnsavedChanges which reference it
+   // MUST be declared before loadProfile/saveProfile which reference it
   const [profileWorkspaceBinding, setProfileWorkspaceBinding] = useState<WorkspaceBinding | null>(() => {
     if (mock) {
       const defaultProfile = MOCK_ROUTING_PROFILES.find(p => p.is_default);
@@ -552,7 +549,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   });
 
   // Warehouse mappings for current routing config (Round 16)
-  // MUST be declared before loadProfile/saveProfile/hasUnsavedChanges which reference it
+   // MUST be declared before loadProfile/saveProfile which reference it
   const [warehouseMappings, setWarehouseMappings] = useState<WarehouseMapping[]>(() => {
     if (mock) {
       const defaultProfile = MOCK_ROUTING_PROFILES.find(p => p.is_default);
@@ -580,37 +577,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       selectWarehouse(warehouseId);
     }
 
-    // Compute workspace binding for auto-save
-    let newBinding = profileWorkspaceBinding;
     // Round 17: Implicitly bind workspace when a warehouse is mapped
-    // If user maps a Databricks engine to a warehouse, the profile becomes dependent on the current workspace
     if (warehouseId !== null && connectedWorkspace) {
-      newBinding = {
+      setProfileWorkspaceBinding({
         workspaceId: connectedWorkspace.id,
         workspaceName: connectedWorkspace.name,
         workspaceUrl: connectedWorkspace.url,
-      };
-      setProfileWorkspaceBinding(newBinding);
+      });
     }
-
-    // Auto-save warehouse mappings to the active profile (Task 154)
-    // Update savedRoutingConfig so hasUnsavedChanges doesn't trigger the Save/Rollback bar
-    setSavedRoutingConfig(prev => {
-      const updatedMappings = computeUpdatedMappings(toMappingsArray(prev.warehouseMappings));
-      const updatedConfig = {
-        ...prev,
-        warehouseMappings: updatedMappings,
-        workspaceBinding: newBinding ?? prev.workspaceBinding,
-      };
-      // Persist to backend profile if one is active (fire-and-forget)
-      if (activeProfileId !== null && !mock) {
-        api.put(`/api/routing/profiles/${activeProfileId}`, { config: updatedConfig }).catch(() => {
-          // API error — local state already updated, profile will sync on next full save
-        });
-      }
-      return updatedConfig;
-    });
-  }, [connectedWorkspace, selectWarehouse, profileWorkspaceBinding, activeProfileId, mock]);
+    // Auto-save is handled by the useEffect that watches warehouseMappings
+  }, [connectedWorkspace, selectWarehouse]);
 
   // Round 17: Unlink profile from workspace — clear binding AND all warehouse mappings
   const unlinkProfileWorkspace = useCallback(() => {
@@ -656,6 +632,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const loadProfile = useCallback((id: number) => {
     const profile = routingProfiles.find(p => p.id === id);
     if (!profile) return;
+    // Temporarily disable auto-save while loading profile state
+    autoSaveReady.current = false;
     setActiveProfileId(id);
     setSavedRoutingConfig({ ...profile.config });
     // Apply config to working state
@@ -677,6 +655,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (firstMapped?.warehouseId) {
       selectWarehouse(firstMapped.warehouseId);
     }
+    // Re-enable auto-save after React has processed state updates
+    setTimeout(() => { autoSaveReady.current = true; }, 0);
   }, [routingProfiles, selectWarehouse]);
 
   // Save current config to the active profile (update in place)
@@ -803,61 +783,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setActiveProfileId(null);
   }, []);
 
-  // Derive whether current state differs from saved config
-  const hasUnsavedChanges = useMemo(() => {
-    if (routingMode !== savedRoutingConfig.routingMode) return true;
-    if (routingMode === "single") {
-      if (singleEngineId !== savedRoutingConfig.singleEngineId) return true;
-    } else if (routingMode === "smart") {
-      if (activeModelId !== savedRoutingConfig.activeModelId) return true;
-      const currentIds = [...enabledEngineIds].sort();
-      const savedIds = [...savedRoutingConfig.enabledEngineIds].sort();
-      if (currentIds.length !== savedIds.length || currentIds.some((id, i) => id !== savedIds[i])) return true;
-    } else if (routingMode === "benchmark") {
-      // Benchmark mode doesn't use profiles/save — always considered "no unsaved changes"
-      return false;
-    }
-    if (Math.abs(routingSettings.cost_weight - savedRoutingConfig.routingPriority) > 0.01) return true;
-    // Check workspace binding (Round 16)
-    const currentWs = profileWorkspaceBinding;
-    const savedWs = savedRoutingConfig.workspaceBinding;
-    if ((currentWs === null) !== (savedWs === null)) return true;
-    if (currentWs && savedWs && currentWs.workspaceId !== savedWs.workspaceId) return true;
-    // Check warehouse mappings (Round 16)
-    const currentMappings = warehouseMappings.filter(m => m.warehouseId !== null);
-    const savedMappings = toMappingsArray(savedRoutingConfig.warehouseMappings).filter(m => m.warehouseId !== null);
-    if (currentMappings.length !== savedMappings.length) return true;
-    for (const cm of currentMappings) {
-      const sm = savedMappings.find(m => m.engineId === cm.engineId);
-      if (!sm || sm.warehouseId !== cm.warehouseId) return true;
-    }
-    return false;
-  }, [routingMode, singleEngineId, enabledEngineIds, routingSettings.cost_weight, activeModelId, savedRoutingConfig, profileWorkspaceBinding, warehouseMappings]);
+  // ── Auto-save: persist routing config changes to active profile on every change ──
+  // Skip during initial mount and profile loading (use ref to gate).
+  const autoSaveReady = useRef(false);
 
-  const saveRoutingConfig = useCallback(async () => {
-    // When a profile is loaded, update it in place
-    await saveProfile();
-  }, [saveProfile]);
+  useEffect(() => {
+    // Skip benchmark mode (profiles don't apply) and when no profile is active
+    if (routingMode === "benchmark" || activeProfileId === null || mock) return;
+    // Skip the initial render — only save after user interactions
+    if (!autoSaveReady.current) return;
 
-  const rollbackRoutingConfig = useCallback(() => {
-    // Restore routing mode
-    setRoutingMode(savedRoutingConfig.routingMode);
-    // Restore single engine
-    setSingleEngineId(savedRoutingConfig.singleEngineId);
-    // Restore engines
-    setEnabledEngineIds(new Set(savedRoutingConfig.enabledEngineIds));
-    // Restore routing priority
-    setRoutingSettings(prev => ({
-      ...prev,
-      cost_weight: savedRoutingConfig.routingPriority,
-      fit_weight: 1 - savedRoutingConfig.routingPriority,
-    }));
-    // Restore active model
-    setActiveModelId(savedRoutingConfig.activeModelId);
-    // Restore workspace binding and warehouse mappings (Round 16)
-    setProfileWorkspaceBinding(savedRoutingConfig.workspaceBinding ?? null);
-    setWarehouseMappings(toMappingsArray(savedRoutingConfig.warehouseMappings));
-  }, [savedRoutingConfig]);
+    const currentConfig: RoutingConfig = {
+      routingMode,
+      singleEngineId,
+      activeModelId,
+      enabledEngineIds: [...enabledEngineIds],
+      routingPriority: routingSettings.cost_weight,
+      workspaceBinding: profileWorkspaceBinding,
+      warehouseMappings: [...warehouseMappings],
+    };
+
+    // Update saved config and persist to backend (fire-and-forget)
+    setSavedRoutingConfig(currentConfig);
+    api.put(`/api/routing/profiles/${activeProfileId}`, { config: currentConfig }).catch(() => {
+      // API error — local state already updated
+    });
+  }, [routingMode, singleEngineId, activeModelId, enabledEngineIds, routingSettings.cost_weight, profileWorkspaceBinding, warehouseMappings, activeProfileId, mock]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Benchmark definitions (Phase 15 — Engine Setup view)
   const [benchmarkDefinitions, setBenchmarkDefinitions] = useState<BenchmarkDefinition[]>(
@@ -970,6 +921,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             selectWarehouse(firstMapped.warehouseId);
           }
         }
+        // Enable auto-save after initial profile load is complete
+        autoSaveReady.current = true;
       } catch {
         // Backend unreachable — defaults remain (single mode, empty state)
       }
@@ -1006,7 +959,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       logSettings, updateLogSettings,
       benchmarkDefinitions, reloadBenchmarkDefinitions,
       leftPanelTab, setLeftPanelTab,
-      savedRoutingConfig, hasUnsavedChanges, saveRoutingConfig, rollbackRoutingConfig,
+      savedRoutingConfig,
       routingProfiles, activeProfileId, activeProfileName,
       loadProfile, saveProfile, saveProfileAs, deleteProfile, setDefaultProfile, clearActiveProfile,
       profileWorkspaceBinding, unlinkProfileWorkspace,
