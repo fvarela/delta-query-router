@@ -112,6 +112,8 @@ CREATE TABLE IF NOT EXISTS engines (
     k8s_service_name TEXT,
     cost_tier       INTEGER NOT NULL DEFAULT 5 CHECK (cost_tier >= 1 AND cost_tier <= 10),
     is_active       BOOLEAN NOT NULL DEFAULT TRUE,
+    lifecycle_mode  TEXT NOT NULL DEFAULT 'always-on' CHECK (lifecycle_mode IN ('always-on', 'on-demand')),
+    idle_timeout_minutes INTEGER NOT NULL DEFAULT 15,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -171,15 +173,20 @@ CREATE INDEX IF NOT EXISTS idx_engine_cold_starts_latest
 -- Seed with defaults
 INSERT INTO routing_settings (id) VALUES (1) ON CONFLICT DO NOTHING;
 
--- Seed default DuckDB engines
-INSERT INTO engines (id, engine_type, display_name, config, k8s_service_name, cost_tier) VALUES
-    ('duckdb-1', 'duckdb', 'DuckDB — Small', '{"memory_gb": 2, "cpu_count": 2}', 'duckdb-worker-small', 3),
-    ('duckdb-2', 'duckdb', 'DuckDB — Medium', '{"memory_gb": 2, "cpu_count": 2}', 'duckdb-worker-medium', 4),
-    ('duckdb-3', 'duckdb', 'DuckDB — Large', '{"memory_gb": 4, "cpu_count": 4}', 'duckdb-worker-large', 5)
+-- Clear old models (engine IDs changed with tier redesign)
+DELETE FROM models WHERE linked_engines::text LIKE '%duckdb-1%' OR linked_engines::text LIKE '%duckdb-2%' OR linked_engines::text LIKE '%duckdb-3%';
+
+-- Seed default DuckDB engines (5 fixed tiers)
+INSERT INTO engines (id, engine_type, display_name, config, k8s_service_name, cost_tier, lifecycle_mode, idle_timeout_minutes) VALUES
+    ('duckdb-xsmall', 'duckdb', 'DuckDB — XSmall', '{"memory_gb": 2, "cpu_count": 1}', 'duckdb-worker-xsmall', 1, 'always-on', 15),
+    ('duckdb-small',  'duckdb', 'DuckDB — Small',  '{"memory_gb": 4, "cpu_count": 2}', 'duckdb-worker-small',  2, 'on-demand', 15),
+    ('duckdb-medium', 'duckdb', 'DuckDB — Medium', '{"memory_gb": 8, "cpu_count": 4}', 'duckdb-worker-medium', 3, 'on-demand', 15),
+    ('duckdb-large',  'duckdb', 'DuckDB — Large',  '{"memory_gb": 16, "cpu_count": 8}', 'duckdb-worker-large', 4, 'on-demand', 30),
+    ('duckdb-xlarge', 'duckdb', 'DuckDB — XLarge', '{"memory_gb": 32, "cpu_count": 16}', 'duckdb-worker-xlarge', 5, 'on-demand', 60)
 ON CONFLICT DO NOTHING;
 
--- Default: only duckdb-1 active (laptop-friendly); Medium and Large off
-UPDATE engines SET is_active = false WHERE id IN ('duckdb-2', 'duckdb-3') AND is_active = true;
+-- Default: only XSmall active (laptop-friendly); others inactive
+UPDATE engines SET is_active = false WHERE id IN ('duckdb-small', 'duckdb-medium', 'duckdb-large', 'duckdb-xlarge') AND is_active = true;
 
 -- Seed default Databricks engines
 INSERT INTO engines (id, engine_type, display_name, config, k8s_service_name, cost_tier) VALUES

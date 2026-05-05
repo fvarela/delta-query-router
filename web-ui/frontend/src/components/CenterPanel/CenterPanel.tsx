@@ -8,8 +8,11 @@ import type { RoutingDecisionData } from "@/lib/routingEventParser";
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { StatusBadge } from "@/components/shared/StatusBadge";
 import { RoutingDecisionView } from "./RoutingDecisionView";
+
 import type { QueryExecutionResult, LogEntry, RoutingLogEvent, Query } from "@/types";
 import { Play, Clock, FolderPlus } from "lucide-react";
+
+type CenterTab = "query" | "benchmarks";
 
 /* ── colour helpers ── */
 
@@ -22,6 +25,7 @@ const latencyColor = (ms: number) => {
 /* ── main component ── */
 
 export const CenterPanel: React.FC = () => {
+  const [activeTab, setActiveTab] = useState<CenterTab>("query");
   const { editorSql, setEditorSql, runMode, singleEngineId, engines, queryResult, setQueryResult, collectionContext, activeCollectionId, triggerRefreshCollections, enabledEngineIds, warehouseMappings, routingSettings, activeProfileId } = useApp();
   const [executing, setExecuting] = useState(false);
   const [queryError, setQueryError] = useState<string | null>(null);
@@ -29,6 +33,7 @@ export const CenterPanel: React.FC = () => {
   const [logFilter, setLogFilter] = useState("all");
   const [modalData, setModalData] = useState<RoutingDecisionData | null>(null);
   const [modalLoading, setModalLoading] = useState(false);
+
 
   const isModified = collectionContext && editorSql !== collectionContext.originalSql;
 
@@ -166,6 +171,37 @@ export const CenterPanel: React.FC = () => {
 
   return (
     <div className="flex flex-col h-full">
+      {/* ── Tab bar ── */}
+      <div className="flex border-b border-panel-border shrink-0">
+        <button
+          onClick={() => setActiveTab("query")}
+          className={`px-4 py-2 text-[12px] font-medium transition-colors ${activeTab === "query" ? "border-b-2 border-primary text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+        >
+          Query
+        </button>
+        <button
+          onClick={() => setActiveTab("benchmarks")}
+          className={`px-4 py-2 text-[12px] font-medium transition-colors ${activeTab === "benchmarks" ? "border-b-2 border-primary text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+        >
+          Benchmarks
+        </button>
+      </div>
+
+      {/* ── Benchmarks tab ── */}
+      {activeTab === "benchmarks" && (
+        <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h3 className="text-[13px] font-semibold text-foreground">Benchmarks</h3>
+              <p className="text-[11px] text-muted-foreground">Run and compare engine performance</p>
+            </div>
+          </div>
+          <p className="text-[12px] text-muted-foreground">Benchmark functionality coming soon.</p>
+        </div>
+      )}
+
+      {/* ── Query tab ── */}
+      {activeTab === "query" && <>
       {/* ── Query Editor (fixed) ── */}
       <div className="shrink-0 border-b border-panel-border">
         <textarea
@@ -308,6 +344,8 @@ export const CenterPanel: React.FC = () => {
           </div>
         </div>
       )}
+      </>}
+
     </div>
   );
 };

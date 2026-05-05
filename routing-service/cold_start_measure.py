@@ -45,13 +45,89 @@ def _get_dummy_table() -> str:
 
 
 def _measure_duckdb(engine: dict, table_name: str, databricks_host: str, databricks_token: str) -> float:
-    """Return 0ms for DuckDB engines — they are always-on with no cold start.
+    """Measure cold start for a DuckDB engine.
 
-    Credential vending latency is per-request (not one-time startup) and is
-    already captured in ML model predictions from benchmark data.
+    For always-on engines: returns 0ms (no startup cost).
+    For on-demand engines: scales to 0, then scales to 1, polls health,
+    sends a dummy query, and measures wall-clock time from scale-up to
+    first successful query response.
     """
-    logger.info("DuckDB %s cold start: 0ms (always-on, no startup cost)", engine["id"])
-    return 0.0
+    lifecycle = engine.get("lifecycle_mode", "always-on")
+    if lifecycle == "always-on":
+        logger.info("DuckDB %s cold start: 0ms (always-on)", engine["id"])
+        return 0.0
+
+    # On-demand: scale down first, then measure scale-up time
+    svc_name = engine.get("k8s_service_name")
+    if not svc_name:
+        logger.warning("DuckDB %s has no k8s_service_name, returning 0ms", engine["id"])
+        return 0.0
+
+    import httpx
+
+    # Scale to 0
+    try:
+        engines_api._scale_deployment(svc_name, 0)
+    except Exception as e:
+        logger.warning("Failed to scale down %s for measurement: %s", engine["id"], e)
+        return 0.0
+
+    # Wait for pod to terminate (poll health until it fails)
+    url = engines_api.engine_url(engine) + "/health"
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        time.sleep(2)
+        try:
+            with httpx.Client(timeout=2.0) as c:
+                r = c.get(url)
+                if r.status_code != 200:
+                    break
+        except Exception:
+            break
+
+    # Now measure: scale to 1 and time until first successful query
+    t0 = time.perf_counter()
+    try:
+        engines_api._scale_deployment(svc_name, 1)
+    except Exception as e:
+        raise RuntimeError(f"Failed to scale up {engine['id']}: {e}")
+
+    # Poll health until ready (max 120s)
+    deadline = time.monotonic() + 120.0
+    ready = False
+    while time.monotonic() < deadline:
+        time.sleep(1)
+        try:
+            with httpx.Client(timeout=2.0) as c:
+                r = c.get(url)
+                if r.status_code == 200:
+                    ready = True
+                    break
+        except Exception:
+            pass
+
+    if not ready:
+        raise RuntimeError(f"DuckDB {engine['id']} did not become ready within 120s")
+
+    # Send dummy query to measure full readiness (including DuckDB extensions loading)
+    query_url = engines_api.engine_url(engine) + "/query"
+    dummy_sql = f"SELECT 1 FROM {table_name} LIMIT 1"
+    payload = {"sql": dummy_sql}
+    if databricks_host and databricks_token:
+        payload["databricks_host"] = databricks_host
+        payload["databricks_token"] = databricks_token
+        payload["tables"] = [table_name]
+
+    try:
+        with httpx.Client(timeout=60.0) as c:
+            r = c.post(query_url, json=payload)
+            r.raise_for_status()
+    except Exception as e:
+        raise RuntimeError(f"DuckDB {engine['id']} dummy query failed: {e}")
+
+    cold_start_ms = (time.perf_counter() - t0) * 1000
+    logger.info("DuckDB %s cold start: %.0fms (on-demand)", engine["id"], cold_start_ms)
+    return cold_start_ms
 
 
 def _measure_databricks(engine: dict, table_name: str, workspace_client) -> float:
@@ -163,7 +239,8 @@ def measure_cold_start(engine_id: str, workspace_client=None) -> float:
     engine_type = engine.get("engine_type", "")
 
     if engine_type == "duckdb":
-        cold_start_ms = _measure_duckdb(engine, table_name, "", "")
+        host, token = _get_main_credentials()
+        cold_start_ms = _measure_duckdb(engine, table_name, host or "", token or "")
     elif engine_type in ("databricks", "databricks_sql"):
         if not workspace_client:
             workspace_client = _get_workspace_client()

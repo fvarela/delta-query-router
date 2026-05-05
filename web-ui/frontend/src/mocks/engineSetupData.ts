@@ -36,7 +36,10 @@ export const MOCK_ENGINES: EngineCatalogEntry[] = [
     cost_tier: 1,
     runtime_state: "running",
     scalable: true,
-    profile_usage_count: 2, // Used by "Production — Balanced" and "Dev — DuckDB Only"
+    lifecycle_mode: "always-on",
+    cold_start_ms: 0,
+    idle_timeout_minutes: 15,
+    profile_usage_count: 2,
   },
   {
     id: "duckdb:4gb-2cpu",
@@ -48,7 +51,10 @@ export const MOCK_ENGINES: EngineCatalogEntry[] = [
     cost_tier: 3,
     runtime_state: "running",
     scalable: true,
-    profile_usage_count: 2, // Used by "Production — Balanced" and "Full Fleet"
+    lifecycle_mode: "on-demand",
+    cold_start_ms: 4200,
+    idle_timeout_minutes: 15,
+    profile_usage_count: 2,
   },
   {
     id: "duckdb:8gb-4cpu",
@@ -60,7 +66,10 @@ export const MOCK_ENGINES: EngineCatalogEntry[] = [
     cost_tier: 5,
     runtime_state: "stopped",
     scalable: true,
-    profile_usage_count: 1, // Used by "Full Fleet"
+    lifecycle_mode: "on-demand",
+    cold_start_ms: 8500,
+    idle_timeout_minutes: 15,
+    profile_usage_count: 1,
   },
   {
     id: "databricks:serverless-2xs",
@@ -72,6 +81,8 @@ export const MOCK_ENGINES: EngineCatalogEntry[] = [
     cost_tier: 6,
     runtime_state: "running",
     scalable: false,
+    lifecycle_mode: "on-demand",
+    cold_start_ms: 8756,
     profile_usage_count: 2,
   },
   {
@@ -84,6 +95,8 @@ export const MOCK_ENGINES: EngineCatalogEntry[] = [
     cost_tier: 8,
     runtime_state: "stopped",
     scalable: false,
+    lifecycle_mode: "on-demand",
+    cold_start_ms: null,
     profile_usage_count: 1,
   },
   {
@@ -96,6 +109,8 @@ export const MOCK_ENGINES: EngineCatalogEntry[] = [
     cost_tier: 10,
     runtime_state: "stopped",
     scalable: false,
+    lifecycle_mode: "on-demand",
+    cold_start_ms: null,
     profile_usage_count: 0,
   },
 ];

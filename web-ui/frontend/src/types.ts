@@ -83,6 +83,12 @@ export interface EngineCatalogEntry {
   cost_tier: number;
   runtime_state: EngineRuntimeState;
   scalable?: boolean;
+  /** Lifecycle mode: always-on (0ms cold start) or on-demand (has cold start penalty) */
+  lifecycle_mode?: "always-on" | "on-demand";
+  /** Measured cold start time in milliseconds (null = not yet measured) */
+  cold_start_ms?: number | null;
+  /** Idle timeout in minutes (for on-demand engines) */
+  idle_timeout_minutes?: number;
   /** Number of routing profiles currently using this engine (Round 16 — DuckDB lock) */
   profile_usage_count?: number;
   created_at?: string;

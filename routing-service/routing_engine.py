@@ -46,6 +46,7 @@ class RoutingDecision:
     complexity_score: float
     rule_id: int | None = None
     ml_predictions: dict[str, float] | None = None  # {engine_id: predicted_compute_ms}
+    engine_id: str | None = None  # Specific winning engine ID (e.g., 'duckdb-small')
 
 
 @dataclass
@@ -519,6 +520,7 @@ def route_query(
                         f"(best of {len(ml_scores)} engines)",
                         complexity_score=score,
                         ml_predictions=predictions,
+                        engine_id=winner_id,
                     )
                     events.append(
                         RoutingLogEvent(

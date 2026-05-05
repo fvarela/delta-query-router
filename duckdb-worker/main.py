@@ -19,7 +19,8 @@ from pydantic import BaseModel
 
 from credential_vending import CredentialVendingError, ResolvedTable, resolve_tables
 
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("duckdb-worker")
 
 
 class QueryRequest(BaseModel):
@@ -232,6 +233,8 @@ async def query(request: QueryRequest):
     # If tables + credentials are provided, resolve them via credential vending
     resolved: dict[str, ResolvedTable] = {}
     if request.tables and request.databricks_host and request.databricks_token:
+        logger.info("Credential vending: resolving %d table(s): %s", len(request.tables), request.tables)
+        vend_start = time.perf_counter()
         try:
             # Run in a thread to avoid blocking the async event loop
             # (credential vending makes synchronous HTTP calls and reads
@@ -243,10 +246,15 @@ async def query(request: QueryRequest):
                 request.tables,
             )
         except CredentialVendingError as e:
+            vend_elapsed = (time.perf_counter() - vend_start) * 1000
+            logger.error("Credential vending failed after %.0fms: %s", vend_elapsed, e)
             raise HTTPException(
                 status_code=502,
                 detail=f"Credential vending failed: {e}",
             )
+        vend_elapsed = (time.perf_counter() - vend_start) * 1000
+        logger.info("Credential vending: resolved in %.0fms (%d files total)",
+                    vend_elapsed, sum(len(r.file_urls) for r in resolved.values()))
 
     # Rewrite SQL to replace table references with read_parquet()
     sql = request.sql

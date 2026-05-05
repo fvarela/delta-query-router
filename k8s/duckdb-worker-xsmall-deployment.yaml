@@ -1,20 +1,20 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: duckdb-worker-medium
+  name: duckdb-worker-xsmall
   labels:
-    app: duckdb-worker-medium
-    duckdb-tier: medium
+    app: duckdb-worker-xsmall
+    duckdb-tier: xsmall
 spec:
-  replicas: 0
+  replicas: 1
   selector:
     matchLabels:
-      app: duckdb-worker-medium
+      app: duckdb-worker-xsmall
   template:
     metadata:
       labels:
-        app: duckdb-worker-medium
-        duckdb-tier: medium
+        app: duckdb-worker-xsmall
+        duckdb-tier: xsmall
     spec:
       containers:
       - name: duckdb-worker
@@ -25,11 +25,11 @@ spec:
           name: http
         resources:
           requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
             cpu: 1000m
             memory: 2Gi
-          limits:
-            cpu: 4000m
-            memory: 8Gi
         readinessProbe:
           httpGet:
             path: /health

@@ -26,6 +26,8 @@ class UpdateEngine(BaseModel):
     config: dict | None = None
     cost_tier: int | None = None
     is_active: bool | None = None
+    lifecycle_mode: str | None = None
+    idle_timeout_minutes: int | None = None
 
 
 class ScaleRequest(BaseModel):
@@ -99,6 +101,13 @@ async def list_engines():
     """List all engines with live runtime status probes."""
     rows = get_all_engines()
 
+    # Fetch latest cold start measurement per engine
+    cold_starts = db.fetch_all(
+        "SELECT DISTINCT ON (engine_id) engine_id, cold_start_ms, measured_at "
+        "FROM engine_cold_starts ORDER BY engine_id, measured_at DESC"
+    )
+    cold_start_map = {r["engine_id"]: r["cold_start_ms"] for r in cold_starts}
+
     async def _build_entry(row: dict, client: httpx.AsyncClient) -> dict:
         entry = {
             "id": row["id"],
@@ -109,6 +118,8 @@ async def list_engines():
             "enabled": row["is_active"],
             "cost_tier": row["cost_tier"],
             "k8s_service_name": row.get("k8s_service_name"),
+            "lifecycle_mode": row.get("lifecycle_mode", "always-on"),
+            "idle_timeout_minutes": row.get("idle_timeout_minutes", 15),
             "created_at": row["created_at"].isoformat()
             if row.get("created_at") and hasattr(row["created_at"], "isoformat")
             else row.get("created_at"),
@@ -131,6 +142,12 @@ async def list_engines():
         else:
             entry["runtime_state"] = "unknown"
             entry["scalable"] = False
+
+        # Cold start: always-on DuckDB = 0ms, others from measurements
+        if row.get("lifecycle_mode") == "always-on" and row["engine_type"] == "duckdb":
+            entry["cold_start_ms"] = 0
+        else:
+            entry["cold_start_ms"] = cold_start_map.get(row["id"])
 
         return entry
 
@@ -171,6 +188,14 @@ async def update_engine(engine_id: str, body: UpdateEngine):
         fields["cost_tier"] = body.cost_tier
     if body.is_active is not None:
         fields["is_active"] = body.is_active
+    if body.lifecycle_mode is not None:
+        if body.lifecycle_mode not in ("always-on", "on-demand"):
+            raise HTTPException(status_code=400, detail="lifecycle_mode must be 'always-on' or 'on-demand'")
+        fields["lifecycle_mode"] = body.lifecycle_mode
+    if body.idle_timeout_minutes is not None:
+        if body.idle_timeout_minutes < 1:
+            raise HTTPException(status_code=400, detail="idle_timeout_minutes must be >= 1")
+        fields["idle_timeout_minutes"] = body.idle_timeout_minutes
 
     if not fields:
         return existing
@@ -223,6 +248,50 @@ async def scale_engine(engine_id: str, body: ScaleRequest):
 
     action = "started" if body.replicas == 1 else "stopped"
     return {"engine_id": engine_id, "deployment": deployment_name, "status": action}
+
+
+@router.post("/{engine_id}/start")
+async def start_engine(engine_id: str):
+    """Start a DuckDB engine: scale to 1 replica and wait for health."""
+    engine = db.fetch_one("SELECT * FROM engines WHERE id = %s", (engine_id,))
+    if not engine:
+        raise HTTPException(status_code=404, detail="Engine not found")
+    if engine["engine_type"] != "duckdb":
+        raise HTTPException(status_code=400, detail="Only DuckDB engines can be started")
+    if not engine.get("k8s_service_name"):
+        raise HTTPException(status_code=400, detail="Engine has no k8s_service_name")
+
+    deployment_name = engine["k8s_service_name"]
+    _scale_deployment(deployment_name, 1)
+
+    # Poll health until ready (max 60s)
+    url = engine_url(engine) + "/health"
+    async with httpx.AsyncClient(timeout=2.0) as client:
+        for _ in range(30):
+            await asyncio.sleep(2)
+            try:
+                resp = await client.get(url)
+                if resp.status_code == 200:
+                    return {"engine_id": engine_id, "status": "running"}
+            except Exception:
+                pass
+
+    return {"engine_id": engine_id, "status": "starting", "message": "Health check not yet passing after 60s"}
+
+
+@router.post("/{engine_id}/stop")
+async def stop_engine(engine_id: str):
+    """Stop a DuckDB engine: scale to 0 replicas."""
+    engine = db.fetch_one("SELECT * FROM engines WHERE id = %s", (engine_id,))
+    if not engine:
+        raise HTTPException(status_code=404, detail="Engine not found")
+    if engine["engine_type"] != "duckdb":
+        raise HTTPException(status_code=400, detail="Only DuckDB engines can be stopped")
+    if not engine.get("k8s_service_name"):
+        raise HTTPException(status_code=400, detail="Engine has no k8s_service_name")
+
+    _scale_deployment(engine["k8s_service_name"], 0)
+    return {"engine_id": engine_id, "status": "stopped"}
 
 
 @router.post("/sync-databricks")

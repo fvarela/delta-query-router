@@ -207,8 +207,17 @@ async def cleanup_ephemeral_warehouses():
         logger.warning("Orphan warehouse cleanup failed: %s", e)
 
 
+@app.on_event("startup")
+async def start_idle_timer():
+    """Start the idle timer for on-demand DuckDB engines."""
+    import idle_timer
+    idle_timer.start()
+
+
 @app.on_event("shutdown")
 async def close_database():
+    import idle_timer
+    idle_timer.stop()
     log_cleaner.stop()
     engine_state.stop_polling()
     query_logger.shutdown()
@@ -667,23 +676,32 @@ async def list_tables(
 MAX_RESULT_ROWS = 1000
 
 
-async def _execute_on_duckdb(sql: str, tables: list[str] | None = None) -> dict:
-    """Execute SQL on the first running DuckDB worker via HTTP.
+async def _execute_on_duckdb(sql: str, tables: list[str] | None = None, target_engine_id: str | None = None) -> dict:
+    """Execute SQL on a DuckDB worker via HTTP.
 
-    Probes all active DuckDB engines (from DB, ordered by cost_tier) and uses
+    If target_engine_id is specified, routes to that specific engine.
+    Otherwise probes all active DuckDB engines (ordered by cost_tier) and uses
     the first that responds to a health check.  If tables are provided and
     Databricks credentials are available, passes them to the worker for
     credential vending.
     """
-    # Find the first running DuckDB worker
+    # Find the target DuckDB worker
     worker_url: str | None = None
+    selected_engine_id: str | None = None
     async with httpx.AsyncClient(timeout=3.0) as probe_client:
-        for eng in engines_api.get_duckdb_engines():
+        engines = engines_api.get_duckdb_engines()
+        if target_engine_id:
+            # Target a specific engine
+            engines = [e for e in engines if e["id"] == target_engine_id] + [
+                e for e in engines if e["id"] != target_engine_id
+            ]
+        for eng in engines:
             url = engines_api.engine_url(eng)
             try:
                 resp = await probe_client.get(f"{url}/health")
                 resp.raise_for_status()
                 worker_url = url
+                selected_engine_id = eng["id"]
                 break
             except Exception:
                 continue
@@ -702,30 +720,39 @@ async def _execute_on_duckdb(sql: str, tables: list[str] | None = None) -> dict:
         payload["databricks_host"] = _databricks_host
         payload["databricks_token"] = _databricks_token
 
+    import time as _time
+    _t0 = _time.perf_counter()
+    logger.info("DuckDB query: sending to %s (tables=%s)", worker_url, tables)
     async with httpx.AsyncClient(timeout=120.0) as client:
         resp = await client.post(f"{worker_url}/query", json=payload)
-        if resp.status_code != 200:
+    _elapsed = (_time.perf_counter() - _t0) * 1000
+    logger.info("DuckDB query: worker responded in %.0fms (status=%d)", _elapsed, resp.status_code)
+    if resp.status_code != 200:
+        detail = (
+            resp.json().get("detail", resp.text)
+            if resp.headers.get("content-type", "").startswith("application/json")
+            else resp.text
+        )
+        # Enhance cryptic DuckDB errors with actionable guidance
+        if "does not exist" in detail and "Catalog" in detail:
             detail = (
-                resp.json().get("detail", resp.text)
-                if resp.headers.get("content-type", "").startswith("application/json")
-                else resp.text
+                f"{detail} — Credential vending may have failed to load "
+                "the table. Check DuckDB worker logs for details."
             )
-            # Enhance cryptic DuckDB errors with actionable guidance
-            if "does not exist" in detail and "Catalog" in detail:
-                detail = (
-                    f"{detail} — Credential vending may have failed to load "
-                    "the table. Check DuckDB worker logs for details."
-                )
-            raise HTTPException(
-                status_code=502, detail=f"DuckDB worker error: {detail}"
-            )
-        data = resp.json()
-        return {
-            "columns": data["columns"],
-            "rows": data["rows"][:MAX_RESULT_ROWS],
-            "row_count": data["row_count"],
-            "execution_time_ms": data["execution_time_ms"],
-        }
+        raise HTTPException(
+            status_code=502, detail=f"DuckDB worker error: {detail}"
+        )
+    data = resp.json()
+    # Record query for idle timer
+    if selected_engine_id:
+        import idle_timer
+        idle_timer.record_query(selected_engine_id)
+    return {
+        "columns": data["columns"],
+        "rows": data["rows"][:MAX_RESULT_ROWS],
+        "row_count": data["row_count"],
+        "execution_time_ms": data["execution_time_ms"],
+    }
 
 
 def _execute_on_databricks(
@@ -930,7 +957,23 @@ async def execute_query(
     result = None
     try:
         if decision.engine == "duckdb":
-            result = await _execute_on_duckdb(body.sql, analysis.tables)
+            # If ML selected a specific on-demand engine that's stopped, scale it up first
+            if decision.engine_id:
+                target_state = engine_state.get_engine_state(decision.engine_id)
+                if target_state == "stopped":
+                    logger.info(
+                        "On-demand engine %s is stopped — scaling up for query",
+                        decision.engine_id,
+                    )
+                    scale_start = time.monotonic()
+                    await engines_api.start_engine(decision.engine_id)
+                    scale_ms = round((time.monotonic() - scale_start) * 1000)
+                    logger.info(
+                        "DuckDB engine %s: scaled up in %dms",
+                        decision.engine_id,
+                        scale_ms,
+                    )
+            result = await _execute_on_duckdb(body.sql, analysis.tables, target_engine_id=decision.engine_id)
         else:
             if not user.is_admin:
                 result = _execute_on_databricks(
