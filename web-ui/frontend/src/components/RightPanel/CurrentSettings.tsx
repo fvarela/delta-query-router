@@ -42,7 +42,7 @@ export const CurrentSettings: React.FC = () => {
   const priority = priorityLabel(routingSettings.cost_weight);
 
   if (routingMode === "single") {
-    const selectedEngine = engines.find(e => e.id === singleEngineId);
+    const selectedEngine = engines.find(e => e.enabled && e.id === singleEngineId);
 
     return (
       <div className="bg-[hsl(217,91%,97%)] border-b-2 border-[hsl(217,91%,85%)]">
@@ -89,7 +89,7 @@ export const CurrentSettings: React.FC = () => {
 
   // Benchmark mode
   if (routingMode === "benchmark") {
-    const selectedEngines = engines.filter(e => benchmarkEngineIds.has(e.id));
+    const selectedEngines = engines.filter(e => e.enabled && benchmarkEngineIds.has(e.id));
     const selectedCount = selectedEngines.length;
 
     return (
@@ -146,7 +146,7 @@ export const CurrentSettings: React.FC = () => {
 
   // Smart Routing mode
   const modelEngines = activeModel
-    ? engines.filter(e => activeModel.linked_engines.includes(e.id) && enabledEngineIds.has(e.id))
+    ? engines.filter(e => e.enabled && activeModel.linked_engines.includes(e.id) && enabledEngineIds.has(e.id))
     : [];
 
   // Filter out unavailable Databricks engines for display (when no workspace connected)

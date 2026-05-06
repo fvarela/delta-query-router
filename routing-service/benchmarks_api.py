@@ -23,6 +23,7 @@ from pydantic import BaseModel
 import db
 import engines_api
 import ephemeral_warehouses
+import idle_timer
 import query_analyzer
 import query_features
 
@@ -459,6 +460,7 @@ def _run_benchmark_inner(
                 )
 
                 if eng["engine_type"] == "duckdb":
+                    idle_timer.record_query(eid)
                     # Extract a table from the first query for a real warmup
                     warmup_tables = None
                     if queries:
@@ -546,6 +548,7 @@ def _run_benchmark_inner(
 
                 try:
                     if eng["engine_type"] == "duckdb":
+                        idle_timer.record_query(eid)
                         # Extract table names so DuckDB worker can resolve via credential vending
                         analysis = query_analyzer.analyze_query(query["query_text"])
                         tables = (

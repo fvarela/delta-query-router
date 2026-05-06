@@ -27,7 +27,7 @@ export const EnginesTable: React.FC = () => {
 
   // Engines linked to the active model (for smart routing checkboxes)
   const modelEngines = activeModel
-    ? engines.filter(e => activeModel.linked_engines.includes(e.id))
+    ? engines.filter(e => e.enabled && activeModel.linked_engines.includes(e.id))
     : [];
 
   // When switching to smart routing with a model, initialize enabledEngineIds to the model's engines
@@ -102,6 +102,7 @@ export const EnginesTable: React.FC = () => {
           databricksEngines={databricksEngines}
           benchmarkEngineIds={benchmarkEngineIds}
           toggleBenchmarkEngine={toggleBenchmarkEngine}
+          warehouseMappings={warehouseMappings}
         />
       )}
     </div>
@@ -517,7 +518,8 @@ const BenchmarkingView: React.FC<{
   databricksEngines: EngineCatalogEntry[];
   benchmarkEngineIds: Set<string>;
   toggleBenchmarkEngine: (id: string) => void;
-}> = ({ duckdbEngines, databricksEngines, benchmarkEngineIds, toggleBenchmarkEngine }) => {
+  warehouseMappings: WarehouseMapping[];
+}> = ({ duckdbEngines, databricksEngines, benchmarkEngineIds, toggleBenchmarkEngine, warehouseMappings }) => {
   const allEngines = [...duckdbEngines, ...databricksEngines];
   const selectedCount = benchmarkEngineIds.size;
 
@@ -597,17 +599,22 @@ const BenchmarkingView: React.FC<{
           <div className="space-y-0.5">
             {databricksEngines.map(e => {
               const isChecked = benchmarkEngineIds.has(e.id);
+              const warehouseName = getWarehouseName(e.id, warehouseMappings);
+              const isMapped = warehouseName != null;
               return (
                 <label
                   key={e.id}
-                  className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors hover:bg-muted/50 ${
-                    isChecked ? "bg-amber-50" : ""
+                  className={`flex items-center gap-2 px-2 py-1.5 rounded transition-colors ${
+                    !isMapped ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-muted/50"
+                  } ${
+                    isChecked && isMapped ? "bg-amber-50" : ""
                   }`}
                 >
                   <input
                     type="checkbox"
-                    checked={isChecked}
-                    onChange={() => toggleBenchmarkEngine(e.id)}
+                    checked={isChecked && isMapped}
+                    onChange={() => isMapped && toggleBenchmarkEngine(e.id)}
+                    disabled={!isMapped}
                     className="accent-amber-600"
                   />
                       <span className="flex flex-col">
@@ -616,6 +623,9 @@ const BenchmarkingView: React.FC<{
                             e.runtime_state === "running" ? "bg-status-success" : "bg-muted-foreground/40"
                           }`} />
                           <span className="font-medium text-foreground">{e.display_name}</span>
+                          <span className="text-[10px] text-muted-foreground font-normal">
+                            {isMapped ? `(${warehouseName})` : "(no mapping)"}
+                          </span>
 
                         </span>
                         <span className="pl-[17px]"><EngineInfoBadges engine={e} showMeasure /></span>
