@@ -23,11 +23,15 @@ export const RightPanel: React.FC = () => {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      {/* Current Settings — always visible, read-only */}
-      <CurrentSettings />
+      {/* Current Settings — always visible, read-only, fixed height to prevent layout shift */}
+      <div className="min-h-[108px]">
+        <CurrentSettings />
+      </div>
 
-      {/* Profile Selector — above tabs, applies to both Routing and Engines */}
-      {!isBenchmark && <ProfileSelector />}
+      {/* Profile Selector — grayed out in benchmark mode */}
+      <div className={isBenchmark ? "pointer-events-none opacity-40" : ""}>
+        <ProfileSelector />
+      </div>
 
       {/* Tab bar */}
       <div className="flex border-b border-panel-border shrink-0">

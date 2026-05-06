@@ -246,7 +246,7 @@ CREATE TABLE IF NOT EXISTS tpcds_catalogs (
 -- Named routing configurations with full CRUD
 CREATE TABLE IF NOT EXISTS routing_profiles (
     id              SERIAL PRIMARY KEY,
-    name            TEXT NOT NULL,
+    name            TEXT NOT NULL UNIQUE,
     is_default      BOOLEAN NOT NULL DEFAULT FALSE,
     config          JSONB NOT NULL DEFAULT '{}',
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -316,5 +316,5 @@ CREATE INDEX IF NOT EXISTS idx_collection_queries_collection_id ON collection_qu
 CREATE INDEX IF NOT EXISTS idx_benchmark_definitions_collection ON benchmark_definitions(collection_id);
 CREATE INDEX IF NOT EXISTS idx_benchmark_runs_definition ON benchmark_runs(definition_id);
 CREATE INDEX IF NOT EXISTS idx_benchmark_results_run_id ON benchmark_results(run_id);
-CREATE INDEX IF NOT EXISTS idx_routing_profiles_default ON routing_profiles(is_default) WHERE is_default = true;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_routing_profiles_default ON routing_profiles(is_default) WHERE is_default = true;
 CREATE INDEX IF NOT EXISTS idx_query_features_query_id ON query_features(query_id);

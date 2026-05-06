@@ -106,6 +106,12 @@ async def list_profiles():
 @router.post("", status_code=201)
 async def create_profile(body: ProfileCreate):
     """Create a new routing profile."""
+    # Check name uniqueness (friendlier error than DB constraint)
+    existing = db.fetch_one(
+        "SELECT id FROM routing_profiles WHERE name = %s", (body.name,)
+    )
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Profile name '{body.name}' already exists")
     config_json = json.dumps(body.config.model_dump())
     row = db.fetch_one(
         "INSERT INTO routing_profiles (name, config) VALUES (%s, %s) RETURNING *",
@@ -134,6 +140,13 @@ async def update_profile(profile_id: int, body: ProfileUpdate):
 
     fields: dict = {}
     if body.name is not None:
+        # Check name uniqueness (exclude current profile)
+        dup = db.fetch_one(
+            "SELECT id FROM routing_profiles WHERE name = %s AND id != %s",
+            (body.name, profile_id),
+        )
+        if dup:
+            raise HTTPException(status_code=409, detail=f"Profile name '{body.name}' already exists")
         fields["name"] = body.name
     if body.config is not None:
         fields["config"] = json.dumps(body.config.model_dump())

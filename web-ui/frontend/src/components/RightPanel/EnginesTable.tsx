@@ -1,8 +1,10 @@
 import React, { useState, useRef, useEffect } from "react";
 import { useApp } from "@/contexts/AppContext";
-import { Brain, ChevronDown, Cloud, HardDrive, CheckCircle2, FlaskConical, Settings2 } from "lucide-react";
-import type { EngineCatalogEntry, Model } from "@/types";
+import { Brain, ChevronDown, Cloud, HardDrive, CheckCircle2, FlaskConical, Settings2, Timer, Zap, RefreshCw } from "lucide-react";
+import type { EngineCatalogEntry, Model, WarehouseMapping } from "@/types";
 import { ModelsDialog } from "./ModelsDialog";
+import { api } from "@/lib/api";
+import { isMockMode } from "@/lib/mockMode";
 
 export const EnginesTable: React.FC = () => {
   const {
@@ -12,12 +14,13 @@ export const EnginesTable: React.FC = () => {
     activeModelId, setActiveModelId, models,
     enabledEngineIds, toggleEngineEnabled, setAllEnginesEnabled,
     benchmarkEngineIds, toggleBenchmarkEngine,
+    warehouseMappings,
   } = useApp();
 
   // All engines grouped by type for single-engine mode
-  // DuckDB: only show running engines. Databricks: show all (workspace status shown inline).
-  const duckdbEngines = engines.filter(e => e.engine_type === "duckdb" && e.runtime_state === "running");
-  const databricksEngines = engines.filter(e => e.engine_type === "databricks_sql");
+  // Only show enabled engines.
+  const duckdbEngines = engines.filter(e => e.engine_type === "duckdb" && e.enabled);
+  const databricksEngines = engines.filter(e => e.engine_type === "databricks_sql" && e.enabled);
 
   // Active model for smart routing mode
   const activeModel = models.find(m => m.id === activeModelId);
@@ -81,6 +84,7 @@ export const EnginesTable: React.FC = () => {
           databricksEngines={databricksEngines}
           singleEngineId={singleEngineId}
           onSelect={setSingleEngineId}
+          warehouseMappings={warehouseMappings}
         />
       ) : routingMode === "smart" ? (
         <SmartRoutingView
@@ -90,6 +94,7 @@ export const EnginesTable: React.FC = () => {
           modelEngines={modelEngines}
           enabledEngineIds={enabledEngineIds}
           toggleEngineEnabled={toggleEngineEnabled}
+          warehouseMappings={warehouseMappings}
         />
       ) : (
         <BenchmarkingView
@@ -103,23 +108,78 @@ export const EnginesTable: React.FC = () => {
   );
 };
 
+/** Get mapped warehouse display name for an engine */
+const getWarehouseName = (engineId: string, mappings: WarehouseMapping[]): string | null => {
+  const m = mappings.find(w => w.engineId === engineId);
+  return m?.warehouseName ?? null;
+};
+
 // ---- Single Engine View ----
 const formatColdStart = (e: EngineCatalogEntry): string => {
   if (e.lifecycle_mode === "always-on") return "0ms";
-  if (e.cold_start_ms == null) return "not measured";
+  if (e.cold_start_ms == null) return "—";
   return `${(e.cold_start_ms / 1000).toFixed(1)}s`;
 };
 
-const EngineMetaLine: React.FC<{ engine: EngineCatalogEntry }> = ({ engine }) => {
-  const isDuckDB = engine.engine_type === "duckdb";
+/** Compact badges showing lifecycle mode + cold start time with optional re-measure */
+const EngineInfoBadges: React.FC<{ engine: EngineCatalogEntry; showMeasure?: boolean }> = ({ engine, showMeasure = false }) => {
+  const [measuring, setMeasuring] = useState(false);
+  const [measured, setMeasured] = useState(false);
+  const { reloadEngines } = useApp();
+  const isAlwaysOn = engine.lifecycle_mode === "always-on";
+
+  const handleMeasure = async (ev: React.MouseEvent) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (isMockMode() || measuring) return;
+    setMeasuring(true);
+    try {
+      await api.post(`/api/engines/${engine.id}/measure-cold-start`);
+      // Poll until measurement completes
+      for (let i = 0; i < 60; i++) {
+        await new Promise(r => setTimeout(r, 3000));
+        const data = await api.get<{ cold_start_ms: number | null; measuring?: boolean }>(`/api/engines/${engine.id}/cold-start`);
+        if (data?.measuring === false && data?.cold_start_ms != null) break;
+      }
+      await reloadEngines();
+      setMeasured(true);
+      setTimeout(() => setMeasured(false), 3000);
+    } catch { /* ignore */ }
+    setMeasuring(false);
+  };
+
   return (
-    <span className="text-[10px] text-muted-foreground flex items-center gap-1.5">
-      {isDuckDB && (
-        <span className={engine.lifecycle_mode === "always-on" ? "text-emerald-600" : "text-amber-600"}>
-          {engine.lifecycle_mode === "always-on" ? "always-on" : "on-demand"}
-        </span>
+    <span className="flex items-center gap-1.5 flex-wrap">
+      {/* Lifecycle badge */}
+      <span className={`inline-flex items-center gap-0.5 text-[9px] font-semibold uppercase tracking-wide ${
+        isAlwaysOn ? "text-emerald-600" : "text-amber-600"
+      }`}>
+        {isAlwaysOn ? <Zap size={8} /> : <Timer size={8} />}
+        {isAlwaysOn ? "always-on" : "on-demand"}
+      </span>
+      {/* Cold start pill */}
+      <span className={`inline-flex items-center gap-0.5 px-1.5 py-[1px] rounded text-[9px] font-medium ${
+        engine.cold_start_ms == null && !isAlwaysOn
+          ? "bg-slate-100 text-slate-400 border border-slate-200"
+          : "bg-slate-100 text-slate-600 border border-slate-200"
+      }`}>
+        <Timer size={8} className="opacity-60" />
+        {formatColdStart(engine)}
+      </span>
+      {/* Re-measure link */}
+      {showMeasure && !isAlwaysOn && (
+        <button
+          onClick={handleMeasure}
+          disabled={measuring || measured}
+          className={`inline-flex items-center gap-0.5 text-[9px] transition-colors disabled:opacity-40 ${
+            measured ? "text-emerald-600" : "text-primary/70 hover:text-primary"
+          }`}
+          title="Re-measure cold start"
+        >
+          <RefreshCw size={8} className={measuring ? "animate-spin" : ""} />
+          {measuring ? "measuring…" : measured ? "done" : "measure"}
+        </button>
       )}
-      <span>cold start: {formatColdStart(engine)}</span>
     </span>
   );
 };
@@ -129,7 +189,8 @@ const SingleEngineView: React.FC<{
   databricksEngines: EngineCatalogEntry[];
   singleEngineId: string | null;
   onSelect: (id: string | null) => void;
-}> = ({ duckdbEngines, databricksEngines, singleEngineId, onSelect }) => {
+  warehouseMappings: WarehouseMapping[];
+}> = ({ duckdbEngines, databricksEngines, singleEngineId, onSelect, warehouseMappings }) => {
   if (duckdbEngines.length === 0 && databricksEngines.length === 0) {
     return (
       <div className="px-3 py-4 text-[12px] text-muted-foreground">
@@ -167,7 +228,7 @@ const SingleEngineView: React.FC<{
                     <span className="inline-block w-[6px] h-[6px] rounded-full shrink-0 bg-status-success" />
                     <span className="font-medium text-foreground">{e.display_name}</span>
                   </span>
-                  <span className="pl-[18px]"><EngineMetaLine engine={e} /></span>
+                  <span className="pl-[18px]"><EngineInfoBadges engine={e} showMeasure /></span>
                 </span>
               </label>
             ))}
@@ -183,18 +244,22 @@ const SingleEngineView: React.FC<{
             <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Databricks SQL</span>
           </div>
           <div className="space-y-0.5">
-            {databricksEngines.map(e => (
+            {databricksEngines.map(e => {
+              const warehouseName = getWarehouseName(e.id, warehouseMappings);
+              const isMapped = warehouseName != null;
+              return (
               <label
                 key={e.id}
-                className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors ${
-                  singleEngineId === e.id ? "bg-primary/10" : "hover:bg-muted/50"
+                className={`flex items-center gap-2 px-2 py-1.5 rounded transition-colors ${
+                  !isMapped ? "opacity-50 cursor-not-allowed" : singleEngineId === e.id ? "bg-primary/10 cursor-pointer" : "hover:bg-muted/50 cursor-pointer"
                 }`}
               >
                 <input
                   type="radio"
                   name="single-engine"
                   checked={singleEngineId === e.id}
-                  onChange={() => onSelect(e.id)}
+                  onChange={() => isMapped && onSelect(e.id)}
+                  disabled={!isMapped}
                   className="accent-primary"
                 />
                 <span className="flex flex-col">
@@ -203,11 +268,15 @@ const SingleEngineView: React.FC<{
                       e.runtime_state === "running" ? "bg-status-success" : "bg-muted-foreground/40"
                     }`} />
                     <span className="font-medium text-foreground">{e.display_name}</span>
+                    <span className="text-[10px] text-muted-foreground font-normal">
+                      {isMapped ? `(${warehouseName})` : "(no mapping)"}
+                    </span>
                   </span>
-                  <span className="pl-[18px]"><EngineMetaLine engine={e} /></span>
+                  <span className="pl-[18px]"><EngineInfoBadges engine={e} showMeasure /></span>
                 </span>
               </label>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -227,7 +296,8 @@ const SmartRoutingView: React.FC<{
   modelEngines: EngineCatalogEntry[];
   enabledEngineIds: Set<string>;
   toggleEngineEnabled: (id: string) => void;
-}> = ({ models, activeModelId, onModelChange, modelEngines, enabledEngineIds, toggleEngineEnabled }) => {
+  warehouseMappings: WarehouseMapping[];
+}> = ({ models, activeModelId, onModelChange, modelEngines, enabledEngineIds, toggleEngineEnabled, warehouseMappings }) => {
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
   const [modelsDialogOpen, setModelsDialogOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -362,7 +432,7 @@ const SmartRoutingView: React.FC<{
                           }`} />
                           <span className="font-medium text-foreground">{e.display_name}</span>
                         </span>
-                        <span className="pl-[17px]"><EngineMetaLine engine={e} /></span>
+                        <span className="pl-[17px]"><EngineInfoBadges engine={e} showMeasure /></span>
                       </span>
                     </label>
                   );
@@ -384,17 +454,20 @@ const SmartRoutingView: React.FC<{
               <div className="space-y-0.5">
                 {databricksModelEngines.map(e => {
                   const isEnabled = enabledEngineIds.has(e.id);
+                  const warehouseName = getWarehouseName(e.id, warehouseMappings);
+                  const isMapped = warehouseName != null;
                   return (
                     <label
                       key={e.id}
-                      className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors hover:bg-muted/50 ${
-                        isEnabled ? "bg-primary/5" : ""
-                      }`}
+                      className={`flex items-center gap-2 px-2 py-1.5 rounded transition-colors ${
+                        !isMapped ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:bg-muted/50"
+                      } ${isEnabled && isMapped ? "bg-primary/5" : ""}`}
                     >
                       <input
                         type="checkbox"
                         checked={isEnabled}
-                        onChange={() => toggleEngineEnabled(e.id)}
+                        onChange={() => isMapped && toggleEngineEnabled(e.id)}
+                        disabled={!isMapped}
                         className="accent-primary"
                       />
                       <span className="flex flex-col">
@@ -403,8 +476,11 @@ const SmartRoutingView: React.FC<{
                             e.runtime_state === "running" ? "bg-status-success" : "bg-muted-foreground/40"
                           }`} />
                           <span className="font-medium text-foreground">{e.display_name}</span>
+                          <span className="text-[10px] text-muted-foreground font-normal">
+                            {isMapped ? `(${warehouseName})` : "(no mapping)"}
+                          </span>
                         </span>
-                        <span className="pl-[17px]"><EngineMetaLine engine={e} /></span>
+                        <span className="pl-[17px]"><EngineInfoBadges engine={e} showMeasure /></span>
                       </span>
                     </label>
                   );
@@ -499,7 +575,7 @@ const BenchmarkingView: React.FC<{
                       <span className="inline-block w-[5px] h-[5px] rounded-full shrink-0 bg-status-success" />
                       <span className="font-medium text-foreground">{e.display_name}</span>
                     </span>
-                    <span className="pl-[17px]"><EngineMetaLine engine={e} /></span>
+                    <span className="pl-[17px]"><EngineInfoBadges engine={e} showMeasure /></span>
                   </span>
                 </label>
               );
@@ -534,21 +610,22 @@ const BenchmarkingView: React.FC<{
                     onChange={() => toggleBenchmarkEngine(e.id)}
                     className="accent-amber-600"
                   />
-                  <span className="flex flex-col">
-                    <span className="flex items-center gap-1.5 text-[12px]">
-                      <span className={`inline-block w-[5px] h-[5px] rounded-full shrink-0 ${
-                        e.runtime_state === "running" ? "bg-status-success" : "bg-muted-foreground/40"
-                      }`} />
-                      <span className="font-medium text-foreground">{e.display_name}</span>
-                    </span>
-                    <span className="pl-[17px]"><EngineMetaLine engine={e} /></span>
-                  </span>
-                </label>
-              );
-            })}
-          </div>
-        </div>
-      )}
+                      <span className="flex flex-col">
+                        <span className="flex items-center gap-1.5 text-[12px]">
+                          <span className={`inline-block w-[5px] h-[5px] rounded-full shrink-0 ${
+                            e.runtime_state === "running" ? "bg-status-success" : "bg-muted-foreground/40"
+                          }`} />
+                          <span className="font-medium text-foreground">{e.display_name}</span>
+
+                        </span>
+                        <span className="pl-[17px]"><EngineInfoBadges engine={e} showMeasure /></span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
       <p className="text-[11px] text-muted-foreground">
         Select engines to include in the benchmark run. Each engine will be tested sequentially.

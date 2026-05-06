@@ -395,11 +395,17 @@ async def get_cold_start(engine_id: str):
         """,
         (engine_id,),
     )
-    if not row:
-        raise HTTPException(status_code=404, detail="No cold start measurement found")
 
     with _measuring_lock:
         measuring = engine_id in _measuring
+
+    if not row:
+        return {
+            "engine_id": engine_id,
+            "cold_start_ms": None,
+            "measured_at": None,
+            "measuring": measuring,
+        }
 
     return {
         "engine_id": engine_id,

@@ -53,11 +53,11 @@ export const EnginesManagement: React.FC = () => {
         await new Promise(r => setTimeout(r, 2000));
       } else {
         await api.post(`/api/engines/${id}/measure-cold-start`, {});
-        // Poll for completion (measurement is async on backend)
+        // Poll until measurement completes (measuring: false with a result)
         for (let i = 0; i < 60; i++) {
           await new Promise(r => setTimeout(r, 3000));
-          const data = await api.get<{ cold_start_ms: number | null }>(`/api/engines/${id}/cold-start`);
-          if (data?.cold_start_ms != null) break;
+          const data = await api.get<{ cold_start_ms: number | null; measuring?: boolean }>(`/api/engines/${id}/cold-start`);
+          if (data?.measuring === false && data?.cold_start_ms != null) break;
         }
       }
       await reloadEngines();

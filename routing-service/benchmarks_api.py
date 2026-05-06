@@ -494,9 +494,12 @@ def _run_benchmark_inner(
                     (run_id, eid, cold_start_ms),
                 )
                 # Dual-write to engine_cold_starts for routing.
-                # DuckDB is always-on (0ms cold start) — the warmup time is credential
-                # vending overhead, not engine startup, and is already in ML predictions.
-                routing_cold_start = 0.0 if eng["engine_type"] == "duckdb" else cold_start_ms
+                # Always-on DuckDB engines have 0ms cold start (always running).
+                # On-demand DuckDB engines use the measured warmup time.
+                if eng.get("lifecycle_mode") == "always-on":
+                    routing_cold_start = 0.0
+                else:
+                    routing_cold_start = cold_start_ms
                 db.execute(
                     "INSERT INTO engine_cold_starts (engine_id, cold_start_ms) VALUES (%s, %s)",
                     (eid, routing_cold_start),
