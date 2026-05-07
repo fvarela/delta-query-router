@@ -143,6 +143,28 @@ export const RoutingDecisionView: React.FC<{
         <p className="text-[11px] text-muted-foreground font-mono mt-1 truncate max-w-[600px]">
           {data.query.sql}
         </p>
+        {/* Timing breakdown */}
+        <div className="mt-2 flex items-center gap-4 text-[11px]">
+          {data.coldStartMs != null && data.coldStartMs > 0 ? (
+            <>
+              <span className="text-amber-400">
+                <Clock size={10} className="inline mr-1" />
+                Cold Start: {formatMs(data.coldStartMs)}
+              </span>
+              <span className="text-foreground">
+                Execution: {formatMs(data.executionTimeMs)}
+              </span>
+              <span className="text-muted-foreground font-medium">
+                Total: {formatMs(data.totalLatencyMs ?? (data.coldStartMs + data.executionTimeMs))}
+              </span>
+            </>
+          ) : (
+            <span className="text-foreground">
+              <Clock size={10} className="inline mr-1" />
+              Execution: {formatMs(data.executionTimeMs)}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* ── Scrollable content ── */}

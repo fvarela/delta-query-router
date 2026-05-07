@@ -759,10 +759,14 @@ def _execute_on_databricks(
     sql: str,
     workspace_client: WorkspaceClient | None = None,
     warehouse_id: str | None = None,
+    wait_for_running: bool = False,
 ) -> dict:
     """Execute SQL on Databricks via the SDK (synchronous).
     Uses the provided workspace_client/warehouse_id if given,
     otherwise falls back to the system identity.
+
+    When wait_for_running=True, polls the warehouse until RUNNING before
+    executing the statement.  Returns cold_start_ms in the result dict.
     """
     wc = workspace_client or _workspace_client
     wh_id = warehouse_id or _warehouse_id
@@ -772,6 +776,44 @@ def _execute_on_databricks(
         raise HTTPException(status_code=400, detail="No SQL warehouse selected")
     from databricks.sdk.service.sql import StatementState
 
+    cold_start_ms: float | None = None
+
+    # ── Cold start phase: poll until warehouse is RUNNING ──
+    if wait_for_running:
+        poll_start = time.monotonic()
+        max_wait_seconds = 300  # 5-minute ceiling
+        poll_interval = 3.0
+        while True:
+            try:
+                wh = wc.warehouses.get(wh_id)
+                wh_state = wh.state.value.upper() if wh.state else "UNKNOWN"
+            except Exception:
+                wh_state = "UNKNOWN"
+
+            if wh_state == "RUNNING":
+                break
+
+            elapsed = time.monotonic() - poll_start
+            if elapsed >= max_wait_seconds:
+                raise HTTPException(
+                    status_code=504,
+                    detail=f"Warehouse {wh_id} did not reach RUNNING within {max_wait_seconds}s (last state: {wh_state})",
+                )
+
+            logger.info(
+                "Warehouse %s state=%s, waiting %.0fs (%.0f/%.0fs)…",
+                wh_id, wh_state, poll_interval, elapsed, max_wait_seconds,
+            )
+            time.sleep(poll_interval)
+
+        cold_start_ms = round((time.monotonic() - poll_start) * 1000, 2)
+        logger.info("Warehouse %s: cold start completed in %.2fms", wh_id, cold_start_ms)
+        # Update in-memory engine state immediately
+        engine_id = _resolve_databricks_engine_id(wh_id)
+        if engine_id:
+            engine_state.force_state(engine_id, "running")
+
+    # ── Execution phase ──
     try:
         response = wc.statement_execution.execute_statement(
             statement=sql,
@@ -816,7 +858,52 @@ def _execute_on_databricks(
         "rows": rows,
         "row_count": row_count,
         "execution_time_ms": None,  # SDK doesn't report this; caller uses wall-clock
+        "cold_start_ms": cold_start_ms,
     }
+
+
+def _record_cold_start_measurement(engine_id: str | None, cold_start_ms: float) -> None:
+    """Persist a cold-start observation without failing the query path."""
+    if not engine_id or cold_start_ms < 0:
+        return
+    try:
+        db.execute(
+            "INSERT INTO engine_cold_starts (engine_id, cold_start_ms) VALUES (%s, %s)",
+            (engine_id, cold_start_ms),
+        )
+    except Exception:
+        logger.warning(
+            "Failed to record cold start measurement for engine %s",
+            engine_id,
+            exc_info=True,
+        )
+
+
+def _resolve_databricks_engine_id(warehouse_id: str | None) -> str | None:
+    """Find the Databricks engine row associated with a warehouse ID."""
+    if not warehouse_id:
+        return None
+
+    try:
+        for engine in engines_api.get_all_engines():
+            if engine.get("engine_type") != "databricks_sql":
+                continue
+            config = engine.get("config") or {}
+            if config.get("warehouse_id") == warehouse_id:
+                return engine.get("id")
+
+        profile = db.fetch_one("SELECT config FROM routing_profiles WHERE is_default = TRUE")
+        if profile and profile.get("config"):
+            for mapping in profile["config"].get("warehouseMappings", []):
+                if mapping.get("warehouseId") == warehouse_id:
+                    return mapping.get("engineId")
+    except Exception:
+        logger.warning(
+            "Failed to resolve Databricks engine for warehouse %s",
+            warehouse_id,
+            exc_info=True,
+        )
+    return None
 
 
 @app.post("/api/query")
@@ -955,6 +1042,7 @@ async def execute_query(
     wall_start = time.monotonic()
     exec_error: Exception | None = None
     result = None
+    execution_engine_id = decision.engine_id
     try:
         if decision.engine == "duckdb":
             # If ML selected a specific on-demand engine that's stopped, scale it up first
@@ -973,19 +1061,38 @@ async def execute_query(
                         decision.engine_id,
                         scale_ms,
                     )
+                    _record_cold_start_measurement(decision.engine_id, scale_ms)
             result = await _execute_on_duckdb(body.sql, analysis.tables, target_engine_id=decision.engine_id)
         else:
+            execution_engine_id = decision.engine_id or _resolve_databricks_engine_id(_warehouse_id)
             if not user.is_admin:
                 result = _execute_on_databricks(
                     body.sql,
                     workspace_client=user.session.workspace_client,
                     warehouse_id=_warehouse_id,
+                    wait_for_running=not databricks_running,
                 )
             else:
-                result = _execute_on_databricks(body.sql)
+                result = _execute_on_databricks(
+                    body.sql,
+                    wait_for_running=not databricks_running,
+                )
     except Exception as e:
         exec_error = e
     wall_ms = round((time.monotonic() - wall_start) * 1000, 2)
+
+    # Track per-query cold_start_ms from the result
+    query_cold_start_ms: float | None = None
+    if result is not None:
+        query_cold_start_ms = result.get("cold_start_ms")
+
+    if exec_error is None and query_cold_start_ms is not None:
+        _record_cold_start_measurement(execution_engine_id, query_cold_start_ms)
+        logger.info(
+            "Databricks engine %s: stored cold start %.2fms (separated from execution)",
+            execution_engine_id,
+            query_cold_start_ms,
+        )
 
     if exec_error is not None:
         # Serialize routing events collected so far for the error log
@@ -1006,6 +1113,7 @@ async def execute_query(
             complexity_score=decision.complexity_score,
             execution_time_ms=wall_ms,
             routing_log_events=error_events,
+            cold_start_ms=query_cold_start_ms,
         )
         if isinstance(exec_error, HTTPException):
             raise exec_error
@@ -1014,11 +1122,11 @@ async def execute_query(
             detail=f"Execution failed on {decision.engine}: {exec_error}",
         )
 
-    # Use engine-reported time if available, else wall-clock
+    # Use engine-reported time if available, else wall-clock minus cold start
     execution_time_ms = (
         result["execution_time_ms"]
         if result["execution_time_ms"] is not None
-        else wall_ms
+        else (wall_ms - (query_cold_start_ms or 0))
     )
 
     # Add execution-phase events (after we know execution_time_ms)
@@ -1060,6 +1168,7 @@ async def execute_query(
         complexity_score=decision.complexity_score,
         execution_time_ms=execution_time_ms,
         routing_log_events=events_dicts,
+        cold_start_ms=query_cold_start_ms,
     )
 
     # 7. Build response (matches frontend QueryExecutionResult)
@@ -1076,6 +1185,8 @@ async def execute_query(
         },
         "execution": {
             "execution_time_ms": execution_time_ms,
+            "cold_start_ms": query_cold_start_ms,
+            "total_latency_ms": wall_ms,
         },
         "columns": result["columns"],
         "rows": result["rows"],
@@ -1089,7 +1200,7 @@ async def get_query(
 ):
     row = db.fetch_one(
         """SELECT q.correlation_id, q.query_text, q.status, q.submitted_at, q.completed_at,
-                    q.execution_time_ms, q.routing_log_events,
+                    q.execution_time_ms, q.cold_start_ms, q.routing_log_events,
                     r.engine, r.reason, r.complexity_score
             FROM query_logs q
             JOIN routing_decisions r ON r.query_log_id = q.id
@@ -1098,6 +1209,9 @@ async def get_query(
     )
     if not row:
         raise HTTPException(status_code=404, detail="Query not found")
+    exec_ms = row["execution_time_ms"]
+    cs_ms = row["cold_start_ms"]
+    total_ms = round((cs_ms or 0) + (exec_ms or 0)) if exec_ms is not None else None
     return {
         "correlation_id": str(row["correlation_id"]),
         "query_text": row["query_text"],
@@ -1106,7 +1220,9 @@ async def get_query(
         "completed_at": row["completed_at"].isoformat()
         if row["completed_at"]
         else None,
-        "execution_time_ms": row["execution_time_ms"],
+        "execution_time_ms": exec_ms,
+        "cold_start_ms": cs_ms,
+        "latency_ms": total_ms,
         "routing_decision": {
             "engine": row["engine"],
             "engine_display_name": "DuckDB"
@@ -1124,7 +1240,7 @@ async def get_logs(
     engine: str | None = None, user: auth.UserContext = Depends(verify_token)
 ):
     base_sql = """ SELECT q.correlation_id, q.query_text, q.status, q.submitted_at,
-                        q.execution_time_ms,
+                        q.execution_time_ms, q.cold_start_ms,
                         r.engine, r.reason, r.complexity_score
                    FROM query_logs q
                    JOIN routing_decisions r ON r.query_log_id = q.id
@@ -1146,9 +1262,15 @@ async def get_logs(
             if r["engine"] == "duckdb"
             else "Databricks",
             "status": r["status"],
-            "latency_ms": round(r["execution_time_ms"])
+            "latency_ms": round((r["cold_start_ms"] or 0) + (r["execution_time_ms"] or 0))
             if r["execution_time_ms"]
             else 0,
+            "execution_time_ms": round(r["execution_time_ms"])
+            if r["execution_time_ms"]
+            else 0,
+            "cold_start_ms": round(r["cold_start_ms"])
+            if r["cold_start_ms"]
+            else None,
         }
         for r in rows
     ]

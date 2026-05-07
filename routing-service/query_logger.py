@@ -20,6 +20,7 @@ def log_query_execution(
     complexity_score: float,
     execution_time_ms: float | None,
     routing_log_events: list[dict] | None = None,
+    cold_start_ms: float | None = None,
 ) -> None:
     """Insert one row into each of query_logs and routing_decisions.
     Runs inside a single transaction via db.get_conn().
@@ -30,8 +31,8 @@ def log_query_execution(
                 cur.execute(
                     """INSERT INTO query_logs
                            (correlation_id, user_id, query_text, status, completed_at,
-                            execution_time_ms, routing_log_events)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            execution_time_ms, cold_start_ms, routing_log_events)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                        RETURNING id""",
                     (
                         correlation_id,
@@ -40,6 +41,7 @@ def log_query_execution(
                         status,
                         datetime.now(timezone.utc),
                         execution_time_ms,
+                        cold_start_ms,
                         json.dumps(routing_log_events) if routing_log_events else None,
                     ),
                 )

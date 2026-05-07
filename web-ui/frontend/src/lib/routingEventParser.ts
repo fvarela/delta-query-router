@@ -50,6 +50,8 @@ export interface RoutingDecisionData {
   winnerDisplayName: string;
   stage: string;
   executionTimeMs: number;
+  coldStartMs: number | null;
+  totalLatencyMs: number | null;
 }
 
 // ── Rule metadata map ────────────────────────────────────────────────────────
@@ -367,5 +369,7 @@ export function parseRoutingEvents(
     winnerDisplayName: winnerEngine?.displayName ?? routingDecision.engine_display_name ?? winnerId,
     stage,
     executionTimeMs,
+    coldStartMs: routingDecision.cold_start_ms ?? null,
+    totalLatencyMs: routingDecision.total_latency_ms ?? null,
   };
 }

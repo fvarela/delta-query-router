@@ -26,7 +26,7 @@ const latencyColor = (ms: number) => {
 
 export const CenterPanel: React.FC = () => {
   const [activeTab, setActiveTab] = useState<CenterTab>("query");
-  const { editorSql, setEditorSql, runMode, singleEngineId, engines, queryResult, setQueryResult, collectionContext, activeCollectionId, triggerRefreshCollections, enabledEngineIds, warehouseMappings, routingSettings, activeProfileId } = useApp();
+  const { editorSql, setEditorSql, runMode, singleEngineId, engines, reloadEngines, queryResult, setQueryResult, collectionContext, activeCollectionId, triggerRefreshCollections, enabledEngineIds, warehouseMappings, routingSettings, activeProfileId } = useApp();
   const [executing, setExecuting] = useState(false);
   const [queryError, setQueryError] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -116,6 +116,7 @@ export const CenterPanel: React.FC = () => {
     } finally {
       setExecuting(false);
       loadLogs();
+      reloadEngines();
     }
   };
 
@@ -129,23 +130,28 @@ export const CenterPanel: React.FC = () => {
         status: string;
         submitted_at: string;
         completed_at: string | null;
+        execution_time_ms?: number;
+        cold_start_ms?: number;
+        latency_ms?: number;
         routing_decision: {
           engine: string;
           engine_display_name: string;
           reason: string;
           complexity_score: number;
           stage?: string;
-          compute_time_ms?: number;
-          cold_start_ms?: number;
-          total_latency_ms?: number;
         };
         routing_log_events?: RoutingLogEvent[];
       }>(`/api/query/${entry.correlation_id}`);
 
       const events = detail.routing_log_events ?? [];
+      const decisionWithTiming = {
+        ...detail.routing_decision,
+        cold_start_ms: detail.cold_start_ms,
+        total_latency_ms: detail.latency_ms,
+      };
       const parsed = parseRoutingEvents(
         events,
-        detail.routing_decision,
+        decisionWithTiming,
         detail.query_text,
         entry.latency_ms,
         { engines, routingSettings, enabledEngineIds, warehouseMappings },
@@ -243,7 +249,7 @@ export const CenterPanel: React.FC = () => {
       </div>
 
       {/* ── Results area (bounded, scrollable) ── */}
-      <div className="shrink-0 max-h-[40%] overflow-y-auto">
+      <div className="shrink-0 h-[40%] min-h-0 overflow-hidden">
         {!queryResult && !executing && !queryError && (
           <div className="flex items-center justify-center h-24 text-muted-foreground text-[13px]">
             Run a query to see results here.
@@ -319,7 +325,12 @@ export const CenterPanel: React.FC = () => {
                     )}
                   </td>
                   <td className={`px-2 py-1.5 border-b border-border text-right font-mono ${l.status === "running" ? "text-muted-foreground" : latencyColor(l.latency_ms)}`}>
-                    {l.status === "running" ? "—" : `${l.latency_ms}ms`}
+                    {l.status === "running" ? "—" : (
+                      <span>
+                        {l.cold_start_ms ? <span className="text-amber-400 text-[10px] mr-1" title={`Cold start: ${l.cold_start_ms}ms`}>*</span> : null}
+                        {l.latency_ms}ms
+                      </span>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -353,14 +364,14 @@ export const CenterPanel: React.FC = () => {
 /* ── Results View (metrics + data table, scrollable) ── */
 
 const ResultsView: React.FC<{ result: QueryExecutionResult }> = ({ result }) => (
-  <div className="p-3 space-y-2">
+  <div className="h-full min-h-0 p-3 flex flex-col gap-2">
     {/* Metrics */}
     <div className="flex gap-4 text-[12px]">
       <span className={latencyColor(result.execution.execution_time_ms)}>Time: {result.execution.execution_time_ms}ms</span>
     </div>
 
-    {/* Results Table (max 10 rows, horizontally scrollable) */}
-    <div className="border border-border rounded-md overflow-x-auto shadow-section">
+    {/* Results Table (max 10 rows, vertically + horizontally scrollable in one viewport) */}
+    <div className="flex-1 min-h-0 border border-border rounded-md overflow-auto shadow-section">
       <table className="min-w-full text-[12px]">
         <thead>
           <tr className="bg-muted">
@@ -380,9 +391,8 @@ const ResultsView: React.FC<{ result: QueryExecutionResult }> = ({ result }) => 
         </tbody>
       </table>
     </div>
-    <p className="text-[11px] text-muted-foreground">
+    <p className="shrink-0 text-[11px] text-muted-foreground">
       Showing {Math.min(result.rows.length, 10)} of {result.rows.length} rows
     </p>
   </div>
 );
-

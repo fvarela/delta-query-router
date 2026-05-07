@@ -51,6 +51,12 @@ def get_engine_state(engine_id: str) -> str:
     return _engine_states.get(engine_id, "unknown")
 
 
+def force_state(engine_id: str, state: str) -> None:
+    """Immediately set engine state, bypassing poll cycle."""
+    _engine_states[engine_id] = state
+    logger.info("Engine %s: state forced to '%s'", engine_id, state)
+
+
 def start_polling(interval_seconds: int = 60) -> None:
     """Start the background polling thread."""
     global _poll_thread

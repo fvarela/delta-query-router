@@ -257,6 +257,8 @@ export interface LogEntry {
   engine_display_name: string;
   status: "running" | "success" | "error";
   latency_ms: number;
+  execution_time_ms?: number;
+  cold_start_ms?: number | null;
   // Per-query detail data (populated after execution)
   routing_decision?: QueryExecutionResult["routing_decision"];
   routing_events?: RoutingLogEvent[];
