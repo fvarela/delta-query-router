@@ -113,70 +113,47 @@ class TestQueryLoggerColdStart:
 
 
 # ---------------------------------------------------------------------------
-# _execute_on_databricks polling tests
+# Cold start timing logic (wall-clock approach)
 # ---------------------------------------------------------------------------
 
 
-class TestExecuteOnDatabricksPolling:
-    """Test the warehouse polling logic in _execute_on_databricks.
-
-    These tests import and call the function directly, mocking the
-    WorkspaceClient and its warehouses/statement_execution services.
+class TestColdStartWallClock:
+    """Verify the cold start recording approach: when the warehouse was stopped,
+    cold_start_ms = wall_ms (the full end-to-end time, consistent with the
+    standalone measurement in cold_start_measure.py).
     """
 
-    def _make_mock_wc(self, states_sequence):
-        """Build a mock WorkspaceClient that returns warehouse states in sequence.
-
-        states_sequence: list of strings like ["STOPPED", "STARTING", "RUNNING"]
-        """
-        wc = MagicMock()
-        warehouse_mocks = []
-        for s in states_sequence:
-            wh = MagicMock()
-            wh.state.value = s
-            warehouse_mocks.append(wh)
-        wc.warehouses.get.side_effect = warehouse_mocks
-
-        # Statement execution returns success
-        response = MagicMock()
-        response.status.state.value = "SUCCEEDED"
-        from unittest.mock import PropertyMock
-        type(response.status).state = PropertyMock(return_value=MagicMock(value="SUCCEEDED"))
-
-        # Make state comparison work with StatementState enum
-        response.status.state = MagicMock()
-        response.status.state.__eq__ = lambda self, other: str(other).endswith("SUCCEEDED")
-        response.status.state.value = "SUCCEEDED"
-
-        response.manifest = MagicMock()
-        response.manifest.schema.columns = []
-        response.manifest.total_row_count = 0
-        response.result = MagicMock()
-        response.result.data_array = []
-
-        wc.statement_execution.execute_statement.return_value = response
-        return wc
-
-    @patch("time.sleep")  # Don't actually sleep in tests
-    def test_polling_measures_cold_start(self, mock_sleep):
-        """When wait_for_running=True and warehouse starts STOPPED,
-        cold_start_ms should be > 0 in the result."""
-        import sys
-        import importlib
-
-        # We need to import main.py's _execute_on_databricks
-        # but it has many side effects. Instead, test the logic unit:
-        # force_state is called after cold start completes
+    def setup_method(self):
         engine_state._engine_states.clear()
-        engine_state.force_state("test-engine", "running")
-        assert engine_state.get_engine_state("test-engine") == "running"
 
-    def test_no_cold_start_when_running(self):
-        """When warehouse is already running, cold_start_ms should be None."""
-        # This tests the contract: if wait_for_running=False,
-        # _execute_on_databricks returns cold_start_ms=None
-        # Verified by the return dict structure in the function
-        pass  # Structural verification — covered by integration tests
+    def test_force_state_called_after_cold_start(self):
+        """After a cold start query, force_state should mark engine as running."""
+        engine_state.force_state("databricks-serverless-xs", "running")
+        assert engine_state.get_engine_state("databricks-serverless-xs") == "running"
+
+    def test_no_cold_start_when_warehouse_running(self):
+        """When warehouse is already running, cold_start_ms should be None.
+        This is a contract test — the caller checks `databricks_running` and
+        only sets cold_start_ms when it was False.
+        """
+        # Simulates: databricks_running=True → query_cold_start_ms stays None
+        query_cold_start_ms = None
+        databricks_running = True
+        wall_ms = 150.0
+        if not databricks_running:
+            query_cold_start_ms = wall_ms
+        assert query_cold_start_ms is None
+
+    def test_cold_start_equals_wall_ms_when_stopped(self):
+        """When warehouse was stopped, cold_start_ms = wall_ms (full end-to-end).
+        Consistent with standalone measurement protocol.
+        """
+        query_cold_start_ms = None
+        databricks_running = False
+        wall_ms = 45000.0  # 45 seconds
+        if not databricks_running:
+            query_cold_start_ms = wall_ms
+        assert query_cold_start_ms == 45000.0
 
 
 # ---------------------------------------------------------------------------

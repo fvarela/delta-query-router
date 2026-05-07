@@ -759,14 +759,10 @@ def _execute_on_databricks(
     sql: str,
     workspace_client: WorkspaceClient | None = None,
     warehouse_id: str | None = None,
-    wait_for_running: bool = False,
 ) -> dict:
     """Execute SQL on Databricks via the SDK (synchronous).
     Uses the provided workspace_client/warehouse_id if given,
     otherwise falls back to the system identity.
-
-    When wait_for_running=True, polls the warehouse until RUNNING before
-    executing the statement.  Returns cold_start_ms in the result dict.
     """
     wc = workspace_client or _workspace_client
     wh_id = warehouse_id or _warehouse_id
@@ -776,44 +772,6 @@ def _execute_on_databricks(
         raise HTTPException(status_code=400, detail="No SQL warehouse selected")
     from databricks.sdk.service.sql import StatementState
 
-    cold_start_ms: float | None = None
-
-    # ── Cold start phase: poll until warehouse is RUNNING ──
-    if wait_for_running:
-        poll_start = time.monotonic()
-        max_wait_seconds = 300  # 5-minute ceiling
-        poll_interval = 3.0
-        while True:
-            try:
-                wh = wc.warehouses.get(wh_id)
-                wh_state = wh.state.value.upper() if wh.state else "UNKNOWN"
-            except Exception:
-                wh_state = "UNKNOWN"
-
-            if wh_state == "RUNNING":
-                break
-
-            elapsed = time.monotonic() - poll_start
-            if elapsed >= max_wait_seconds:
-                raise HTTPException(
-                    status_code=504,
-                    detail=f"Warehouse {wh_id} did not reach RUNNING within {max_wait_seconds}s (last state: {wh_state})",
-                )
-
-            logger.info(
-                "Warehouse %s state=%s, waiting %.0fs (%.0f/%.0fs)…",
-                wh_id, wh_state, poll_interval, elapsed, max_wait_seconds,
-            )
-            time.sleep(poll_interval)
-
-        cold_start_ms = round((time.monotonic() - poll_start) * 1000, 2)
-        logger.info("Warehouse %s: cold start completed in %.2fms", wh_id, cold_start_ms)
-        # Update in-memory engine state immediately
-        engine_id = _resolve_databricks_engine_id(wh_id)
-        if engine_id:
-            engine_state.force_state(engine_id, "running")
-
-    # ── Execution phase ──
     try:
         response = wc.statement_execution.execute_statement(
             statement=sql,
@@ -858,7 +816,6 @@ def _execute_on_databricks(
         "rows": rows,
         "row_count": row_count,
         "execution_time_ms": None,  # SDK doesn't report this; caller uses wall-clock
-        "cold_start_ms": cold_start_ms,
     }
 
 
@@ -1070,28 +1027,26 @@ async def execute_query(
                     body.sql,
                     workspace_client=user.session.workspace_client,
                     warehouse_id=_warehouse_id,
-                    wait_for_running=not databricks_running,
                 )
             else:
-                result = _execute_on_databricks(
-                    body.sql,
-                    wait_for_running=not databricks_running,
-                )
+                result = _execute_on_databricks(body.sql)
     except Exception as e:
         exec_error = e
     wall_ms = round((time.monotonic() - wall_start) * 1000, 2)
 
-    # Track per-query cold_start_ms from the result
+    # Track per-query cold_start_ms: if Databricks warehouse was stopped,
+    # the entire wall-clock time includes cold start (startup + execution).
+    # We record wall_ms as cold_start_ms — consistent with standalone measurement
+    # protocol which also times the full end-to-end on a stopped warehouse.
     query_cold_start_ms: float | None = None
-    if result is not None:
-        query_cold_start_ms = result.get("cold_start_ms")
-
-    if exec_error is None and query_cold_start_ms is not None:
-        _record_cold_start_measurement(execution_engine_id, query_cold_start_ms)
+    if exec_error is None and decision.engine == "databricks" and not databricks_running:
+        query_cold_start_ms = wall_ms
+        _record_cold_start_measurement(execution_engine_id, wall_ms)
+        engine_state.force_state(execution_engine_id, "running")
         logger.info(
-            "Databricks engine %s: stored cold start %.2fms (separated from execution)",
+            "Databricks engine %s: cold start query %.2fms (warehouse was stopped)",
             execution_engine_id,
-            query_cold_start_ms,
+            wall_ms,
         )
 
     if exec_error is not None:
@@ -1122,11 +1077,11 @@ async def execute_query(
             detail=f"Execution failed on {decision.engine}: {exec_error}",
         )
 
-    # Use engine-reported time if available, else wall-clock minus cold start
+    # Use engine-reported time if available, else wall-clock
     execution_time_ms = (
         result["execution_time_ms"]
         if result["execution_time_ms"] is not None
-        else (wall_ms - (query_cold_start_ms or 0))
+        else wall_ms
     )
 
     # Add execution-phase events (after we know execution_time_ms)
