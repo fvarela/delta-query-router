@@ -55,7 +55,6 @@ screenshots/
 
 # AI tooling and workflow files
 .taskmaster/
-AGENTS.md
 .agents/
 .playwright-mcp/
 
