@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 import db
 import auth
+import engine_state
 from auth import verify_token
 
 logger = logging.getLogger("routing-service.engines")
@@ -137,7 +138,9 @@ async def list_engines():
                 entry["runtime_state"] = "stopped"
             entry["scalable"] = True
         elif row["engine_type"] == "databricks_sql":
-            entry["runtime_state"] = row["config"].get("runtime_state", "unknown")
+            live_state = engine_state.get_engine_state(row["id"])
+            config_state = (row.get("config") or {}).get("runtime_state", "unknown")
+            entry["runtime_state"] = live_state if live_state != "unknown" else config_state
             entry["scalable"] = False
         else:
             entry["runtime_state"] = "unknown"

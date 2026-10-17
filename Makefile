@@ -45,6 +45,42 @@ psql:
 	kubectl exec -it postgresql-0 -- psql -U delta -d deltarouter
 port-forward:
 	kubectl port-forward svc/web-ui 8501:8501
+# Share the web-ui in a visible Chromium the agent can attach to over CDP (port 9222).
+# Idempotent: reuses an existing port-forward / browser if already running.
+# Resolves the Playwright-managed Chromium dynamically so it survives version bumps.
+UI_PORT ?= 8501
+CDP_PORT ?= 9222
+ui-share:
+	@mkdir -p /tmp/opencode
+	@if [ "$$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:$(UI_PORT)/api/health 2>/dev/null)" = "200" ]; then \
+		echo "web-ui already reachable on :$(UI_PORT)"; \
+	else \
+		echo "starting port-forward svc/web-ui -> :$(UI_PORT)"; \
+		setsid kubectl port-forward svc/web-ui $(UI_PORT):8501 </dev/null > /tmp/opencode/web-ui-port-forward.log 2>&1 & \
+		sleep 2; \
+	fi
+	@if [ "$$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:$(CDP_PORT)/json/version 2>/dev/null)" = "200" ]; then \
+		echo "shared browser already running on CDP :$(CDP_PORT)"; \
+	else \
+		CHROME=$$(ls -t /home/$(USER)/.cache/ms-playwright/chromium-*/chrome-linux64/chrome 2>/dev/null | head -1); \
+		if [ -z "$$CHROME" ]; then \
+			echo "ERROR: no Playwright Chromium found. Run: npx playwright install chromium"; \
+			exit 1; \
+		fi; \
+		echo "launching shared browser: $$CHROME (CDP :$(CDP_PORT))"; \
+		setsid "$$CHROME" \
+			--remote-debugging-port=$(CDP_PORT) \
+			--user-data-dir=/tmp/opencode/delta-router-visible-chrome \
+			--no-first-run --no-default-browser-check \
+			http://127.0.0.1:$(UI_PORT)/ \
+			</dev/null > /tmp/opencode/delta-router-visible-chrome.log 2>&1 & \
+		sleep 3; \
+	fi
+	@if [ "$$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:$(CDP_PORT)/json/version 2>/dev/null)" = "200" ]; then \
+		echo "OK: UI shared at http://127.0.0.1:$(UI_PORT)/  |  CDP at http://127.0.0.1:$(CDP_PORT)"; \
+	else \
+		echo "WARN: CDP endpoint not reachable — check /tmp/opencode/delta-router-visible-chrome.log"; \
+	fi
 pods:
 	kubectl get pods
 # --- Full deploy (minikube) ---
@@ -83,4 +119,4 @@ deploy-azure: build-push tf-apply
 get-ip:
 	kubectl get ingress -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}'
 	@echo
-.PHONY: build-routing build-webui build-duckdb build-all deploy-routing deploy-webui deploy-duckdb deploy-all schema-update logs-routing logs-webui logs-duckdb logs-postgres psql port-forward pods apply smoke-test tf-init tf-plan tf-apply tf-destroy acr-login build-push deploy-azure get-ip
+.PHONY: build-routing build-webui build-duckdb build-all deploy-routing deploy-webui deploy-duckdb deploy-all schema-update logs-routing logs-webui logs-duckdb logs-postgres psql port-forward ui-share pods apply smoke-test tf-init tf-plan tf-apply tf-destroy acr-login build-push deploy-azure get-ip

@@ -1,6 +1,7 @@
 """Tests for engines_api.py — engine registry CRUD + helpers."""
 
 import json
+import time
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
@@ -20,7 +21,7 @@ client = TestClient(app)
 
 def _auth_header():
     token = "test-token-engines"
-    auth._active_tokens[token] = "testuser"
+    auth._active_tokens[token] = ("testuser", time.time())
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -105,6 +106,10 @@ class TestHelpers:
 class TestListEngines:
     """GET /api/engines — list all engines with runtime status."""
 
+    @pytest.fixture(autouse=True)
+    def mock_cold_starts(self, monkeypatch):
+        monkeypatch.setattr(engines_api.db, "fetch_all", lambda *args, **kwargs: [])
+
     @patch("engines_api.get_all_engines")
     def test_list_duckdb_running(self, mock_all):
         """DuckDB engine with healthy probe → runtime_state=running."""
@@ -143,10 +148,11 @@ class TestListEngines:
         assert resp.status_code == 200
         assert resp.json()[0]["runtime_state"] == "stopped"
 
+    @patch("engines_api.engine_state.get_engine_state", return_value="running")
     @patch("engines_api.get_all_engines")
-    def test_list_databricks_engine(self, mock_all):
-        """Databricks engine gets runtime_state from config."""
-        mock_all.return_value = [_databricks_engine()]
+    def test_list_databricks_engine_uses_live_runtime_state(self, mock_all, mock_state):
+        """Databricks engine prefers live runtime_state from engine_state poller."""
+        mock_all.return_value = [_databricks_engine(config={"runtime_state": "stopped"})]
 
         mock_client = AsyncMock()
         mock_client.__aenter__.return_value = mock_client
@@ -159,6 +165,26 @@ class TestListEngines:
         assert data[0]["engine_type"] == "databricks_sql"
         assert data[0]["runtime_state"] == "running"
         assert data[0]["scalable"] is False
+        mock_state.assert_called_once_with("databricks-abc123")
+
+    @patch("engines_api.engine_state.get_engine_state", return_value="unknown")
+    @patch("engines_api.get_all_engines")
+    def test_list_databricks_engine_falls_back_to_config_state(self, mock_all, mock_state):
+        """Databricks engine falls back to config runtime_state before poller is warm."""
+        mock_all.return_value = [_databricks_engine(config={"runtime_state": "stopped"})]
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value = mock_client
+
+        with patch("engines_api.httpx.AsyncClient", return_value=mock_client):
+            resp = client.get("/api/engines", headers=_auth_header())
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data[0]["engine_type"] == "databricks_sql"
+        assert data[0]["runtime_state"] == "stopped"
+        assert data[0]["scalable"] is False
+        mock_state.assert_called_once_with("databricks-abc123")
 
     @patch("engines_api.get_all_engines", return_value=[])
     def test_list_empty(self, mock_all):

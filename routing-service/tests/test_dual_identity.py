@@ -70,7 +70,7 @@ def _clear_rule_cache():
 
 def _admin_header():
     token = "admin-tok-dual"
-    auth._active_tokens[token] = "admin"
+    auth._active_tokens[token] = ("admin", time.time())
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -337,3 +337,58 @@ class TestDualIdentityDuckDB:
         assert data["routing_decision"]["engine"] == "duckdb"
         # DuckDB execution happened via httpx (mock_client.post was called),
         # not via _execute_on_databricks
+
+
+# ---------------------------------------------------------------------------
+# Cold start measurements captured from query execution
+# ---------------------------------------------------------------------------
+
+
+class TestQueryColdStartMeasurements:
+    """Verify regular queries persist observed cold-start timings."""
+
+    @patch("main.db.execute")
+    def test_record_cold_start_measurement_inserts_row(self, mock_execute):
+        main._record_cold_start_measurement("duckdb-small", 1234)
+
+        mock_execute.assert_called_once_with(
+            "INSERT INTO engine_cold_starts (engine_id, cold_start_ms) VALUES (%s, %s)",
+            ("duckdb-small", 1234),
+        )
+
+    @patch("main.db.execute")
+    def test_record_cold_start_measurement_skips_missing_engine_id(self, mock_execute):
+        main._record_cold_start_measurement(None, 1234)
+
+        mock_execute.assert_not_called()
+
+    @patch("main.db.fetch_one", return_value=None)
+    @patch(
+        "main.engines_api.get_all_engines",
+        return_value=[
+            {
+                "id": "databricks-2xs",
+                "engine_type": "databricks_sql",
+                "config": {"warehouse_id": "warehouse-1"},
+            }
+        ],
+    )
+    def test_resolve_databricks_engine_id_from_engine_config(self, _engines, _fetch):
+        assert main._resolve_databricks_engine_id("warehouse-1") == "databricks-2xs"
+
+    @patch(
+        "main.db.fetch_one",
+        return_value={
+            "config": {
+                "warehouseMappings": [
+                    {"engineId": "databricks-serverless", "warehouseId": "warehouse-2"}
+                ]
+            }
+        },
+    )
+    @patch(
+        "main.engines_api.get_all_engines",
+        return_value=[{"id": "databricks-2xs", "engine_type": "databricks_sql", "config": {}}],
+    )
+    def test_resolve_databricks_engine_id_from_profile_mapping(self, _engines, _fetch):
+        assert main._resolve_databricks_engine_id("warehouse-2") == "databricks-serverless"

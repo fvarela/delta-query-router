@@ -58,3 +58,9 @@ screenshots/
 AGENTS.md
 .agents/
 .playwright-mcp/
+
+# Scratch / generated docs (dev artifacts, not source of truth — PROJECT.md is)
+THESIS.md
+*snapshot*.md
+full-snapshot.md
+smart-routing.md
