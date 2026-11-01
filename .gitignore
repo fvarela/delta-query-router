@@ -16,21 +16,15 @@ venv/
 ENV/
 env/
 
-# uv
-.python-version
+# Tool caches
+.pytest_cache/
+.ruff_cache/
 
 # Logs
 logs/
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-dev-debug.log
 
-# Dependency directories
-node_modules/
-
-# Environment variables
+# Environment variables (secrets)
 .env
 
 # Editor directories and files
@@ -45,21 +39,3 @@ node_modules/
 # OS specific
 .DS_Store
 Thumbs.db
-
-# Binaries
-minikube-linux-amd64
-
-# Screenshots (dev artifacts)
-*.png
-screenshots/
-
-# AI tooling and workflow files
-.taskmaster/
-.agents/
-.playwright-mcp/
-
-# Scratch / generated docs (dev artifacts, not source of truth — PROJECT.md is)
-THESIS.md
-*snapshot*.md
-full-snapshot.md
-smart-routing.md
