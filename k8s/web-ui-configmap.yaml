@@ -1,6 +1,0 @@
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: web-ui-config
-data:
-  ROUTING_SERVICE_URL: "http://routing-service:8000"
