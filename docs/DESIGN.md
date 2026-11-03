@@ -42,8 +42,7 @@ These hold for every task, whoever or whatever writes the code.
 consumer ──SQL──▶ router (Container App, 1 replica)
                     │  in-memory state: warehouse state, stop clock, queues
                     ├──▶ Databricks SQL serverless warehouse (existing workspace)
-                    └──▶ DuckDB worker  ─ warm: min replicas 1
-                         DuckDB worker  ─ cold: min replicas 0 (scale to zero)
+                    └──▶ DuckDB worker (Container App, min replicas 0 or 1)
                                 │
                                 ▼ reads via Unity Catalog credential vending
                          ADLS Gen2 storage: external Delta tables (TPC-DS)
@@ -51,8 +50,14 @@ consumer ──SQL──▶ router (Container App, 1 replica)
 
 - **Router:** FastAPI service. Parses the query (sqlglot), reads state from memory, filters feasible
   engines, scores them, dispatches. Exactly one replica, because state lives in memory.
-- **DuckDB worker:** FastAPI service, one image deployed as two Container Apps that differ only in
-  min replicas (1 vs 0). Both on the Consumption profile, 4 vCPU / 8 GiB. Internal ingress only.
+- **DuckDB worker:** FastAPI service, one Container App on the Consumption profile, 4 vCPU / 8 GiB,
+  max replicas 1, internal ingress only. Min replicas is an experiment setting: 1 = always on (billed
+  while idle, no startup delay), 0 = scale to zero (billed only while working, cold start after idle).
+  The thesis compares the two modes; the simulator evaluates both from one set of measurements.
+- **Communication:** plain HTTP inside the Container Apps environment; the router calls the worker by
+  app name. No Dapr and no external queue: the queue lives in the router, because routing needs its
+  state. Container Apps ends an HTTP request after 240 s, so the worker is submit-and-poll:
+  `POST /queries` returns an id at once, `GET /queries/{id}` returns status and result.
 - **Databricks:** the existing workspace and its Unity Catalog. Not managed by our IaC.
 - **Storage:** our own ADLS Gen2 account holds the Delta files. Both engines read the same files.
 - **Results:** Parquet files in `results/`, one file per run (proposed).
@@ -84,7 +89,7 @@ All in one resource group, in the Databricks workspace's region (westus2 per ear
 | Log Analytics workspace                                | Logs for the Container Apps environment                                                     |
 | Container Apps environment                             | Hosts router and workers                                                                    |
 | Container registry (Basic)                             | Router and worker images                                                                    |
-| Container Apps: `router`, `worker-warm`, `worker-cold` | See section 3                                                                               |
+| Container Apps: `router`, `worker`                     | See section 3                                                                               |
 | User-assigned managed identity                         | Used by the apps: AcrPull, Key Vault secrets reader                                         |
 | Key Vault                                              | Databricks service principal secret                                                         |
 | Storage account, ADLS Gen2 (HNS on), container `tpcds` | External Delta tables                                                                       |
@@ -105,6 +110,12 @@ identity login; a managed-identity Entra token passed to the SDK is a later opti
 - Unpartitioned, written once, never updated. No deletion vectors.
 - Queries: the 99 TPC-DS queries from `tpcds_queries()`; any query needing changes to run on Databricks
   gets a recorded, minimal edit. A query that fails on an engine is recorded as infeasible there.
+- **Known bias:** TPC-DS queries are complex, while real workloads are dominated by small, repetitive
+  queries (van Renen et al., "Why TPC Is Not Enough", VLDB 2024; their public Redset dataset). TPC-DS
+  therefore favours Databricks, so savings measured with it are a conservative estimate. First iteration:
+  TPC-DS only. If needed later, add templated simple and medium queries over the same tables (point
+  lookups, filtered scans, single-table aggregations, top-N, small joins) and report results by the share
+  of simple queries, with a Redset-derived mix as the realistic case.
 
 ## 6. Routing model
 
@@ -180,6 +191,12 @@ results/    measurement files (Parquet, committed)
 tests/
 ```
 
+- **sim/:** replays a workload trace on a virtual clock using measured times instead of running queries;
+  tracks engine on/off states, queues and billing per policy. Most thesis results come from it.
+- **data/:** code that generates TPC-DS, writes the Delta tables to ADLS and registers them in Unity
+  Catalog. The data itself lives in storage, never in the repo.
+- **analysis/:** Jupyter notebooks that read `results/` and draw every thesis figure and table. Logic
+  stays in `src/`; notebook outputs are stripped before commit (nbstripout).
 - Python 3.12, uv, ruff, pytest. One `pyproject.toml`; the two images install only what they need.
 - The dev tool is a thin menu over plain functions; everything it does can also run from a script.
 - Configuration from `config/` and environment variables.
@@ -200,17 +217,17 @@ tests/
 
 Each milestone becomes one or more task specs.
 
-| #   | Milestone                      | Produces                                                                                                          |
-| --- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| 0   | Scaffold                       | v1 code removed from the working tree (kept at tag `v1`); layout of section 9; pyproject, pytest and ruff working |
-| 0.5 | Infrastructure, dev tool, data | Bicep for section 4; dev tool; TPC-DS SF1 written and registered in Unity Catalog                                 |
-| 1   | Read-path spike                | DuckDB on Container Apps reading the tables both ways of section 3; a choice                                      |
-| 2   | Benchmark runner               | All queries × engines × scale factors, warm, N repeats, results per section 7                                     |
-| 3   | Startup and API measurements   | Distributions listed in section 7                                                                                 |
-| 4   | Simulator and policies         | Section 8; can start early with made-up numbers                                                                   |
-| 5   | Predictor                      | Features + latency models (linear, gradient boosting), cross-validated                                            |
-| 6   | Live prototype                 | Router + workers on Container Apps; one real workload compared with the simulator                                 |
-| 7   | Write-up                       | Thesis figures built from `results/` by `analysis/`                                                               |
+| #   | Milestone                      | Produces                                                                                                                      |
+| --- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| 0   | Scaffold                       | v1 code removed from the working tree (kept at tag `v1`); `src/dqr/` package and `tests/`; pyproject, pytest and ruff working |
+| 0.5 | Infrastructure, dev tool, data | Bicep for section 4; dev tool; TPC-DS SF1 written and registered in Unity Catalog                                             |
+| 1   | Read-path spike                | DuckDB on Container Apps reading the tables both ways of section 3; a choice                                                  |
+| 2   | Benchmark runner               | All queries × engines × scale factors, warm, N repeats, results per section 7                                                 |
+| 3   | Startup and API measurements   | Distributions listed in section 7                                                                                             |
+| 4   | Simulator and policies         | Section 8; can start early with made-up numbers                                                                               |
+| 5   | Predictor                      | Features + latency models (linear, gradient boosting), cross-validated                                                        |
+| 6   | Live prototype                 | Router + workers on Container Apps; one real workload compared with the simulator                                             |
+| 7   | Write-up                       | Thesis figures built from `results/` by `analysis/`                                                                           |
 
 ## 12. Open items
 
@@ -235,3 +252,7 @@ Each milestone becomes one or more task specs.
 | 2026-10-19 | Bicep for Azure resources; interactive Python dev tool                                                      |
 | 2026-10-19 | TPC-DS generated with DuckDB, written as Delta, registered as external tables                               |
 | 2026-11-01 | One design file; agent behaviour and git workflow live in the author's OpenCode setup, not in the repo docs |
+| 2026-11-01 | One worker app; min replicas (0 or 1) is an experiment setting                                              |
+| 2026-11-01 | Plain HTTP by app name, submit-and-poll worker; no Dapr, no external queue                                  |
+| 2026-11-01 | TPC-DS only in the first iteration; simple-query family added only if needed                                |
+| 2026-11-01 | Section 9 directories are created by the first task that puts a file in them; no placeholders               |
