@@ -217,17 +217,17 @@ tests/
 
 Each milestone becomes one or more task specs.
 
-| #   | Milestone                      | Produces                                                                                                          |
-| --- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| 0   | Scaffold                       | v1 code removed from the working tree (kept at tag `v1`); layout of section 9; pyproject, pytest and ruff working |
-| 0.5 | Infrastructure, dev tool, data | Bicep for section 4; dev tool; TPC-DS SF1 written and registered in Unity Catalog                                 |
-| 1   | Read-path spike                | DuckDB on Container Apps reading the tables both ways of section 3; a choice                                      |
-| 2   | Benchmark runner               | All queries × engines × scale factors, warm, N repeats, results per section 7                                     |
-| 3   | Startup and API measurements   | Distributions listed in section 7                                                                                 |
-| 4   | Simulator and policies         | Section 8; can start early with made-up numbers                                                                   |
-| 5   | Predictor                      | Features + latency models (linear, gradient boosting), cross-validated                                            |
-| 6   | Live prototype                 | Router + workers on Container Apps; one real workload compared with the simulator                                 |
-| 7   | Write-up                       | Thesis figures built from `results/` by `analysis/`                                                               |
+| #   | Milestone                      | Produces                                                                                                                      |
+| --- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| 0   | Scaffold                       | v1 code removed from the working tree (kept at tag `v1`); `src/dqr/` package and `tests/`; pyproject, pytest and ruff working |
+| 0.5 | Infrastructure, dev tool, data | Bicep for section 4; dev tool; TPC-DS SF1 written and registered in Unity Catalog                                             |
+| 1   | Read-path spike                | DuckDB on Container Apps reading the tables both ways of section 3; a choice                                                  |
+| 2   | Benchmark runner               | All queries × engines × scale factors, warm, N repeats, results per section 7                                                 |
+| 3   | Startup and API measurements   | Distributions listed in section 7                                                                                             |
+| 4   | Simulator and policies         | Section 8; can start early with made-up numbers                                                                               |
+| 5   | Predictor                      | Features + latency models (linear, gradient boosting), cross-validated                                                        |
+| 6   | Live prototype                 | Router + workers on Container Apps; one real workload compared with the simulator                                             |
+| 7   | Write-up                       | Thesis figures built from `results/` by `analysis/`                                                                           |
 
 ## 12. Open items
 
@@ -255,3 +255,4 @@ Each milestone becomes one or more task specs.
 | 2026-11-01 | One worker app; min replicas (0 or 1) is an experiment setting                                              |
 | 2026-11-01 | Plain HTTP by app name, submit-and-poll worker; no Dapr, no external queue                                  |
 | 2026-11-01 | TPC-DS only in the first iteration; simple-query family added only if needed                                |
+| 2026-11-01 | Section 9 directories are created by the first task that puts a file in them; no placeholders               |
