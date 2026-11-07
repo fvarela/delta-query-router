@@ -5,6 +5,7 @@ compiler once (`az bicep install`).
 """
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -16,8 +17,12 @@ MAIN_BICEP = ROOT / "infra" / "main.bicep"
 MAIN_BICEPPARAM = ROOT / "infra" / "main.bicepparam"
 
 STORAGE_BLOB_DATA_CONTRIBUTOR = "ba92f5b4-2d11-453d-a403-e96b0029c9fe"
+ACR_PULL = "7f951dda-4ed3-4680-a7ca-43fe172d538d"
+KEY_VAULT_SECRETS_USER = "4633458b-17de-408a-b874-0445c86b69e6"
 
 ROLE_ASSIGNMENT = "Microsoft.Authorization/roleAssignments"
+USER_ASSIGNED_IDENTITY = "Microsoft.ManagedIdentity/userAssignedIdentities"
+GUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
 def _compile() -> subprocess.CompletedProcess[str]:
@@ -105,9 +110,10 @@ def test_e2_storage_account_has_hns_and_one_tpcds_container(template):
 
 def test_e3_existing_connector_identity_can_use_only_the_tpcds_container(template):
     assert _of_type(template, "Microsoft.Databricks/accessConnectors") == []
-    # The identity is looked up (`existing`), never declared, so nothing is created
-    # or changed in its resource group.
-    assert _of_type(template, "Microsoft.ManagedIdentity/userAssignedIdentities") == []
+    # The dev identity is looked up (`existing`), never declared, so nothing is created
+    # or changed in its resource group. Our own apps identity (E4) is a different one.
+    declared = _of_type(template, USER_ASSIGNED_IDENTITY)
+    assert not [r for r in declared if "ucIdentityResourceId" in json.dumps(r)]
 
     assignments = [
         r
@@ -218,6 +224,63 @@ def test_e8_env_example_lists_the_names_with_empty_values():
             env[key.strip()] = value.strip().strip("\"'")
     assert set(ENV_VARIABLES) <= set(env)
     assert all(env[name] == "" for name in ENV_VARIABLES)
+
+
+def test_e4_apps_identity_can_pull_images_and_read_key_vault_secrets(template):
+    declared = [
+        r
+        for r in _of_type(template, USER_ASSIGNED_IDENTITY)
+        if "ucIdentityResourceId" not in json.dumps(r)
+    ]
+    assert len(declared) == 1
+
+    granted = {}
+    for r in _of_type(template, ROLE_ASSIGNMENT):
+        principal = str(r["properties"]["principalId"])
+        if (
+            "userAssignedIdentities" in principal
+            and "ucIdentityResourceId" not in principal
+        ):
+            role = GUID.search(str(r["properties"]["roleDefinitionId"]))
+            assert role, f"no role id in {r['properties']['roleDefinitionId']}"
+            granted[role.group(0)] = str(r["scope"])
+
+    assert set(granted) == {ACR_PULL, KEY_VAULT_SECRETS_USER}
+    assert "Microsoft.ContainerRegistry/registries" in granted[ACR_PULL]
+    assert "Microsoft.KeyVault/vaults" in granted[KEY_VAULT_SECRETS_USER]
+
+
+def test_e5_shared_base_is_present_and_has_no_apps(template):
+    workspaces = _of_type(template, "Microsoft.OperationalInsights/workspaces")
+    assert len(workspaces) == 1
+
+    environments = _of_type(template, "Microsoft.App/managedEnvironments")
+    assert len(environments) == 1
+    logs = environments[0]["properties"]["appLogsConfiguration"]
+    assert logs["destination"] == "log-analytics"
+    assert "Microsoft.OperationalInsights/workspaces" in json.dumps(logs)
+
+    registries = _of_type(template, "Microsoft.ContainerRegistry/registries")
+    assert len(registries) == 1
+    assert registries[0]["sku"]["name"] == "Basic"
+
+    vaults = _of_type(template, "Microsoft.KeyVault/vaults")
+    assert len(vaults) == 1
+    assert vaults[0]["properties"]["enableRbacAuthorization"] is True
+
+    assert _of_type(template, "Microsoft.App/containerApps") == []
+
+
+def test_e6_no_secrets_in_the_template_or_the_parameter_file(template):
+    assert _of_type(template, "Microsoft.KeyVault/vaults/secrets") == []
+
+    secure = [
+        name
+        for name, spec in template["parameters"].items()
+        if spec["type"] in ("securestring", "secureObject")
+    ]
+    text = MAIN_BICEPPARAM.read_text()
+    assert not [name for name in secure if name in text], "a secure parameter is set"
 
 
 def test_e7_writer_role_is_optional_and_on_the_container(template):

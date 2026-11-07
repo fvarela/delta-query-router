@@ -29,6 +29,11 @@ These hold for every task, whoever or whatever writes the code.
 - **Resources:** Azure resources only through `infra/` (Bicep); Unity Catalog objects only through the
   dev tool.
 - **Secrets:** never in the repo. `.env` is git-ignored; deployed secrets live in Key Vault.
+- **Company identifiers:** the repo is public and is deployed to the author's company Azure tenant. Never
+  commit tenant, subscription, principal or object ids, or names of pre-existing resources (managed
+  identities, service principals, networks, resource groups, workspaces), groups or people. They live only
+  in the git-ignored `.env`; `.env.example` lists the variable names. Names of resources our Bicep creates
+  are fine.
 - **Results:** never delete or overwrite files in `results/`; a new run writes a new file.
 - **Tests:** pure logic (cost model, state machine, queues, simulator, features) is unit-tested with
   pytest. Tests that need Azure or Databricks are marked `integration` and skipped by default.
@@ -82,21 +87,24 @@ rewriting). Two candidate read paths, compared in milestone 1:
 
 ## 4. Azure resources (Bicep, `infra/`)
 
-All in one resource group, in the Databricks workspace's region (westus2 per earlier notes; confirm).
+All in one resource group, in the Databricks workspace's region (westus2, confirmed 2026-11-03).
 
 | Resource                                               | Purpose                                                                                     |
 | ------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
 | Log Analytics workspace                                | Logs for the Container Apps environment                                                     |
 | Container Apps environment                             | Hosts router and workers                                                                    |
 | Container registry (Basic)                             | Router and worker images                                                                    |
-| Container Apps: `router`, `worker`                     | See section 3                                                                               |
+| Container Apps: `router`, `worker`                     | See section 3; deployed in milestone 1, with the worker image                               |
 | User-assigned managed identity                         | Used by the apps: AcrPull, Key Vault secrets reader                                         |
 | Key Vault                                              | Databricks service principal secret                                                         |
 | Storage account, ADLS Gen2 (HNS on), container `tpcds` | External Delta tables                                                                       |
-| Databricks Access Connector                            | Identity Unity Catalog uses for the storage; Storage Blob Data Contributor on the container |
+| Existing Databricks Access Connector (not created here) | Its user-assigned identity, which the existing storage credentials use, gets Storage Blob Data Contributor on the container |
 
 Unity Catalog objects are created by the dev tool with the Databricks SDK, not Bicep: storage credential
-(from the Access Connector), external location, catalog, schemas `sf1` and `sf10`, external tables.
+(on the existing Access Connector), external location, catalog, schemas `sf1` and `sf10`, external tables.
+
+The author's own user can get the same role on the container through the optional `dataWriterPrincipalId`
+parameter, so the data code can write the Delta files from the author's machine.
 
 **Databricks identity:** a Databricks service principal with OAuth machine-to-machine credentials; the
 secret lives in Key Vault. Not a personal access token. (The Python SDK does not yet support managed
@@ -220,8 +228,8 @@ Each milestone becomes one or more task specs.
 | #   | Milestone                      | Produces                                                                                                                      |
 | --- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
 | 0   | Scaffold                       | v1 code removed from the working tree (kept at tag `v1`); `src/dqr/` package and `tests/`; pyproject, pytest and ruff working |
-| 0.5 | Infrastructure, dev tool, data | Bicep for section 4; dev tool; TPC-DS SF1 written and registered in Unity Catalog                                             |
-| 1   | Read-path spike                | DuckDB on Container Apps reading the tables both ways of section 3; a choice                                                  |
+| 0.5 | Infrastructure, dev tool, data | Bicep for the shared base of section 4 (no apps); dev tool; TPC-DS SF1 written and registered in Unity Catalog                                             |
+| 1   | Read-path spike                | DuckDB on Container Apps reading the tables both ways of section 3; a choice; the `router` and `worker` apps are deployed here                                                  |
 | 2   | Benchmark runner               | All queries × engines × scale factors, warm, N repeats, results per section 7                                                 |
 | 3   | Startup and API measurements   | Distributions listed in section 7                                                                                             |
 | 4   | Simulator and policies         | Section 8; can start early with made-up numbers                                                                               |
@@ -256,3 +264,5 @@ Each milestone becomes one or more task specs.
 | 2026-11-01 | Plain HTTP by app name, submit-and-poll worker; no Dapr, no external queue                                  |
 | 2026-11-01 | TPC-DS only in the first iteration; simple-query family added only if needed                                |
 | 2026-11-01 | Section 9 directories are created by the first task that puts a file in them; no placeholders               |
+| 2026-11-03 | Container Apps router and worker deployed in milestone 1 with the worker image; milestone 0.5 deploys the shared base |
+| 2026-11-03 | Reuse the dev workspace's Access Connector; its user-assigned identity gets Storage Blob Data Contributor on our container |

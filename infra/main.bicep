@@ -39,3 +39,14 @@ module storage 'modules/storage.bicep' = {
     tags: tags
   }
 }
+
+module base 'modules/base.bicep' = {
+  scope: rg
+  name: 'base'
+  params: {
+    location: location
+    prefix: prefix
+    uniqueSuffix: uniqueString(subscription().id, resourceGroupName)
+    tags: tags
+  }
+}
