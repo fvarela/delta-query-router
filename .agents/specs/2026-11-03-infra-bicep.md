@@ -34,6 +34,7 @@ added in milestone 1, once a worker image exists.
   - Role assignment scope: the identity's role must be scoped to the `tpcds` container, not to the whole storage account (DESIGN §4 table).
   - Role assignment names must be deterministic (`guid(scope, principalId, roleDefinitionId)`), or a redeploy fails with "role assignment already exists".
   - Global names (storage account, Key Vault, registry) must be globally unique and follow each service's character rules (storage: 3–24 lowercase letters and digits).
+  - `.env` format: the author's file uses `KEY="value"`, and some lines start with `export `. E8's parser must strip an optional `export ` prefix and surrounding double or single quotes, or it compares `"<id>"` with quotes and never finds a leak. The test never prints `.env` values, not even in assertion messages: name the variable instead.
 
 ## Decisions
 
