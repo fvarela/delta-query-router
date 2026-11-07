@@ -103,10 +103,11 @@ def test_e2_storage_account_has_hns_and_one_tpcds_container(template):
     assert "tpcds" in containers[0]["name"]
 
 
-def test_e3_access_connector_can_use_only_the_tpcds_container(template):
-    connectors = _of_type(template, "Microsoft.Databricks/accessConnectors")
-    assert len(connectors) == 1
-    assert connectors[0]["identity"]["type"] == "SystemAssigned"
+def test_e3_existing_connector_identity_can_use_only_the_tpcds_container(template):
+    assert _of_type(template, "Microsoft.Databricks/accessConnectors") == []
+    # The identity is looked up (`existing`), never declared, so nothing is created
+    # or changed in its resource group.
+    assert _of_type(template, "Microsoft.ManagedIdentity/userAssignedIdentities") == []
 
     assignments = [
         r
@@ -116,8 +117,107 @@ def test_e3_access_connector_can_use_only_the_tpcds_container(template):
     assert len(assignments) == 1
     scope = str(assignments[0]["scope"])
     assert "containers" in scope, f"not scoped to the container: {scope}"
-    principal = str(assignments[0]["properties"]["principalId"])
-    assert "accessConnectors" in principal, f"not the Access Connector: {principal}"
+
+    properties = assignments[0]["properties"]
+    assert properties["principalType"] == "ServicePrincipal"
+    principal = str(properties["principalId"])
+    assert "ucIdentityResourceId" in principal, f"not the dev identity: {principal}"
+    assert "principalId" in principal, f"does not read its principalId: {principal}"
+    assert "userAssignedIdentities" in principal, f"not an identity: {principal}"
+
+
+def _read_env() -> dict[str, str]:
+    """Parse the author's `.env`: `KEY=value`, optional `export `, optional quotes."""
+    path = ROOT / ".env"
+    if not path.exists():
+        return {}
+    values = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        key, sep, value = line.partition("=")
+        if not sep:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        values[key.strip()] = value
+    return values
+
+
+def _repo_files() -> dict[str, str]:
+    """Lower-cased text of every tracked file, plus new files not yet committed."""
+    git = shutil.which("git")
+    assert git, "git not found"
+    listing = subprocess.run(
+        [git, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=ROOT,
+    ).stdout
+    files = {}
+    for name in filter(None, listing.split("\0")):
+        path = ROOT / name
+        if path.is_file():
+            files[name] = path.read_bytes().decode("utf-8", errors="ignore").lower()
+    return files
+
+
+def _needles(variable: str, value: str) -> list[str]:
+    """Strings that must not appear in the repo, taken from one `.env` value."""
+    if variable != "UC_IDENTITY_RESOURCE_ID":
+        return [value]
+    parts = value.strip("/").split("/")
+    lowered = [p.lower() for p in parts]
+    needles = [value]
+    if "resourcegroups" in lowered:
+        needles.append(parts[lowered.index("resourcegroups") + 1])
+    needles.append(parts[-1])
+    return needles
+
+
+ENV_VARIABLES = ["AZURE_SUBSCRIPTION_ID", "AZURE_TENANT_ID", "UC_IDENTITY_RESOURCE_ID"]
+
+
+@pytest.mark.parametrize("variable", ENV_VARIABLES)
+def test_e8_no_company_identifier_from_env_in_the_repo(variable):
+    value = _read_env().get(variable, "")
+    if not value:
+        pytest.skip(f"{variable} is not set in .env; nothing to check")
+    leaks = sorted(
+        {
+            name
+            for needle in _needles(variable, value)
+            for name, text in _repo_files().items()
+            if needle.lower() in text
+        }
+    )
+    # Never print the value: name the variable and the files only.
+    assert not leaks, f"a value from {variable} appears in: {', '.join(leaks)}"
+
+
+def test_e8_bicepparam_reads_the_identity_only_from_the_environment():
+    text = MAIN_BICEPPARAM.read_text()
+    assert (
+        "param ucIdentityResourceId = "
+        "readEnvironmentVariable('UC_IDENTITY_RESOURCE_ID')" in text
+    )
+    assert "/subscriptions/" not in text
+
+
+def test_e8_env_example_lists_the_names_with_empty_values():
+    env = {}
+    for line in (ROOT / ".env.example").read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            key, _, value = line.partition("=")
+            env[key.strip()] = value.strip().strip("\"'")
+    assert set(ENV_VARIABLES) <= set(env)
+    assert all(env[name] == "" for name in ENV_VARIABLES)
 
 
 def test_e7_writer_role_is_optional_and_on_the_container(template):

@@ -11,6 +11,9 @@ param prefix string = 'dqr'
 @description('Resource group that holds everything.')
 param resourceGroupName string = 'rg-${prefix}'
 
+@description('Resource id of the user-assigned identity of the dev workspace Access Connector that Unity Catalog uses. It gets read and write access on the tpcds container. Supplied from the environment, never committed.')
+param ucIdentityResourceId string
+
 @description('Object id of a user or service principal that may write the Delta files (Storage Blob Data Contributor on the tpcds container). Empty means no grant.')
 param dataWriterPrincipalId string = ''
 
@@ -31,6 +34,7 @@ module storage 'modules/storage.bicep' = {
     location: location
     prefix: prefix
     uniqueSuffix: uniqueString(subscription().id, resourceGroupName)
+    ucIdentityResourceId: ucIdentityResourceId
     dataWriterPrincipalId: dataWriterPrincipalId
     tags: tags
   }

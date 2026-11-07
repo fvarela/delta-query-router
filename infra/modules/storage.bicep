@@ -3,6 +3,7 @@ param location string
 @maxLength(10)
 param prefix string
 param uniqueSuffix string
+param ucIdentityResourceId string
 param dataWriterPrincipalId string
 param tags object
 
@@ -38,22 +39,21 @@ resource tpcdsContainer 'Microsoft.Storage/storageAccounts/blobServices/containe
   name: 'tpcds'
 }
 
-// Identity that Unity Catalog uses to reach the container.
-resource accessConnector 'Microsoft.Databricks/accessConnectors@2024-05-01' = {
-  name: '${prefix}-access-connector'
-  location: location
-  tags: tags
-  identity: {
-    type: 'SystemAssigned'
-  }
+// Identity that Unity Catalog uses to reach the storage: the user-assigned identity of
+// the dev workspace's existing Access Connector. Only read here, never created or changed.
+var ucIdentityParts = split(ucIdentityResourceId, '/')
+
+resource ucIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = {
+  scope: resourceGroup(ucIdentityParts[2], ucIdentityParts[4])
+  name: ucIdentityParts[8]
 }
 
-resource connectorRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(tpcdsContainer.id, accessConnector.id, storageBlobDataContributor)
+resource ucIdentityRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(tpcdsContainer.id, ucIdentityResourceId, storageBlobDataContributor)
   scope: tpcdsContainer
   properties: {
     roleDefinitionId: roleDefinitionId
-    principalId: accessConnector.identity.principalId
+    principalId: ucIdentity.properties.principalId
     principalType: 'ServicePrincipal'
   }
 }
