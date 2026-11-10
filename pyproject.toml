@@ -3,7 +3,9 @@ name = "dqr"
 version = "0.1.0"
 description = "Delta Query Router: cost-aware routing of SQL queries between Databricks and Azure."
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "databricks-sdk>=0.164.0",
+]
 
 [build-system]
 requires = ["uv_build>=0.9.5,<0.10"]
