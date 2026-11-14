@@ -100,8 +100,13 @@ All in one resource group, in the Databricks workspace's region (westus2, confir
 | Storage account, ADLS Gen2 (HNS on), container `tpcds` | External Delta tables                                                                       |
 | Existing Databricks Access Connector (not created here) | Its user-assigned identity, which the existing storage credentials use, gets Storage Blob Data Contributor on the container |
 
-Unity Catalog objects are created by the dev tool with the Databricks SDK, not Bicep: storage credential
-(on the existing Access Connector), external location, catalog, schemas `sf1` and `sf10`, external tables.
+Unity Catalog objects are created by the dev tool (`uv run dqr`) with the Databricks SDK, not Bicep:
+- storage credential `dqr-storage`, our own, on the existing Access Connector and its user-assigned identity;
+- external location `dqr-tpcds`, pointing at the `tpcds` container through that credential;
+- catalog `dqr` (name configurable, so an existing catalog can be used if creating it is refused), schemas `sf1` and `sf10`;
+- external tables (milestone 0.5, TPC-DS data step).
+
+Every object the tool creates carries a marker comment, and teardown deletes only objects with that marker.
 
 The author's own user can get the same role on the container through the optional `dataWriterPrincipalId`
 parameter, so the data code can write the Delta files from the author's machine.
