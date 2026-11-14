@@ -36,6 +36,10 @@ class SetupError(Exception):
     """Setup stopped before creating anything."""
 
 
+class TeardownError(Exception):
+    """Teardown refused to start; nothing was deleted."""
+
+
 @dataclass(frozen=True)
 class Settings:
     access_connector_id: str
@@ -80,7 +84,7 @@ class _Item:
     kind: str
     name: str
     found: object | None  # what the client returned, None if the object is absent
-    create: Callable[[], object]
+    act: Callable[[], object]  # create it (setup) or delete it (teardown)
     adopt: bool = False  # an existing object is accepted as is (the catalog)
 
 
@@ -160,7 +164,7 @@ def setup(client, settings: Settings) -> list[Step]:
     report = []
     for item in items:
         if item.found is None:
-            item.create()
+            item.act()
             status = "created"
         elif _is_ours(item.found):
             status = "exists"
@@ -172,3 +176,65 @@ def setup(client, settings: Settings) -> list[Step]:
 
 def _is_ours(found: object) -> bool:
     return getattr(found, "comment", None) == MARKER
+
+
+def teardown(client, settings: Settings, confirmation: str) -> list[Step]:
+    """Delete what setup created, in reverse order, and report what happened.
+
+    Refuses unless `confirmation` is exactly the catalog name. Only objects that carry
+    our marker are deleted; anything else is kept, and missing objects are skipped.
+    """
+    catalog = settings.catalog
+    if confirmation != catalog:
+        raise TeardownError(
+            "the typed confirmation does not match the catalog name; "
+            "nothing was deleted"
+        )
+
+    found_catalog = _find(client.catalogs.get, catalog)
+    items = []
+    for schema in reversed(SCHEMA_NAMES):
+        full_name = f"{catalog}.{schema}"
+        items.append(
+            _Item(
+                "schema",
+                full_name,
+                # No catalog means no schema: skip the lookup.
+                _find(client.schemas.get, full_name) if found_catalog else None,
+                # Force drops tables inside; for external tables that is metadata only.
+                partial(client.schemas.delete, full_name=full_name, force=True),
+            )
+        )
+    # No force below: a catalog that still holds other schemas is never dropped.
+    items += [
+        _Item(
+            "catalog",
+            catalog,
+            found_catalog,
+            partial(client.catalogs.delete, name=catalog),
+        ),
+        _Item(
+            "external location",
+            LOCATION_NAME,
+            _find(client.external_locations.get, LOCATION_NAME),
+            partial(client.external_locations.delete, name=LOCATION_NAME),
+        ),
+        _Item(
+            "storage credential",
+            CREDENTIAL_NAME,
+            _find(client.storage_credentials.get, CREDENTIAL_NAME),
+            partial(client.storage_credentials.delete, name=CREDENTIAL_NAME),
+        ),
+    ]
+
+    report = []
+    for item in items:
+        if item.found is None:
+            status = "absent"
+        elif _is_ours(item.found):
+            item.act()
+            status = "deleted"
+        else:
+            status = "kept, not managed"
+        report.append(Step(item.kind, item.name, status))
+    return report

@@ -14,8 +14,10 @@ from dqr.data.unity_catalog import (
     Settings,
     SettingsError,
     SetupError,
+    TeardownError,
     load_settings,
     setup,
+    teardown,
 )
 
 ENV = {
@@ -45,7 +47,9 @@ class _Api:
 
     def _delete(self, key, force):
         self._calls.append(("delete", self._kind, key, {"force": force}))
-        self.objects.pop(key, None)
+        if key not in self.objects:
+            raise NotFound(f"{self._kind} {key} does not exist")
+        del self.objects[key]
 
 
 class _Credentials(_Api):
@@ -230,3 +234,110 @@ def test_e7_settings_are_read_from_the_environment_by_default(monkeypatch):
     monkeypatch.delenv("DQR_CATALOG", raising=False)
 
     assert load_settings() == make_settings()
+
+
+def set_up(catalog="dqr"):
+    """A client on which setup has run, with the call log cleared."""
+    client = FakeClient()
+    setup(client, make_settings(catalog))
+    client.calls.clear()
+    return client
+
+
+FULL_TEARDOWN = [
+    ("schema", "dqr.sf10"),
+    ("schema", "dqr.sf1"),
+    ("catalog", "dqr"),
+    ("external location", "dqr-tpcds"),
+    ("storage credential", "dqr-storage"),
+]
+
+
+def test_e5_teardown_deletes_what_setup_created_in_reverse_order():
+    client = set_up()
+
+    report = teardown(client, make_settings(), "dqr")
+
+    assert client.deleted() == FULL_TEARDOWN
+    assert [(step.kind, step.name) for step in report] == FULL_TEARDOWN
+    assert [step.status for step in report] == ["deleted"] * 5
+    force = {key: fields["force"] for _, _, key, fields in client.calls}
+    assert force["dqr.sf1"] is True
+    assert force["dqr.sf10"] is True
+    assert not force["dqr"]
+    assert not force["dqr-tpcds"]
+    assert not force["dqr-storage"]
+    assert client.created() == []
+    for api in (
+        client.storage_credentials,
+        client.external_locations,
+        client.catalogs,
+        client.schemas,
+    ):
+        assert api.objects == {}
+
+
+def test_e5_an_existing_catalog_is_kept():
+    client = FakeClient()
+    client.catalogs.objects["existing_catalog"] = SimpleNamespace(comment=None)
+    settings = make_settings(catalog="existing_catalog")
+    setup(client, settings)
+    client.calls.clear()
+
+    report = teardown(client, settings, "existing_catalog")
+
+    assert client.deleted() == [
+        ("schema", "existing_catalog.sf10"),
+        ("schema", "existing_catalog.sf1"),
+        ("external location", "dqr-tpcds"),
+        ("storage credential", "dqr-storage"),
+    ]
+    assert summary(report)[2] == ("catalog", "existing_catalog", "kept, not managed")
+    assert "existing_catalog" in client.catalogs.objects
+
+
+@pytest.mark.parametrize(
+    ("api", "key", "kind"),
+    [
+        ("storage_credentials", "dqr-storage", "storage credential"),
+        ("external_locations", "dqr-tpcds", "external location"),
+        ("schemas", "dqr.sf1", "schema"),
+    ],
+)
+def test_e5_an_object_without_our_marker_is_never_deleted(api, key, kind):
+    client = set_up()
+    getattr(client, api).objects[key].comment = "someone else's"
+
+    report = teardown(client, make_settings(), "dqr")
+
+    assert (kind, key) not in client.deleted()
+    assert len(client.deleted()) == 4
+    assert (kind, key, "kept, not managed") in summary(report)
+
+
+def test_e5_missing_objects_are_reported_absent_without_error():
+    client = FakeClient()
+    client.storage_credentials.objects["dqr-storage"] = SimpleNamespace(comment=MARKER)
+
+    report = teardown(client, make_settings(), "dqr")
+
+    assert client.deleted() == [("storage credential", "dqr-storage")]
+    assert summary(report) == [
+        ("schema", "dqr.sf10", "absent"),
+        ("schema", "dqr.sf1", "absent"),
+        ("catalog", "dqr", "absent"),
+        ("external location", "dqr-tpcds", "absent"),
+        ("storage credential", "dqr-storage", "deleted"),
+    ]
+
+
+@pytest.mark.parametrize("confirmation", ["", "yes", "DQR", "dqr ", "other_catalog"])
+def test_e6_teardown_needs_the_catalog_name_typed_exactly(confirmation):
+    client = set_up()
+
+    with pytest.raises(TeardownError):
+        teardown(client, make_settings(), confirmation)
+
+    assert client.deleted() == []
+    assert len(client.catalogs.objects) == 1
+    assert len(client.schemas.objects) == 2
