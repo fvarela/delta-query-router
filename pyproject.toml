@@ -5,6 +5,9 @@ description = "Delta Query Router: cost-aware routing of SQL queries between Dat
 requires-python = ">=3.12"
 dependencies = [
     "databricks-sdk>=0.164.0",
+    "deltalake>=1.6.6",
+    "duckdb>=2.0.0",
+    "pyarrow>=26.0.1",
     "questionary>=2.1.1",
     "rich>=15.0.0",
 ]
