@@ -11,6 +11,11 @@ param tags object
 var storageBlobDataContributor = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 var roleDefinitionId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageBlobDataContributor)
 
+// Storage Blob Delegator: lets Unity Catalog get a user delegation key when its access is
+// limited to one container. Grants no data access.
+var storageBlobDelegator = 'db58b8e5-c6ad-4a2a-8342-4190687cbf4a'
+var delegatorRoleDefinitionId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageBlobDelegator)
+
 // 3-24 lowercase letters and digits.
 var storageAccountName = toLower(take('${prefix}${uniqueSuffix}', 24))
 
@@ -53,6 +58,16 @@ resource ucIdentityRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: tpcdsContainer
   properties: {
     roleDefinitionId: roleDefinitionId
+    principalId: ucIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource ucIdentityDelegatorRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storageAccount.id, ucIdentityResourceId, storageBlobDelegator)
+  scope: storageAccount
+  properties: {
+    roleDefinitionId: delegatorRoleDefinitionId
     principalId: ucIdentity.properties.principalId
     principalType: 'ServicePrincipal'
   }

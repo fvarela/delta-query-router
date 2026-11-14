@@ -17,6 +17,7 @@ MAIN_BICEP = ROOT / "infra" / "main.bicep"
 MAIN_BICEPPARAM = ROOT / "infra" / "main.bicepparam"
 
 STORAGE_BLOB_DATA_CONTRIBUTOR = "ba92f5b4-2d11-453d-a403-e96b0029c9fe"
+STORAGE_BLOB_DELEGATOR = "db58b8e5-c6ad-4a2a-8342-4190687cbf4a"
 ACR_PULL = "7f951dda-4ed3-4680-a7ca-43fe172d538d"
 KEY_VAULT_SECRETS_USER = "4633458b-17de-408a-b874-0445c86b69e6"
 
@@ -320,3 +321,22 @@ def test_e7_writer_role_is_optional_and_on_the_container(template):
 
     assert template["parameters"]["dataWriterPrincipalId"]["defaultValue"] == ""
     assert "dataWriterPrincipalId" not in MAIN_BICEPPARAM.read_text()
+
+
+def test_e14_connector_identity_can_get_a_user_delegation_key(template):
+    delegators = [
+        r
+        for r in _of_type(template, ROLE_ASSIGNMENT)
+        if STORAGE_BLOB_DELEGATOR in json.dumps(r)
+    ]
+    assert len(delegators) == 1
+    scope = str(delegators[0]["scope"])
+    assert "storageAccounts" in scope, f"not scoped to the storage account: {scope}"
+    assert "containers" not in scope, f"scoped to a container: {scope}"
+
+    properties = delegators[0]["properties"]
+    assert properties["principalType"] == "ServicePrincipal"
+    principal = str(properties["principalId"])
+    assert "ucIdentityResourceId" in principal, f"not the dev identity: {principal}"
+    assert "principalId" in principal, f"does not read its principalId: {principal}"
+    assert "userAssignedIdentities" in principal, f"not an identity: {principal}"
