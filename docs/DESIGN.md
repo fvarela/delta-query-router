@@ -104,7 +104,7 @@ Unity Catalog objects are created by the dev tool (`uv run dqr`) with the Databr
 - storage credential `dqr-storage`, our own, on the existing Access Connector and its user-assigned identity;
 - external location `dqr-tpcds`, pointing at the `tpcds` container through that credential;
 - catalog `dqr` (name configurable, so an existing catalog can be used if creating it is refused), schemas `sf1` and `sf10`;
-- external tables (milestone 0.5, TPC-DS data step).
+- external tables: SF1 is written as Delta and registered as `dqr.sf1.<table>` by the dev tool (two menu actions); SF10 comes later.
 
 Every object the tool creates carries a marker comment, and teardown deletes only objects with that marker.
 

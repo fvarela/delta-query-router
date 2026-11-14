@@ -195,6 +195,7 @@ ENV_VARIABLES = [
     "DQR_STORAGE_ACCOUNT",
     "DQR_CATALOG",
     "DATABRICKS_CONFIG_PROFILE",
+    "DATABRICKS_WAREHOUSE_ID",
 ]
 # Values that identify the company, so they must not appear in any repo file. The
 # others are names our code creates (storage account, default catalog) or generic.
@@ -204,6 +205,7 @@ IDENTIFYING_VARIABLES = [
     "UC_IDENTITY_RESOURCE_ID",
     "UC_ACCESS_CONNECTOR_ID",
     "DQR_CATALOG",
+    "DATABRICKS_WAREHOUSE_ID",
 ]
 # Azure resource ids: their resource group and name are checked as well.
 RESOURCE_ID_VARIABLES = ["UC_IDENTITY_RESOURCE_ID", "UC_ACCESS_CONNECTOR_ID"]
