@@ -175,7 +175,7 @@ def _repo_files() -> dict[str, str]:
 
 def _needles(variable: str, value: str) -> list[str]:
     """Strings that must not appear in the repo, taken from one `.env` value."""
-    if variable != "UC_IDENTITY_RESOURCE_ID":
+    if variable not in RESOURCE_ID_VARIABLES:
         return [value]
     parts = value.strip("/").split("/")
     lowered = [p.lower() for p in parts]
@@ -186,14 +186,37 @@ def _needles(variable: str, value: str) -> list[str]:
     return needles
 
 
-ENV_VARIABLES = ["AZURE_SUBSCRIPTION_ID", "AZURE_TENANT_ID", "UC_IDENTITY_RESOURCE_ID"]
+# Every variable `.env.example` must list, with an empty value.
+ENV_VARIABLES = [
+    "AZURE_SUBSCRIPTION_ID",
+    "AZURE_TENANT_ID",
+    "UC_IDENTITY_RESOURCE_ID",
+    "UC_ACCESS_CONNECTOR_ID",
+    "DQR_STORAGE_ACCOUNT",
+    "DQR_CATALOG",
+    "DATABRICKS_CONFIG_PROFILE",
+]
+# Values that identify the company, so they must not appear in any repo file. The
+# others are names our code creates (storage account, default catalog) or generic.
+IDENTIFYING_VARIABLES = [
+    "AZURE_SUBSCRIPTION_ID",
+    "AZURE_TENANT_ID",
+    "UC_IDENTITY_RESOURCE_ID",
+    "UC_ACCESS_CONNECTOR_ID",
+    "DQR_CATALOG",
+]
+# Azure resource ids: their resource group and name are checked as well.
+RESOURCE_ID_VARIABLES = ["UC_IDENTITY_RESOURCE_ID", "UC_ACCESS_CONNECTOR_ID"]
+DEFAULT_CATALOG = "dqr"
 
 
-@pytest.mark.parametrize("variable", ENV_VARIABLES)
+@pytest.mark.parametrize("variable", IDENTIFYING_VARIABLES)
 def test_e8_no_company_identifier_from_env_in_the_repo(variable):
     value = _read_env().get(variable, "")
     if not value:
         pytest.skip(f"{variable} is not set in .env; nothing to check")
+    if variable == "DQR_CATALOG" and value == DEFAULT_CATALOG:
+        pytest.skip("DQR_CATALOG is the default name, which is public")
     leaks = sorted(
         {
             name
