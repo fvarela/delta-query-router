@@ -4,15 +4,24 @@ Plain functions. Nothing here reads `.env`: the caller loads it into the environ
 """
 
 import os
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
 import duckdb
 import pyarrow as pa
+from databricks.sdk.errors import NotFound
+from databricks.sdk.service.sql import StatementState
 from deltalake import DeltaTable, write_deltalake
 
-from dqr.data.unity_catalog import CONTAINER, SettingsError, Step
+from dqr.data.unity_catalog import (
+    CONTAINER,
+    DEFAULT_CATALOG,
+    MARKER,
+    SettingsError,
+    Step,
+)
 
 # The 24 TPC-DS data tables (`dbgen_version` is generator metadata and left out).
 TABLE_NAMES = (
@@ -43,12 +52,19 @@ TABLE_NAMES = (
 )
 
 WRITE_SETTINGS = ("DQR_STORAGE_ACCOUNT", "AZURE_TENANT_ID")
+REGISTER_SETTINGS = ("DQR_STORAGE_ACCOUNT", "DATABRICKS_WAREHOUSE_ID")
 
 BATCH_SIZE = 100_000
+STATEMENT_WAIT = "30s"  # how long one call waits before we poll
+POLL_SECONDS = 2.0
 
 
 class WriteError(Exception):
     """Writing stopped; the tables after the failing one were not written."""
+
+
+class RegisterError(Exception):
+    """Registration stopped; the tables after the failing one were not registered."""
 
 
 @dataclass(frozen=True)
@@ -151,4 +167,93 @@ def write_tables(
                 f"the source has {expected}"
             )
         report.append(Step("table", full_name, f"written, {logged} rows"))
+    return report
+
+
+@dataclass(frozen=True)
+class RegisterSettings:
+    storage_account: str
+    warehouse_id: str
+    catalog: str = DEFAULT_CATALOG
+
+    @property
+    def root(self) -> str:
+        return f"abfss://{CONTAINER}@{self.storage_account}.dfs.core.windows.net/"
+
+
+def load_register_settings(env: Mapping[str, str] | None = None) -> RegisterSettings:
+    """Read the settings the register action needs.
+
+    Errors name the missing variables and never show a value.
+    """
+    env = os.environ if env is None else env
+    values = {name: env.get(name, "").strip() for name in REGISTER_SETTINGS}
+    missing = [name for name, value in values.items() if not value]
+    if missing:
+        raise SettingsError(f"missing settings: {', '.join(missing)}")
+    return RegisterSettings(
+        storage_account=values["DQR_STORAGE_ACCOUNT"],
+        warehouse_id=values["DATABRICKS_WAREHOUSE_ID"],
+        catalog=env.get("DQR_CATALOG", "").strip() or DEFAULT_CATALOG,
+    )
+
+
+def _existing_table(client, full_name: str):
+    try:
+        return client.tables.get(full_name)
+    except NotFound:
+        return None
+
+
+def _run_statement(client, settings: RegisterSettings, statement: str, sleep):
+    """Send one statement and wait until it is no longer pending or running."""
+    result = client.statement_execution.execute_statement(
+        statement=statement,
+        warehouse_id=settings.warehouse_id,
+        wait_timeout=STATEMENT_WAIT,
+    )
+    while result.status.state in (StatementState.PENDING, StatementState.RUNNING):
+        sleep(POLL_SECONDS)
+        result = client.statement_execution.get_statement(result.statement_id)
+    return result.status
+
+
+def register_tables(
+    client,
+    settings: RegisterSettings,
+    schema: str,
+    sleep: Callable[[float], None] = time.sleep,
+) -> list[Step]:
+    """Register each missing table as an external Delta table and report.
+
+    All lookups run before the first statement, so a table that exists without our
+    marker stops registration cleanly. A failed statement stops it; a rerun resumes.
+    """
+    catalog = settings.catalog
+    found = {}
+    for name in TABLE_NAMES:
+        full_name = f"{catalog}.{schema}.{name}"
+        table = _existing_table(client, full_name)
+        if table is not None and getattr(table, "comment", None) != MARKER:
+            raise RegisterError(
+                f"table {full_name} already exists and was not created by this "
+                "tool; nothing was changed"
+            )
+        found[name] = table
+
+    report = []
+    for name in TABLE_NAMES:
+        full_name = f"{catalog}.{schema}.{name}"
+        if found[name] is not None:
+            report.append(Step("table", full_name, "exists"))
+            continue
+        statement = (
+            f"CREATE TABLE `{catalog}`.`{schema}`.`{name}` USING DELTA "
+            f"COMMENT '{MARKER}' LOCATION '{settings.root}{schema}/{name}/'"
+        )
+        status = _run_statement(client, settings, statement, sleep)
+        if status.state != StatementState.SUCCEEDED:
+            message = status.error.message if status.error else status.state.value
+            raise RegisterError(f"table {full_name}: {message}")
+        report.append(Step("table", full_name, "registered"))
     return report
