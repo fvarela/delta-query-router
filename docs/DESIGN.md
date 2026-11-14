@@ -98,13 +98,13 @@ All in one resource group, in the Databricks workspace's region (westus2, confir
 | User-assigned managed identity                         | Used by the apps: AcrPull, Key Vault secrets reader                                         |
 | Key Vault                                              | Databricks service principal secret                                                         |
 | Storage account, ADLS Gen2 (HNS on), container `tpcds` | External Delta tables                                                                       |
-| Existing Databricks Access Connector (not created here) | Its user-assigned identity, which the existing storage credentials use, gets Storage Blob Data Contributor on the container |
+| Existing Databricks Access Connector (not created here) | Its user-assigned identity, which the existing storage credentials use, gets Storage Blob Data Contributor on the container and Storage Blob Delegator on the storage account (no data access; Unity Catalog needs it for user delegation keys) |
 
 Unity Catalog objects are created by the dev tool (`uv run dqr`) with the Databricks SDK, not Bicep:
 - storage credential `dqr-storage`, our own, on the existing Access Connector and its user-assigned identity;
 - external location `dqr-tpcds`, pointing at the `tpcds` container through that credential;
 - catalog `dqr` (name configurable, so an existing catalog can be used if creating it is refused), schemas `sf1` and `sf10`;
-- external tables (milestone 0.5, TPC-DS data step).
+- external tables: SF1 is written as Delta and registered as `dqr.sf1.<table>` by the dev tool (two menu actions); SF10 comes later.
 
 Every object the tool creates carries a marker comment, and teardown deletes only objects with that marker.
 
@@ -271,3 +271,4 @@ Each milestone becomes one or more task specs.
 | 2026-11-01 | Section 9 directories are created by the first task that puts a file in them; no placeholders               |
 | 2026-11-03 | Container Apps router and worker deployed in milestone 1 with the worker image; milestone 0.5 deploys the shared base |
 | 2026-11-03 | Reuse the dev workspace's Access Connector; its user-assigned identity gets Storage Blob Data Contributor on our container |
+| 2026-11-14 | The Access Connector identity also gets Storage Blob Delegator on our storage account: Unity Catalog needs a user delegation key for container-scoped access; the role gives no data access |
