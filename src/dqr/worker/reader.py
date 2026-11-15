@@ -58,7 +58,10 @@ def register_secrets(conn: Any, accesses: Sequence[TableAccess]) -> None:
         if not access.sas_token:
             raise ReaderError(f"No SAS token for {access.full_name}.")
         account = (urlparse(access.location).hostname or "").split(".")[0]
+        # The azure extension rejects a fully qualified path unless the connection
+        # string has `AccountName=` (otherwise: "A invalid connection string").
         connection_string = (
+            f"AccountName={account};"
             f"BlobEndpoint=https://{account}.blob.core.windows.net;"
             f"SharedAccessSignature={access.sas_token}"
         )

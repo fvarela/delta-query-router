@@ -80,6 +80,27 @@ def test_secret_scope_is_the_location_exactly():
     assert [s[2] for s in _secrets(conn)] == [[location]]
 
 
+def test_secret_connection_string_names_the_account():
+    # The DuckDB azure extension rejects a fully qualified abfss:// path ("A invalid
+    # connection string has been provided") unless the connection string has
+    # `AccountName=<account of the path>`. Found in the first real run (E9).
+    class Recorder:
+        def __init__(self):
+            self.statements = []
+
+        def execute(self, sql):
+            self.statements.append(sql)
+
+    recorder = Recorder()
+    access = TableAccess("dqr.sf1.item", f"{ACCOUNT_ROOT}/item/", "sv=1&sig=bbb")
+
+    register_secrets(recorder, [access])
+
+    (create,) = [s for s in recorder.statements if s.startswith("CREATE SECRET")]
+    assert "AccountName=acct;" in create
+    assert "SharedAccessSignature=sv=1&sig=bbb" in create
+
+
 def test_abfss_location_without_token_is_an_error():
     conn = duckdb.connect()
 
