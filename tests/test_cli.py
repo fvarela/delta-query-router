@@ -5,14 +5,22 @@ The prompts are faked and Databricks is never called: `setup`, `teardown`,
 """
 
 import io
+from types import SimpleNamespace
 
 import pytest
 from databricks.sdk.errors import PermissionDenied
 from deltalake.exceptions import DeltaError
+from duckdb import Error as DuckDbError
 from rich.console import Console
 
 from dqr.cli import main as cli
-from dqr.data.tpcds import RegisterError, RegisterSettings, WriteError, WriteSettings
+from dqr.data.tpcds import (
+    TABLE_NAMES,
+    RegisterError,
+    RegisterSettings,
+    WriteError,
+    WriteSettings,
+)
 from dqr.data.unity_catalog import (
     Settings,
     SettingsError,
@@ -20,6 +28,8 @@ from dqr.data.unity_catalog import (
     Step,
     TeardownError,
 )
+from dqr.router.credentials import CredentialError, TableAccess
+from dqr.worker.reader import QueryResult
 
 SETTINGS = Settings(
     access_connector_id="connector-id",
@@ -277,3 +287,113 @@ def test_e11_missing_settings_are_shown_before_any_question_or_client(
     assert session.confirmations == []
     assert session.clients_built == 0
     assert tpcds_calls == []
+
+
+# Read TPC-DS SF1 with DuckDB (E7 menu part, E8).
+
+SAS_TOKEN = "sv=2024-01-01&sig=a/b+c="
+ROW_COUNTS = {name: 100 + index for index, name in enumerate(TABLE_NAMES)}
+
+
+class _FakeConnection:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.fixture
+def read_calls(monkeypatch):
+    """Replace vending and reading, and record how the menu calls them."""
+    monkeypatch.delenv("DQR_CATALOG", raising=False)
+    log = []
+    connection = _FakeConnection()
+
+    def fake_vend(client, full_names):
+        log.append(("vend", client, list(full_names)))
+        return [
+            TableAccess(
+                name, f"abfss://c@acct.dfs.core.windows.net/{name}/", SAS_TOKEN, 7.0
+            )
+            for name in full_names
+        ]
+
+    def fake_connect(accesses):
+        log.append(("connect", len(accesses)))
+        return connection
+
+    def fake_run_query(conn, sql):
+        log.append(("query", sql))
+        if "duckdb_extensions" in sql:
+            return QueryResult([("azure", "az-ver"), ("delta", "delta-ver")], 1.0)
+        table = sql.rsplit(".", 1)[-1].strip('"')
+        return QueryResult([(ROW_COUNTS[table],)], 3.0)
+
+    monkeypatch.setattr(cli, "vend_read_credentials", fake_vend)
+    monkeypatch.setattr(cli, "connect", fake_connect)
+    monkeypatch.setattr(cli, "run_query", fake_run_query)
+    return SimpleNamespace(log=log, connection=connection)
+
+
+def test_e8_read_vends_for_24_tables_and_reports_each(read_calls):
+    session = Session([cli.READ, cli.QUIT])
+
+    output = session.run()
+
+    vend = read_calls.log[0]
+    assert vend == (
+        "vend",
+        CLIENT,
+        [f"dqr.sf1.{name}" for name in TABLE_NAMES],
+    )
+    assert session.confirmations == []
+    assert session.questions == []
+    for name in TABLE_NAMES:
+        line = next(line for line in output.splitlines() if f" {name} " in line)
+        assert str(ROW_COUNTS[name]) in line
+        assert "7" in line and "3" in line
+    assert "DuckDB" in output
+    assert "azure az-ver" in output and "delta delta-ver" in output
+    assert read_calls.connection.closed
+    assert "Error" not in output
+
+
+def test_e8_read_uses_the_catalog_from_the_environment(monkeypatch, read_calls):
+    monkeypatch.setenv("DQR_CATALOG", "my_catalog")
+    session = Session([cli.READ, cli.QUIT])
+
+    session.run()
+
+    assert read_calls.log[0][2][0] == "my_catalog.sf1.call_center"
+
+
+def test_e7_read_errors_are_redacted_before_they_are_shown(monkeypatch, read_calls):
+    def failing(conn, sql):
+        raise DuckDbError(f"IO Error: bad connection string SAS={SAS_TOKEN} end")
+
+    monkeypatch.setattr(cli, "run_query", failing)
+    session = Session([cli.READ, cli.QUIT])
+
+    output = session.run()  # does not raise: the menu survives the error
+
+    assert SAS_TOKEN not in output
+    assert "***" in output
+    assert "IO Error: bad connection string" in output
+    assert "Traceback" not in output
+    assert read_calls.connection.closed
+
+
+def test_read_vending_errors_are_shown_as_one_message(monkeypatch, read_calls):
+    def refused(client, full_names):
+        raise CredentialError(
+            "Not allowed to read dqr.sf1.customer: EXTERNAL USE SCHEMA"
+        )
+
+    monkeypatch.setattr(cli, "vend_read_credentials", refused)
+    session = Session([cli.READ, cli.QUIT])
+
+    output = session.run()
+
+    assert "dqr.sf1.customer" in output
+    assert "Traceback" not in output

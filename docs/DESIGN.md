@@ -75,7 +75,8 @@ until shortly before expiry, and sends them to the worker with the query. The wo
 secret and has no direct permission on the storage account.
 
 Inside the worker, each table name is mapped to a DuckDB view, so the SQL runs unchanged (no regex
-rewriting). Two candidate read paths, compared in milestone 1:
+rewriting). Two candidate read paths. Path 1 is tried first; path 2 is built only if path 1 fails, and only
+after the author chooses the fallback (decision log 2026-11-15):
 
 1. DuckDB `delta` extension (`delta_scan`) with the vended SAS token. Handles deletion vectors and file
    skipping. Unverified on Azure with a SAS token.
@@ -272,3 +273,4 @@ Each milestone becomes one or more task specs.
 | 2026-11-03 | Container Apps router and worker deployed in milestone 1 with the worker image; milestone 0.5 deploys the shared base |
 | 2026-11-03 | Reuse the dev workspace's Access Connector; its user-assigned identity gets Storage Blob Data Contributor on our container |
 | 2026-11-14 | The Access Connector identity also gets Storage Blob Delegator on our storage account: Unity Catalog needs a user delegation key for container-scoped access; the role gives no data access |
+| 2026-11-15 | Read paths are not both built and compared: path 1 (`delta_scan`) first; path 2 only if path 1 fails, after the author chooses the fallback |
